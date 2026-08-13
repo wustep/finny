@@ -8,7 +8,7 @@ import { CountryCode, Products } from "plaid";
 import { internal } from "./_generated/api";
 import { action, internalAction } from "./_generated/server";
 import { allowedOrigins } from "./origins";
-import { plaidClient } from "./plaidClient";
+import { plaidClient, withPlaidError } from "./plaidClient";
 
 const WEBHOOK_URL = () => `${process.env.CONVEX_SITE_URL}/plaid/webhook`;
 
@@ -45,20 +45,22 @@ export const createLinkToken = action({
     }
     await requireAccess(ctx, userId);
     const client = plaidClient();
-    const response = await client.linkTokenCreate({
-      user: { client_user_id: userId },
-      client_name: "Finny",
-      language: "en",
-      country_codes: [CountryCode.Us, CountryCode.Ca],
-      // Transactions required; investments/liabilities picked up when the
-      // institution supports them (avoids Plaid's "no accounts found" trap
-      // when all products are required).
-      products: [Products.Transactions],
-      optional_products: [Products.Investments, Products.Liabilities],
-      transactions: { days_requested: 730 },
-      webhook: WEBHOOK_URL(),
-      redirect_uri: oauthRedirectUri(args.origin),
-    });
+    const response = await withPlaidError(
+      client.linkTokenCreate({
+        user: { client_user_id: userId },
+        client_name: "Finny",
+        language: "en",
+        country_codes: [CountryCode.Us, CountryCode.Ca],
+        // Transactions required; investments/liabilities picked up when the
+        // institution supports them (avoids Plaid's "no accounts found" trap
+        // when all products are required).
+        products: [Products.Transactions],
+        optional_products: [Products.Investments, Products.Liabilities],
+        transactions: { days_requested: 730 },
+        webhook: WEBHOOK_URL(),
+        redirect_uri: oauthRedirectUri(args.origin),
+      }),
+    );
     return response.data.link_token;
   },
 });
@@ -82,15 +84,17 @@ export const createUpdateLinkToken = action({
       throw new Error("Connection not found");
     }
     const client = plaidClient();
-    const response = await client.linkTokenCreate({
-      user: { client_user_id: userId },
-      client_name: "Finny",
-      language: "en",
-      country_codes: [CountryCode.Us, CountryCode.Ca],
-      access_token: connection.accessToken,
-      webhook: WEBHOOK_URL(),
-      redirect_uri: oauthRedirectUri(args.origin),
-    });
+    const response = await withPlaidError(
+      client.linkTokenCreate({
+        user: { client_user_id: userId },
+        client_name: "Finny",
+        language: "en",
+        country_codes: [CountryCode.Us, CountryCode.Ca],
+        access_token: connection.accessToken,
+        webhook: WEBHOOK_URL(),
+        redirect_uri: oauthRedirectUri(args.origin),
+      }),
+    );
     return response.data.link_token;
   },
 });
@@ -105,29 +109,35 @@ export const exchangePublicToken = action({
     await requireAccess(ctx, userId);
     const client = plaidClient();
 
-    const exchange = await client.itemPublicTokenExchange({
-      public_token: args.publicToken,
-    });
+    const exchange = await withPlaidError(
+      client.itemPublicTokenExchange({ public_token: args.publicToken }),
+    );
     const accessToken = exchange.data.access_token;
     const itemId = exchange.data.item_id;
 
-    const item = await client.itemGet({ access_token: accessToken });
+    const item = await withPlaidError(
+      client.itemGet({ access_token: accessToken }),
+    );
     const institutionId = item.data.item.institution_id ?? undefined;
 
     let institutionName = "Bank";
     let institutionLogo: string | undefined;
     if (institutionId) {
-      const institution = await client.institutionsGetById({
-        institution_id: institutionId,
-        country_codes: [CountryCode.Us, CountryCode.Ca],
-        options: { include_optional_metadata: true },
-      });
+      const institution = await withPlaidError(
+        client.institutionsGetById({
+          institution_id: institutionId,
+          country_codes: [CountryCode.Us, CountryCode.Ca],
+          options: { include_optional_metadata: true },
+        }),
+      );
       institutionName = institution.data.institution.name;
       const logo = institution.data.institution.logo;
       institutionLogo = logo ? `data:image/png;base64,${logo}` : undefined;
     }
 
-    const accounts = await client.accountsGet({ access_token: accessToken });
+    const accounts = await withPlaidError(
+      client.accountsGet({ access_token: accessToken }),
+    );
 
     const connectionId = await ctx.runMutation(internal.connections.saveConnection, {
       userId,

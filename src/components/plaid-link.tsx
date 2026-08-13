@@ -61,10 +61,17 @@ export function usePlaidConnect(options?: {
         .catch(() => toast.error("Failed to save the connection"))
         .finally(() => setBusy(false));
     },
-    onExit: () => {
+    onExit: (error) => {
       setToken(null);
       clearPlaidLinkSession();
       setBusy(false);
+      // error is null when the user just closed Link; anything else is a
+      // real failure (e.g. an unregistered OAuth redirect URI) that would
+      // otherwise fail silently.
+      if (error) {
+        console.error("Plaid Link exited with error:", error);
+        toast.error(error.display_message || error.error_message || "Plaid Link failed");
+      }
     },
   });
 

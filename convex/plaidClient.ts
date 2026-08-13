@@ -17,3 +17,21 @@ export function plaidClient() {
     }),
   );
 }
+
+// Plaid's error body (error_code, error_message, ...) only lives on
+// error.response.data — axios errors otherwise log as a bare status code.
+// Wrap calls with this so Convex logs show the actual Plaid error.
+export async function withPlaidError<T>(promise: Promise<T>): Promise<T> {
+  try {
+    return await promise;
+  } catch (error: any) {
+    const plaidError = error?.response?.data;
+    if (plaidError) {
+      console.error("Plaid API error:", JSON.stringify(plaidError));
+      throw new Error(
+        `Plaid error ${plaidError.error_code ?? "UNKNOWN"}: ${plaidError.error_message ?? error.message}`,
+      );
+    }
+    throw error;
+  }
+}

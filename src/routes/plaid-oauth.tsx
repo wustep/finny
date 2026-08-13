@@ -45,7 +45,13 @@ function PlaidOAuthReturn() {
         .catch(() => toast.error("Failed to save the connection"))
         .finally(() => void navigate({ to: "/" }));
     },
-    onExit: finish,
+    onExit: (error) => {
+      if (error) {
+        console.error("Plaid Link exited with error:", error);
+        toast.error(error.display_message || error.error_message || "Plaid Link failed");
+      }
+      finish();
+    },
   });
 
   useEffect(() => {
@@ -55,9 +61,14 @@ function PlaidOAuthReturn() {
   }, [session, ready, open]);
 
   useEffect(() => {
-    // Landed here without a pending Link session (e.g. page refresh after
-    // finishing) — nothing to resume.
+    // Landed here without a pending Link session — most likely the browser
+    // didn't carry sessionStorage across the bank's redirect (e.g. a
+    // different tab, or third-party storage partitioning), so the flow
+    // can't be resumed. Say so instead of silently bouncing home.
     if (!session?.token) {
+      toast.error(
+        "Couldn't resume the bank connection — please try connecting again.",
+      );
       void navigate({ to: "/" });
     }
   }, [session, navigate]);
