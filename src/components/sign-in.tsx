@@ -1,5 +1,5 @@
 import { useAuthActions } from "@convex-dev/auth/react";
-import { Wallet } from "lucide-react";
+import { AppIcon } from "@/components/app-icon";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -16,9 +16,7 @@ export function SignIn() {
     <div className="flex min-h-svh items-center justify-center p-4">
       <Card className="w-full max-w-sm">
         <CardHeader className="text-center">
-          <div className="mx-auto mb-2 flex size-12 items-center justify-center rounded-full bg-muted">
-            <Wallet className="size-6" />
-          </div>
+          <AppIcon className="mx-auto mb-2 size-12 rounded-xl" />
           <CardTitle>Finny</CardTitle>
           <CardDescription>
             Sync your financial data to Notion

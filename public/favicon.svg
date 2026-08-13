@@ -1,1 +1,9 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="7" fill="#171717"/><text x="16" y="22" font-family="system-ui, sans-serif" font-size="16" font-weight="700" fill="#fafafa" text-anchor="middle">F</text></svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <rect width="1024" height="1024" rx="224" fill="#171717"/>
+  <!-- F stem -->
+  <rect x="352" y="256" width="128" height="512" rx="56" fill="#FAFAFA"/>
+  <!-- top arm: flat left (merges with stem), rounded right cap -->
+  <path d="M400,256 h188 a64,64 0 0 1 0,128 h-188 z" fill="#FAFAFA"/>
+  <!-- middle arm: emerald accent -->
+  <path d="M480,464 h108 a64,64 0 0 1 0,128 h-108 z" fill="#10B981"/>
+</svg>

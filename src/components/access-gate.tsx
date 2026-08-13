@@ -1,7 +1,7 @@
 import { useAuthToken } from "@convex-dev/auth/react";
 import { useQuery } from "convex/react";
 import { KeyRound } from "lucide-react";
-import { useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { toast } from "sonner";
 import { api } from "../../convex/_generated/api";
 import { Button } from "@/components/ui/button";
@@ -18,8 +18,22 @@ import { Skeleton } from "@/components/ui/skeleton";
 // Signed-in users must also present the shared access password once before
 // the app (and its Plaid/Notion actions, which enforce this server-side)
 // unlocks for them.
+// Remembers (per device) that this browser has unlocked the app before, so
+// public pages can offer a "Log in" button to returning users only.
+export const UNLOCKED_FLAG = "finny_unlocked";
+
 export function AccessGuard({ children }: { children: ReactNode }) {
   const viewer = useQuery(api.users.viewer);
+  const accessGranted = viewer?.accessGranted === true;
+  useEffect(() => {
+    if (accessGranted) {
+      try {
+        localStorage.setItem(UNLOCKED_FLAG, "1");
+      } catch {
+        // localStorage unavailable (private mode) — nonessential.
+      }
+    }
+  }, [accessGranted]);
   if (viewer === undefined) {
     return (
       <div className="flex min-h-svh items-center justify-center">

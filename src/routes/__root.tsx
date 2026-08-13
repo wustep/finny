@@ -1,7 +1,7 @@
-import { Outlet, createRootRoute } from "@tanstack/react-router";
+import { Outlet, createRootRoute, useLocation } from "@tanstack/react-router";
 import { Authenticated, AuthLoading, Unauthenticated } from "convex/react";
 import { AccessGuard } from "@/components/access-gate";
-import { AppShell } from "@/components/app-shell";
+import { AppShell, PublicShell } from "@/components/app-shell";
 import { SignIn } from "@/components/sign-in";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Toaster } from "@/components/ui/sonner";
@@ -10,7 +10,21 @@ export const Route = createRootRoute({
   component: RootLayout,
 });
 
+// Routes reachable without sign-in or the access password.
+const PUBLIC_PATHS = new Set(["/policy"]);
+
 function RootLayout() {
+  const { pathname } = useLocation();
+  if (PUBLIC_PATHS.has(pathname.replace(/\/$/, "") || "/")) {
+    return (
+      <>
+        <PublicShell>
+          <Outlet />
+        </PublicShell>
+        <Toaster />
+      </>
+    );
+  }
   return (
     <>
       <AuthLoading>

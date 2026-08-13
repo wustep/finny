@@ -13,6 +13,7 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as AccountsRouteImport } from './routes/accounts'
 import { Route as NotionRouteImport } from './routes/notion'
 import { Route as PlaidOauthRouteImport } from './routes/plaid-oauth'
+import { Route as PolicyRouteImport } from './routes/policy'
 import { Route as SettingsRouteImport } from './routes/settings'
 
 const IndexRoute = IndexRouteImport.update({
@@ -35,6 +36,11 @@ const PlaidOauthRoute = PlaidOauthRouteImport.update({
   path: '/plaid-oauth',
   getParentRoute: () => rootRouteImport,
 } as any)
+const PolicyRoute = PolicyRouteImport.update({
+  id: '/policy',
+  path: '/policy',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const SettingsRoute = SettingsRouteImport.update({
   id: '/settings',
   path: '/settings',
@@ -46,6 +52,7 @@ export interface FileRoutesByFullPath {
   '/accounts': typeof AccountsRoute
   '/notion': typeof NotionRoute
   '/plaid-oauth': typeof PlaidOauthRoute
+  '/policy': typeof PolicyRoute
   '/settings': typeof SettingsRoute
 }
 export interface FileRoutesByTo {
@@ -53,6 +60,7 @@ export interface FileRoutesByTo {
   '/accounts': typeof AccountsRoute
   '/notion': typeof NotionRoute
   '/plaid-oauth': typeof PlaidOauthRoute
+  '/policy': typeof PolicyRoute
   '/settings': typeof SettingsRoute
 }
 export interface FileRoutesById {
@@ -61,14 +69,23 @@ export interface FileRoutesById {
   '/accounts': typeof AccountsRoute
   '/notion': typeof NotionRoute
   '/plaid-oauth': typeof PlaidOauthRoute
+  '/policy': typeof PolicyRoute
   '/settings': typeof SettingsRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/accounts' | '/notion' | '/plaid-oauth' | '/settings'
+  fullPaths:
+    '/' | '/accounts' | '/notion' | '/plaid-oauth' | '/policy' | '/settings'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/accounts' | '/notion' | '/plaid-oauth' | '/settings'
-  id: '__root__' | '/' | '/accounts' | '/notion' | '/plaid-oauth' | '/settings'
+  to: '/' | '/accounts' | '/notion' | '/plaid-oauth' | '/policy' | '/settings'
+  id:
+    | '__root__'
+    | '/'
+    | '/accounts'
+    | '/notion'
+    | '/plaid-oauth'
+    | '/policy'
+    | '/settings'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -76,6 +93,7 @@ export interface RootRouteChildren {
   AccountsRoute: typeof AccountsRoute
   NotionRoute: typeof NotionRoute
   PlaidOauthRoute: typeof PlaidOauthRoute
+  PolicyRoute: typeof PolicyRoute
   SettingsRoute: typeof SettingsRoute
 }
 
@@ -109,6 +127,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof PlaidOauthRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/policy': {
+      id: '/policy'
+      path: '/policy'
+      fullPath: '/policy'
+      preLoaderRoute: typeof PolicyRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/settings': {
       id: '/settings'
       path: '/settings'
@@ -124,6 +149,7 @@ const rootRouteChildren: RootRouteChildren = {
   AccountsRoute: AccountsRoute,
   NotionRoute: NotionRoute,
   PlaidOauthRoute: PlaidOauthRoute,
+  PolicyRoute: PolicyRoute,
   SettingsRoute: SettingsRoute,
 }
 export const routeTree = rootRouteImport

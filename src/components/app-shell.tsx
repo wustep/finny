@@ -1,9 +1,11 @@
 import { useAuthActions } from "@convex-dev/auth/react";
 import { Link } from "@tanstack/react-router";
 import { useQuery } from "convex/react";
-import { Landmark, LogOut, Settings, Wallet } from "lucide-react";
+import { Landmark, LogOut, Settings } from "lucide-react";
 import type { ReactNode } from "react";
 import { api } from "../../convex/_generated/api";
+import { AppIcon } from "@/components/app-icon";
+import { UNLOCKED_FLAG } from "@/components/access-gate";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -28,6 +30,44 @@ function NotionGlyph({ className }: { className?: string }) {
   );
 }
 
+// Chrome for public pages (e.g. /policy). Signed-in + unlocked users get
+// the full app shell; a device that unlocked before but is signed out gets
+// a Log in button; everyone else sees the logo alone.
+export function PublicShell({ children }: { children: ReactNode }) {
+  const viewer = useQuery(api.users.viewer);
+  const unlockedBefore = (() => {
+    try {
+      return localStorage.getItem(UNLOCKED_FLAG) === "1";
+    } catch {
+      return false;
+    }
+  })();
+
+  if (viewer?.accessGranted) {
+    return <AppShell>{children}</AppShell>;
+  }
+  return (
+    <div className="flex min-h-svh flex-col">
+      <header className="sticky top-0 z-10 border-b bg-background/95 backdrop-blur">
+        <div className="mx-auto flex h-14 w-full max-w-5xl items-center px-4">
+          <Link to="/" className="flex items-center gap-2 font-semibold">
+            <AppIcon className="size-6 rounded-md" />
+            Finny
+          </Link>
+          {viewer === null && unlockedBefore ? (
+            <Button asChild size="sm" variant="outline" className="ml-auto">
+              <Link to="/">Log in</Link>
+            </Button>
+          ) : null}
+        </div>
+      </header>
+      <main className="mx-auto w-full max-w-5xl flex-1 px-4 py-8">
+        {children}
+      </main>
+    </div>
+  );
+}
+
 export function AppShell({ children }: { children: ReactNode }) {
   const { signOut } = useAuthActions();
   const viewer = useQuery(api.users.viewer);
@@ -37,7 +77,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       <header className="sticky top-0 z-10 border-b bg-background/95 backdrop-blur">
         <div className="mx-auto flex h-14 w-full max-w-5xl items-center gap-6 px-4">
           <Link to="/" className="flex items-center gap-2 font-semibold">
-            <Wallet className="size-5" />
+            <AppIcon className="size-6 rounded-md" />
             Finny
           </Link>
           <nav className="flex items-center gap-1 text-sm">
