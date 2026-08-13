@@ -132,6 +132,17 @@ export const setCursor = internalMutation({
   },
 });
 
+export const getUserIdByEmail = internalQuery({
+  args: { email: v.string() },
+  handler: async (ctx, args) => {
+    const user = await ctx.db
+      .query("users")
+      .withIndex("email", (q) => q.eq("email", args.email))
+      .unique();
+    return user?._id ?? null;
+  },
+});
+
 // Forget every page this app has created for a user, in bounded batches so a
 // large history cannot blow the mutation limit. Returns true while more
 // remain.

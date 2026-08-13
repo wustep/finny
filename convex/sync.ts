@@ -120,25 +120,42 @@ export const resetAndResync = action({
     if (!hasAccess) {
       throw new Error("Access password required");
     }
-
-    while (
-      await ctx.runMutation(internal.syncData.clearMapEntries, { userId })
-    ) {
-      // Batched; keep going until the table is empty for this user.
-    }
-    const connectionIds = await ctx.runMutation(
-      internal.syncData.clearCursors,
-      { userId },
-    );
-    for (const connectionId of connectionIds) {
-      await ctx.scheduler.runAfter(0, internal.sync.runForConnection, {
-        connectionId,
-        trigger: "manual",
-      });
-    }
-    return { connections: connectionIds.length };
+    return await resetUser(ctx, userId);
   },
 });
+
+// Same thing for `npx convex run`, which has no signed-in user to read.
+export const resetAndResyncByEmail = internalAction({
+  args: { email: v.string() },
+  handler: async (ctx, args): Promise<{ connections: number }> => {
+    const userId = await ctx.runQuery(internal.syncData.getUserIdByEmail, {
+      email: args.email,
+    });
+    if (!userId) {
+      throw new Error(`No user with email ${args.email}`);
+    }
+    return await resetUser(ctx, userId);
+  },
+});
+
+async function resetUser(
+  ctx: ActionCtx,
+  userId: Id<"users">,
+): Promise<{ connections: number }> {
+  while (await ctx.runMutation(internal.syncData.clearMapEntries, { userId })) {
+    // Batched; keep going until the table is empty for this user.
+  }
+  const connectionIds = await ctx.runMutation(internal.syncData.clearCursors, {
+    userId,
+  });
+  for (const connectionId of connectionIds) {
+    await ctx.scheduler.runAfter(0, internal.sync.runForConnection, {
+      connectionId,
+      trigger: "manual",
+    });
+  }
+  return { connections: connectionIds.length };
+}
 
 // ---------- stage 1: connection, accounts, balances, holdings ----------
 
