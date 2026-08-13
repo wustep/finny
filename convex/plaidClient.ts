@@ -6,7 +6,7 @@ export function plaidClient() {
   const clientId = process.env.PLAID_CLIENT_ID;
   const secret = process.env.PLAID_SECRET;
   if (!clientId || !secret) {
-    throw new Error("PLAID_CLIENT_ID / PLAID_SECRET not set — see SETUP.md");
+    throw new Error("PLAID_CLIENT_ID / PLAID_SECRET not set — see README.md");
   }
   return new PlaidApi(
     new Configuration({

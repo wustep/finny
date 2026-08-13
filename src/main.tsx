@@ -27,7 +27,7 @@ if (!convexUrl) {
       <h1>Finny isn&apos;t configured yet</h1>
       <p>
         <code>VITE_CONVEX_URL</code> is missing. Run <code>npx convex dev</code>{" "}
-        to provision the backend — see SETUP.md.
+        to provision the backend — see README.md.
       </p>
     </div>,
   );

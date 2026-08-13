@@ -110,7 +110,7 @@ export const startOAuth = action({
     await requireAccess(ctx, userId);
     const clientId = process.env.NOTION_CLIENT_ID;
     if (!clientId) {
-      throw new Error("NOTION_CLIENT_ID not set — see SETUP.md");
+      throw new Error("NOTION_CLIENT_ID not set — see README.md");
     }
     const origin =
       args.origin && allowedOrigins().includes(args.origin)
