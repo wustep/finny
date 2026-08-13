@@ -53,6 +53,9 @@ export default defineSchema({
     type: v.string(),
     subtype: v.optional(v.string()),
     syncEnabled: v.boolean(),
+    // User-chosen display name; overrides the derived
+    // "<Institution> <Product> *<mask>" title everywhere it's synced.
+    customName: v.optional(v.string()),
   })
     .index("by_user", ["userId"])
     .index("by_connection", ["connectionId"])

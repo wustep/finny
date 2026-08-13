@@ -3,12 +3,13 @@ import { useAction, useMutation, useQuery } from "convex/react";
 import {
   Landmark,
   MoreHorizontal,
+  Pencil,
   Plus,
   RefreshCw,
   Trash2,
   Wrench,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { toast } from "sonner";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
@@ -36,6 +37,8 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 
@@ -151,6 +154,82 @@ type ConnectionData = NonNullable<
   ReturnType<typeof useQuery<typeof api.connections.list>>
 >[number];
 
+type AccountData = ConnectionData["accounts"][number];
+
+function RenameAccountDialog({
+  account,
+  onClose,
+}: {
+  account: AccountData | null;
+  onClose: () => void;
+}) {
+  const renameAccount = useAction(api.connections.renameAccount);
+  const [name, setName] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  // Seed the input each time a different account is opened.
+  useEffect(() => {
+    setName(account?.customName ?? account?.originalName ?? "");
+  }, [account]);
+
+  const handleSave = (event: FormEvent) => {
+    event.preventDefault();
+    if (!account) {
+      return;
+    }
+    setSaving(true);
+    renameAccount({ accountId: account.id as Id<"accounts">, name })
+      .then(() => {
+        toast.success("Account renamed");
+        onClose();
+      })
+      .catch((error: unknown) => {
+        console.error(error);
+        toast.error("Failed to rename account");
+      })
+      .finally(() => setSaving(false));
+  };
+
+  return (
+    <Dialog open={account !== null} onOpenChange={(open) => !open && onClose()}>
+      <DialogContent>
+        <form onSubmit={handleSave}>
+          <DialogHeader>
+            <DialogTitle>Rename account</DialogTitle>
+            <DialogDescription>
+              This name is used in the Notion Accounts database. Leave it
+              empty to go back to the name from your bank.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex flex-col gap-2 py-4">
+            <Label htmlFor="account-name">Name</Label>
+            <Input
+              id="account-name"
+              autoFocus
+              value={name}
+              placeholder={account?.originalName}
+              onChange={(event) => setName(event.target.value)}
+            />
+          </div>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={onClose}
+              disabled={saving}
+            >
+              Cancel
+            </Button>
+            <Button type="submit" disabled={saving}>
+              {saving ? "Saving…" : "Save"}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function ConnectionCard({ connection }: { connection: ConnectionData }) {
   const toggleAccountSync = useMutation(api.connections.toggleAccountSync);
   const removeConnection = useAction(api.plaid.removeConnection);
@@ -161,6 +240,7 @@ function ConnectionCard({ connection }: { connection: ConnectionData }) {
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [removing, setRemoving] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  const [renaming, setRenaming] = useState<AccountData | null>(null);
 
   const handleSync = () => {
     setSyncing(true);
@@ -262,6 +342,15 @@ function ConnectionCard({ connection }: { connection: ConnectionData }) {
                   {account.subtype ?? account.type}
                 </div>
               </div>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-8 text-muted-foreground"
+                aria-label={`Rename ${account.name}`}
+                onClick={() => setRenaming(account)}
+              >
+                <Pencil className="size-3.5" />
+              </Button>
               <Switch
                 checked={account.syncEnabled}
                 onCheckedChange={(enabled) =>
@@ -275,6 +364,11 @@ function ConnectionCard({ connection }: { connection: ConnectionData }) {
           ))}
         </ul>
       </CardContent>
+
+      <RenameAccountDialog
+        account={renaming}
+        onClose={() => setRenaming(null)}
+      />
 
       <Dialog open={confirmRemove} onOpenChange={setConfirmRemove}>
         <DialogContent>

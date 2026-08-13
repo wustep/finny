@@ -1,11 +1,14 @@
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { v } from "convex/values";
+import { internal } from "./_generated/api";
 import {
+  action,
   internalMutation,
   internalQuery,
   mutation,
   query,
 } from "./_generated/server";
+import { P, accountTitle, updatePage } from "./notionApi";
 
 // Bank connections + their accounts for the Accounts page.
 // Access tokens never leave the server.
@@ -37,7 +40,9 @@ export const list = query({
           lastSyncedAt: connection.lastSyncedAt,
           accounts: accounts.map((account) => ({
             id: account._id,
-            name: account.name,
+            name: account.customName ?? account.name,
+            originalName: account.name,
+            customName: account.customName,
             mask: account.mask,
             type: account.type,
             subtype: account.subtype,
@@ -61,6 +66,88 @@ export const toggleAccountSync = mutation({
       throw new Error("Account not found");
     }
     await ctx.db.patch(args.accountId, { syncEnabled: args.enabled });
+  },
+});
+
+// Rename an account. Writes the new title straight to the Notion Accounts
+// row so the change shows up without waiting for the next sync; subsequent
+// syncs keep using it (see accountTitle in notionApi.ts).
+export const renameAccount = action({
+  args: {
+    accountId: v.id("accounts"),
+    name: v.string(),
+  },
+  handler: async (ctx, args): Promise<void> => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) {
+      throw new Error("Not signed in");
+    }
+    const hasAccess = await ctx.runQuery(internal.access.hasAccessInternal, {
+      userId,
+    });
+    if (!hasAccess) {
+      throw new Error("Access password required");
+    }
+
+    // Empty name clears the override and reverts to the derived title.
+    const customName = args.name.trim().slice(0, 200) || undefined;
+    const account = await ctx.runMutation(
+      internal.connections.setAccountName,
+      { userId, accountId: args.accountId, customName },
+    );
+
+    const notion = await ctx.runQuery(internal.notion.getConnectionInternal, {
+      userId,
+    });
+    if (!notion?.databases?.accounts) {
+      return;
+    }
+    const pages = await ctx.runQuery(internal.syncData.getMapEntries, {
+      userId,
+      kind: "account",
+      providerIds: [account.plaidAccountId],
+    });
+    const pageId = pages[account.plaidAccountId];
+    if (!pageId) {
+      // Not synced to Notion yet; the next sync will use the new name.
+      return;
+    }
+    await updatePage(notion.accessToken, pageId, {
+      "Account Name": P.title(
+        accountTitle(
+          account.institutionName,
+          {
+            name: account.name,
+            official_name: account.officialName,
+            mask: account.mask,
+          },
+          customName,
+        ),
+      ),
+    });
+  },
+});
+
+export const setAccountName = internalMutation({
+  args: {
+    userId: v.id("users"),
+    accountId: v.id("accounts"),
+    customName: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const account = await ctx.db.get(args.accountId);
+    if (!account || account.userId !== args.userId) {
+      throw new Error("Account not found");
+    }
+    await ctx.db.patch(args.accountId, { customName: args.customName });
+    const connection = await ctx.db.get(account.connectionId);
+    return {
+      plaidAccountId: account.plaidAccountId,
+      name: account.name,
+      officialName: account.officialName,
+      mask: account.mask,
+      institutionName: connection?.institutionName ?? "Bank",
+    };
   },
 });
 

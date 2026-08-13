@@ -136,6 +136,11 @@ export const runForConnection = internalAction({
       const token = notion.accessToken;
       const enabled = accounts.filter((account) => account.syncEnabled);
       const enabledIds = new Set(enabled.map((a) => a.plaidAccountId));
+      const customNames = new Map(
+        accounts
+          .filter((a) => a.customName)
+          .map((a) => [a.plaidAccountId, a.customName as string]),
+      );
 
       // 1. Bank Connection page
       const connectionPageId = await upsertMapped(ctx, connection.userId, {
@@ -194,6 +199,7 @@ export const runForConnection = internalAction({
             account,
             credit[account.account_id],
             connectionPageId,
+            customNames.get(account.account_id),
           ),
           runId,
         });
@@ -209,7 +215,11 @@ export const runForConnection = internalAction({
             databaseId: databases.balanceHistory,
             properties: {
               Summary: P.title(
-                `${day} · ${accountTitle(connection.institutionName, account)}`,
+                `${day} · ${accountTitle(
+                  connection.institutionName,
+                  account,
+                  customNames.get(account.account_id),
+                )}`,
               ),
               Account: P.relation(pageId),
               Balance: P.number(balanceForNotion(account)),
@@ -898,12 +908,13 @@ function accountProperties(
   account: AccountBase,
   credit: CreditCardLiability | undefined,
   connectionPageId: string,
+  customName?: string,
 ) {
   const apr = credit?.aprs?.find(
     (entry) => entry.apr_type === "purchase_apr",
   )?.apr_percentage;
   return {
-    "Account Name": P.title(accountTitle(institutionName, account)),
+    "Account Name": P.title(accountTitle(institutionName, account, customName)),
     ID: P.text(account.account_id),
     "Account Type": P.select(account.type),
     "Account Subtype": P.select(

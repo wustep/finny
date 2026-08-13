@@ -123,7 +123,8 @@ export function categoryName(detailed: string, primary: string): string {
   return titleCase(rest);
 }
 
-// "Chase" + "Freedom Unlimited" + "7449" -> "Chase Freedom Unlimited *7449"
+// "Chase" + "Freedom Unlimited" + "7449" -> "Chase Freedom Unlimited *7449",
+// unless the user renamed the account, in which case their name wins.
 export function accountTitle(
   institutionName: string,
   account: {
@@ -131,7 +132,11 @@ export function accountTitle(
     official_name?: string | null;
     mask?: string | null;
   },
+  customName?: string,
 ): string {
+  if (customName) {
+    return customName;
+  }
   const base =
     account.official_name && account.official_name.length >= account.name.length
       ? account.official_name
