@@ -5,6 +5,28 @@ import { toast } from "sonner";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 
+// OAuth institutions leave the page mid-Link; the session is stashed here so
+// the /plaid-oauth route can resume it after the bank redirects back.
+export const PLAID_LINK_SESSION_KEY = "finny_plaid_link_session";
+
+export interface PlaidLinkSession {
+  token: string;
+  connectionId: string | null;
+}
+
+export function readPlaidLinkSession(): PlaidLinkSession | null {
+  try {
+    const raw = sessionStorage.getItem(PLAID_LINK_SESSION_KEY);
+    return raw ? (JSON.parse(raw) as PlaidLinkSession) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function clearPlaidLinkSession() {
+  sessionStorage.removeItem(PLAID_LINK_SESSION_KEY);
+}
+
 // Fetches a link token on demand, opens Plaid Link once it's ready, and
 // exchanges the public token on success. Pass connectionId to run Link in
 // update mode (reconnect) instead of creating a new connection.
@@ -23,6 +45,7 @@ export function usePlaidConnect(options?: {
     token,
     onSuccess: (publicToken) => {
       setToken(null);
+      clearPlaidLinkSession();
       if (connectionId) {
         // Update mode: credentials fixed at Plaid; nothing to exchange.
         toast.success("Connection repaired");
@@ -40,6 +63,7 @@ export function usePlaidConnect(options?: {
     },
     onExit: () => {
       setToken(null);
+      clearPlaidLinkSession();
       setBusy(false);
     },
   });
@@ -52,11 +76,22 @@ export function usePlaidConnect(options?: {
 
   const start = useCallback(() => {
     setBusy(true);
+    const origin = window.location.origin;
     const request = connectionId
-      ? createUpdateLinkToken({ connectionId })
-      : createLinkToken();
+      ? createUpdateLinkToken({ connectionId, origin })
+      : createLinkToken({ origin });
     request
-      .then(setToken)
+      .then((linkToken) => {
+        // Stash for the OAuth return leg before Link opens.
+        sessionStorage.setItem(
+          PLAID_LINK_SESSION_KEY,
+          JSON.stringify({
+            token: linkToken,
+            connectionId: connectionId ?? null,
+          } satisfies PlaidLinkSession),
+        );
+        setToken(linkToken);
+      })
       .catch((error: unknown) => {
         console.error(error);
         toast.error("Could not start Plaid Link — are the Plaid keys set?");

@@ -7,9 +7,23 @@ import { decodeProtectedHeader, importJWK, jwtVerify } from "jose";
 import { CountryCode, Products } from "plaid";
 import { internal } from "./_generated/api";
 import { action, internalAction } from "./_generated/server";
+import { allowedOrigins } from "./origins";
 import { plaidClient } from "./plaidClient";
 
 const WEBHOOK_URL = () => `${process.env.CONVEX_SITE_URL}/plaid/webhook`;
+
+// OAuth institutions (Chase etc.) bounce the user to the bank and back to
+// this app URL. Only used in production; the exact URIs must be registered
+// in the Plaid dashboard under Allowed redirect URIs.
+function oauthRedirectUri(origin: string | undefined): string | undefined {
+  if (process.env.PLAID_ENV !== "production") {
+    return undefined;
+  }
+  if (!origin || !allowedOrigins().includes(origin)) {
+    return undefined;
+  }
+  return `${origin}/plaid-oauth`;
+}
 
 // Actions that consume Plaid Items are gated behind the access password.
 async function requireAccess(
@@ -23,8 +37,8 @@ async function requireAccess(
 }
 
 export const createLinkToken = action({
-  args: {},
-  handler: async (ctx): Promise<string> => {
+  args: { origin: v.optional(v.string()) },
+  handler: async (ctx, args): Promise<string> => {
     const userId = await getAuthUserId(ctx);
     if (userId === null) {
       throw new Error("Not signed in");
@@ -43,6 +57,7 @@ export const createLinkToken = action({
       optional_products: [Products.Investments, Products.Liabilities],
       transactions: { days_requested: 730 },
       webhook: WEBHOOK_URL(),
+      redirect_uri: oauthRedirectUri(args.origin),
     });
     return response.data.link_token;
   },
@@ -50,7 +65,10 @@ export const createLinkToken = action({
 
 // Link update mode, for reconnecting a broken connection.
 export const createUpdateLinkToken = action({
-  args: { connectionId: v.id("bankConnections") },
+  args: {
+    connectionId: v.id("bankConnections"),
+    origin: v.optional(v.string()),
+  },
   handler: async (ctx, args): Promise<string> => {
     const userId = await getAuthUserId(ctx);
     if (userId === null) {
@@ -71,6 +89,7 @@ export const createUpdateLinkToken = action({
       country_codes: [CountryCode.Us, CountryCode.Ca],
       access_token: connection.accessToken,
       webhook: WEBHOOK_URL(),
+      redirect_uri: oauthRedirectUri(args.origin),
     });
     return response.data.link_token;
   },
