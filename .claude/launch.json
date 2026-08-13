@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "finny",
+      "url": "http://localhost:3466",
+      "port": 3466
+    },
+    {
+      "name": "finny-server",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "port": 3466,
+      "autoPort": false
+    }
+  ]
+}
