@@ -30,6 +30,17 @@ export default defineSchema({
     institutionId: v.optional(v.string()),
     institutionName: v.string(),
     institutionLogo: v.optional(v.string()),
+    // Which Plaid environment this Item lives in — access tokens only work
+    // against the environment that issued them. Absent on connections made
+    // before this was tracked; those predate local sandbox linking and are
+    // production.
+    plaidEnv: v.optional(
+      v.union(v.literal("sandbox"), v.literal("production")),
+    ),
+    // Notion file upload id for institutionLogo, so the logo is uploaded
+    // once and then reused as the page icon for this connection and every
+    // account under it.
+    notionIconFileUploadId: v.optional(v.string()),
     status: v.union(
       v.literal("active"),
       v.literal("error"),
@@ -116,6 +127,9 @@ export default defineSchema({
     // Plaid id, or composite key: holdings = `${accountId}|${securityId}`,
     // balance snapshots = `${accountId}|${YYYY-MM-DD}`
     providerId: v.string(),
+    // Set while a sync holds a claim on this key but has not created the
+    // Notion page yet; such a row carries an empty notionPageId.
+    claimedAt: v.optional(v.number()),
     notionPageId: v.string(),
   }).index("by_user_kind_provider", ["userId", "kind", "providerId"]),
 

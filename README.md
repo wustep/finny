@@ -119,7 +119,37 @@ guesses are rate-limited: **3 consecutive failures ban the caller's IP**
 npx convex env set ACCESS_PASSWORD <password-you-share-with-users>
 ```
 
-### 7. Run it
+### 7. Local development shortcuts (optional)
+
+Two conveniences that only ever apply locally:
+
+**Sign in without Google.** Set a secret on the deployment and the same
+value in `.env.local` (gitignored, and never set in Vercel):
+
+```bash
+npx convex env set TEST_LOGIN_SECRET "$(openssl rand -hex 24)"
+```
+
+Put that value in `.env.local` as `VITE_TEST_LOGIN_SECRET=…`. A
+"Continue as tester" button then appears on the sign-in card and logs you
+in as `test@wustep.me`, pre-cleared past the access password. Deployed
+builds have no copy of the secret, so the button is absent there and the
+backend rejects the provider without it.
+
+**Link banks against the Sandbox even when the deployment is on
+production.** Add the Sandbox secret from the Plaid dashboard:
+
+```bash
+npx convex env set PLAID_SANDBOX_SECRET <sandbox-secret>
+```
+
+Connections started from `localhost` then use the Sandbox
+(`user_good` / `pass_good`), while the deployed app keeps using
+production — so local testing never burns real Plaid Items. Each
+connection records which environment it belongs to, and every later call
+for it (sync, reconnect, remove, webhooks) uses that environment.
+
+### 8. Run it
 
 ```bash
 npm run dev
@@ -186,5 +216,8 @@ All on the Convex deployment (`npx convex env set KEY value`) unless noted.
 | `PLAID_CLIENT_ID`, `PLAID_SECRET`, `PLAID_ENV` | Plaid credentials (`sandbox` or `production`) |
 | `NOTION_CLIENT_ID`, `NOTION_CLIENT_SECRET` | Notion public integration |
 | `ACCESS_PASSWORD` | Shared invite password (plaintext env var) |
+| `TEST_LOGIN_SECRET` | Optional; enables the local "Continue as tester" button |
+| `PLAID_SANDBOX_SECRET` | Optional; lets localhost link Sandbox banks while prod stays production |
+| `VITE_TEST_LOGIN_SECRET` | **`.env.local` only**: must match `TEST_LOGIN_SECRET` |
 | `APP_ORIGINS` | Optional comma-separated extra app origins (e.g. your Vercel URL) |
 | `VITE_CONVEX_URL` | **Vercel/build-time**: the deployment's .convex.cloud URL |

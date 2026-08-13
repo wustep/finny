@@ -1,16 +1,39 @@
 // Shared Plaid client factory. Only import from "use node" files.
 import { Configuration, PlaidApi, PlaidEnvironments } from "plaid";
 
-export function plaidClient() {
-  const env = process.env.PLAID_ENV ?? "sandbox";
+export type PlaidEnv = "sandbox" | "production";
+
+export function configuredPlaidEnv(): PlaidEnv {
+  return process.env.PLAID_ENV === "production" ? "production" : "sandbox";
+}
+
+// Local development always talks to the Sandbox, even when the deployment
+// is pointed at production, so testing never burns real Plaid Items (the
+// Trial plan's 10-Item cap is a lifetime one). Requires
+// PLAID_SANDBOX_SECRET; without it there's nothing to fall back to.
+export function plaidEnvForOrigin(origin: string | undefined): PlaidEnv {
+  if (configuredPlaidEnv() === "sandbox") {
+    return "sandbox";
+  }
+  const isLocal = !!origin && /^https?:\/\/localhost(:\d+)?$/.test(origin);
+  return isLocal && process.env.PLAID_SANDBOX_SECRET ? "sandbox" : "production";
+}
+
+// Access tokens are environment-specific, so every call for an existing
+// connection must use the environment that connection was created in.
+export function plaidClient(env?: PlaidEnv) {
+  const resolved = env ?? configuredPlaidEnv();
   const clientId = process.env.PLAID_CLIENT_ID;
-  const secret = process.env.PLAID_SECRET;
+  const secret =
+    resolved === "sandbox"
+      ? (process.env.PLAID_SANDBOX_SECRET ?? process.env.PLAID_SECRET)
+      : process.env.PLAID_SECRET;
   if (!clientId || !secret) {
     throw new Error("PLAID_CLIENT_ID / PLAID_SECRET not set — see README.md");
   }
   return new PlaidApi(
     new Configuration({
-      basePath: PlaidEnvironments[env],
+      basePath: PlaidEnvironments[resolved],
       baseOptions: {
         headers: { "PLAID-CLIENT-ID": clientId, "PLAID-SECRET": secret },
       },

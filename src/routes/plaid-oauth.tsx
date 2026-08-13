@@ -40,7 +40,7 @@ function PlaidOAuthReturn() {
         void navigate({ to: "/" });
         return;
       }
-      exchangePublicToken({ publicToken })
+      exchangePublicToken({ publicToken, origin: window.location.origin })
         .then(() => toast.success("Bank connected"))
         .catch(() => toast.error("Failed to save the connection"))
         .finally(() => void navigate({ to: "/" }));

@@ -167,18 +167,9 @@ export const DATABASE_SPECS: DatabaseSpec[] = [
       Security: relation(ids.securities),
       Quantity: plainNumber,
       "Cost Basis": dollar,
-      // Rollup feeds the Market Value formula; sum over a single relation
-      // is just the security's close price.
-      "Security Price": {
-        rollup: {
-          relation_property_name: "Security",
-          rollup_property_name: "Close Price",
-          function: "sum",
-        },
-      },
-      "Market Value": {
-        formula: { expression: 'prop("Quantity") * prop("Security Price")' },
-      },
+      // Market value is left to the user: Notion rejects a rollup that points
+      // at a relation created in the same request, so a Security Price rollup
+      // and a Quantity * price formula have to be added by hand afterwards.
       "Last Update": date,
     }),
   },

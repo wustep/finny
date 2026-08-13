@@ -211,6 +211,18 @@ export const recentRuns = query({
   },
 });
 
+export const setNotionIconFileUpload = internalMutation({
+  args: {
+    connectionId: v.id("bankConnections"),
+    fileUploadId: v.string(),
+  },
+  handler: async (ctx, args) => {
+    await ctx.db.patch(args.connectionId, {
+      notionIconFileUploadId: args.fileUploadId,
+    });
+  },
+});
+
 // Insert or update (reconnect / re-link) a connection and its accounts.
 export const saveConnection = internalMutation({
   args: {
@@ -220,6 +232,9 @@ export const saveConnection = internalMutation({
     institutionId: v.optional(v.string()),
     institutionName: v.string(),
     institutionLogo: v.optional(v.string()),
+    plaidEnv: v.optional(
+      v.union(v.literal("sandbox"), v.literal("production")),
+    ),
     accounts: v.array(
       v.object({
         plaidAccountId: v.string(),
@@ -247,6 +262,11 @@ export const saveConnection = internalMutation({
         institutionId: args.institutionId,
         institutionName: args.institutionName,
         institutionLogo: args.institutionLogo,
+        // A different logo means the uploaded copy no longer matches.
+        notionIconFileUploadId:
+          existing.institutionLogo === args.institutionLogo
+            ? existing.notionIconFileUploadId
+            : undefined,
         status: "active",
         errorCode: undefined,
       });
@@ -259,6 +279,7 @@ export const saveConnection = internalMutation({
         institutionId: args.institutionId,
         institutionName: args.institutionName,
         institutionLogo: args.institutionLogo,
+        plaidEnv: args.plaidEnv,
         status: "active",
       });
     }

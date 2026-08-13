@@ -360,22 +360,7 @@ export const createDatabases = action({
               properties,
             },
           });
-        const properties = spec.properties(created);
-        let data;
-        try {
-          data = await create(properties);
-        } catch (error) {
-          // The Holdings rollup+formula combo is the one schema Notion might
-          // reject in a single create call; retry without it rather than
-          // failing the whole setup.
-          if (spec.key !== "holdings") {
-            throw error;
-          }
-          console.error("holdings formula rejected, retrying without", error);
-          const { "Security Price": _rollup, "Market Value": _formula, ...rest } =
-            properties as Record<string, unknown>;
-          data = await create(rest);
-        }
+        const data = await create(spec.properties(created));
         created[spec.key] = data.id as string;
       }
     } finally {

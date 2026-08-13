@@ -35,9 +35,14 @@ import {
   archivePage,
   categoryName,
   createPage,
+  externalIcon,
+  fileUploadIcon,
+  findPageByText,
+  setPageIcon,
   titleCase,
   todayUTC,
   updatePage,
+  uploadDataUri,
 } from "./notionApi";
 import { plaidClient } from "./plaidClient";
 
@@ -94,6 +99,47 @@ export const triggerManual = action({
   },
 });
 
+// Rebuild everything from scratch: forget every Notion page id this app has
+// recorded, rewind the transactions cursors, and start a fresh sync for each
+// connection.
+//
+// Delete the rows in Notion *before* running this. Nothing here touches
+// Notion, so any rows left behind stay behind, and the rebuild writes new
+// ones alongside them. Categories are the exception — those are matched back
+// up by their ID property (see ensureCategoryPage).
+export const resetAndResync = action({
+  args: {},
+  handler: async (ctx): Promise<{ connections: number }> => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) {
+      throw new Error("Not signed in");
+    }
+    const hasAccess = await ctx.runQuery(internal.access.hasAccessInternal, {
+      userId,
+    });
+    if (!hasAccess) {
+      throw new Error("Access password required");
+    }
+
+    while (
+      await ctx.runMutation(internal.syncData.clearMapEntries, { userId })
+    ) {
+      // Batched; keep going until the table is empty for this user.
+    }
+    const connectionIds = await ctx.runMutation(
+      internal.syncData.clearCursors,
+      { userId },
+    );
+    for (const connectionId of connectionIds) {
+      await ctx.scheduler.runAfter(0, internal.sync.runForConnection, {
+        connectionId,
+        trigger: "manual",
+      });
+    }
+    return { connections: connectionIds.length };
+  },
+});
+
 // ---------- stage 1: connection, accounts, balances, holdings ----------
 
 export const runForConnection = internalAction({
@@ -131,7 +177,7 @@ export const runForConnection = internalAction({
     });
 
     try {
-      const client = plaidClient();
+      const client = plaidClient(connection.plaidEnv ?? "production");
       const databases = notion.databases!;
       const token = notion.accessToken;
       const enabled = accounts.filter((account) => account.syncEnabled);
@@ -141,6 +187,8 @@ export const runForConnection = internalAction({
           .filter((a) => a.customName)
           .map((a) => [a.plaidAccountId, a.customName as string]),
       );
+
+      const icon = institutionIcon(ctx, connection, token);
 
       // 1. Bank Connection page
       const connectionPageId = await upsertMapped(ctx, connection.userId, {
@@ -161,6 +209,7 @@ export const runForConnection = internalAction({
           "Last Update": P.date(new Date().toISOString()),
         },
         runId,
+        icon,
       });
 
       // 2. Accounts (+ credit liabilities when available)
@@ -202,6 +251,7 @@ export const runForConnection = internalAction({
             customNames.get(account.account_id),
           ),
           runId,
+          icon,
         });
         accountPages[account.account_id] = pageId;
 
@@ -292,7 +342,7 @@ export const transactionsBatch = internalAction({
     const userId = connection.userId;
 
     try {
-      const client = plaidClient();
+      const client = plaidClient(connection.plaidEnv ?? "production");
       const response = await client.transactionsSync({
         access_token: connection.accessToken,
         cursor: connection.transactionsCursor,
@@ -341,18 +391,18 @@ export const transactionsBatch = internalAction({
         if (categoryPages[pfc.detailed]) {
           return categoryPages[pfc.detailed];
         }
-        const page = await createPage(token, databases.categories, {
-          Name: P.title(categoryName(pfc.detailed, pfc.primary)),
-          ID: P.text(pfc.detailed),
-          "Category Group": P.select(titleCase(pfc.primary)),
-        });
-        categoryPages[pfc.detailed] = page.id;
-        await ctx.runMutation(internal.syncData.putMapEntries, {
+        const pageId = await ensureCategoryPage(ctx, {
           userId,
-          kind: "category",
-          entries: [{ providerId: pfc.detailed, notionPageId: page.id }],
+          token,
+          databaseId: databases.categories,
+          detailed: pfc.detailed,
+          primary: pfc.primary,
+          iconUrl: txn.personal_finance_category_icon_url ?? undefined,
         });
-        return page.id as string;
+        if (pageId) {
+          categoryPages[pfc.detailed] = pageId;
+        }
+        return pageId;
       };
 
       for (const txn of added) {
@@ -366,17 +416,20 @@ export const transactionsBatch = internalAction({
         try {
           const categoryPage = await ensureCategory(txn);
           const properties = transactionProperties(txn, accountPage, categoryPage);
+          // Merchant logos ride along in the request we are already making,
+          // so keeping them current costs no extra calls.
+          const icon = transactionIcon(txn);
           const existing = txnPages[txn.transaction_id];
           const pendingPage = txn.pending_transaction_id
             ? txnPages[txn.pending_transaction_id]
             : undefined;
           if (existing) {
-            await updatePage(token, existing, properties);
+            await updatePage(token, existing, properties, icon);
             stats.modified++;
           } else if (pendingPage) {
             // Pending -> posted: update the page we made for the pending
             // transaction and re-key its mapping to the posted id.
-            await updatePage(token, pendingPage, properties);
+            await updatePage(token, pendingPage, properties, icon);
             await ctx.runMutation(internal.syncData.rekeyMapEntry, {
               userId,
               kind: "transaction",
@@ -387,7 +440,12 @@ export const transactionsBatch = internalAction({
             delete txnPages[txn.pending_transaction_id!];
             stats.modified++;
           } else {
-            const page = await createPage(token, databases.transactions, properties);
+            const page = await createPage(
+              token,
+              databases.transactions,
+              properties,
+              icon,
+            );
             newEntries.push({
               providerId: txn.transaction_id,
               notionPageId: page.id,
@@ -412,11 +470,17 @@ export const transactionsBatch = internalAction({
         try {
           const categoryPage = await ensureCategory(txn);
           const properties = transactionProperties(txn, accountPage, categoryPage);
+          const icon = transactionIcon(txn);
           if (pageId) {
-            await updatePage(token, pageId, properties);
+            await updatePage(token, pageId, properties, icon);
             stats.modified++;
           } else {
-            const page = await createPage(token, databases.transactions, properties);
+            const page = await createPage(
+              token,
+              databases.transactions,
+              properties,
+              icon,
+            );
             newEntries.push({
               providerId: txn.transaction_id,
               notionPageId: page.id,
@@ -521,7 +585,7 @@ export const investmentsBatch = internalAction({
     const userId = connection.userId;
 
     try {
-      const client = plaidClient();
+      const client = plaidClient(connection.plaidEnv ?? "production");
       // Full window from the configured start date. The ID map makes
       // re-processing overlap free of duplicates.
       const start = notion.startDate ?? "2000-01-01";
@@ -650,6 +714,127 @@ export const investmentsBatch = internalAction({
 
 // ---------- helpers ----------
 
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Categories belong to the user, not to one connection, so two connections
+// syncing at once can reach the same one. Claim it first: the winner creates
+// the page, the losers wait for it instead of creating a second copy.
+async function ensureCategoryPage(
+  ctx: ActionCtx,
+  input: {
+    userId: Id<"users">;
+    token: string;
+    databaseId: string;
+    detailed: string;
+    primary: string;
+    // Plaid's icon for the category. Keyed on the primary category, so every
+    // detailed category under one primary shares an icon.
+    iconUrl?: string;
+  },
+): Promise<string | null> {
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const claim = await ctx.runMutation(internal.syncData.claimMapEntry, {
+      userId: input.userId,
+      kind: "category",
+      providerId: input.detailed,
+    });
+    if (claim.status === "ready") {
+      return claim.notionPageId;
+    }
+    if (claim.status === "pending") {
+      await sleep(250 * (attempt + 1));
+      continue;
+    }
+    try {
+      // Adopt a row that already carries this id before making another one.
+      // The map and Notion drift apart whenever pages are restored from
+      // trash, or a past duplicate left a row nothing points at.
+      const adopted = await findPageByText(
+        input.token,
+        input.databaseId,
+        "ID",
+        input.detailed,
+      );
+      const pageId =
+        adopted ??
+        ((
+          await createPage(
+            input.token,
+            input.databaseId,
+            {
+              Name: P.title(categoryName(input.detailed, input.primary)),
+              ID: P.text(input.detailed),
+              "Category Group": P.select(titleCase(input.primary)),
+            },
+            input.iconUrl ? externalIcon(input.iconUrl) : undefined,
+          )
+        ).id as string);
+      await ctx.runMutation(internal.syncData.putMapEntries, {
+        userId: input.userId,
+        kind: "category",
+        entries: [{ providerId: input.detailed, notionPageId: pageId }],
+      });
+      return pageId;
+    } catch (error) {
+      // Drop the claim so the next sync retries instead of waiting it out.
+      await ctx.runMutation(internal.syncData.deleteMapEntries, {
+        userId: input.userId,
+        kind: "category",
+        providerIds: [input.detailed],
+      });
+      throw error;
+    }
+  }
+  // The holder of the claim is taking an unusual amount of time. Leave the
+  // transaction uncategorised; the next sync picks it up.
+  console.error("category claim never resolved", input.detailed);
+  return null;
+}
+
+type NotionIcon = Record<string, unknown>;
+
+// Plaid hands us the institution logo as base64, which Notion can only use
+// as a page icon once it has been uploaded. Upload it once per connection
+// and reuse the id for the connection page and every account under it.
+//
+// Returns a thunk rather than the icon itself so nothing is uploaded unless
+// a page is actually created — an upload that never gets attached expires
+// after an hour and would leave a dead id behind.
+function institutionIcon(
+  ctx: ActionCtx,
+  connection: Doc<"bankConnections">,
+  token: string,
+): () => Promise<NotionIcon | undefined> {
+  let pending: Promise<NotionIcon | undefined> | undefined;
+  const resolve = async () => {
+    if (connection.notionIconFileUploadId) {
+      return fileUploadIcon(connection.notionIconFileUploadId);
+    }
+    if (!connection.institutionLogo) {
+      return undefined;
+    }
+    try {
+      const fileUploadId = await uploadDataUri(
+        token,
+        `${connection.institutionName.replace(/[^\w -]/g, "")}.png`,
+        connection.institutionLogo,
+      );
+      await ctx.runMutation(internal.connections.setNotionIconFileUpload, {
+        connectionId: connection._id,
+        fileUploadId,
+      });
+      return fileUploadIcon(fileUploadId);
+    } catch (error) {
+      // An icon is cosmetic; never fail a sync over one.
+      console.error("institution icon upload failed", error);
+      return undefined;
+    }
+  };
+  return () => (pending ??= resolve());
+}
+
 // Create or update the Notion page for a mapped entity; returns the page id.
 async function upsertMapped(
   ctx: ActionCtx,
@@ -669,6 +854,9 @@ async function upsertMapped(
     databaseId: string;
     properties: Record<string, unknown>;
     runId: Id<"syncRuns">;
+    // Applied on creation only, so a later sync never overwrites an icon
+    // the user has since chosen themselves.
+    icon?: () => Promise<NotionIcon | undefined>;
   },
 ): Promise<string> {
   const existing = await ctx.runQuery(internal.syncData.getMapEntries, {
@@ -693,6 +881,16 @@ async function upsertMapped(
     kind: input.kind,
     entries: [{ providerId: input.providerId, notionPageId: page.id }],
   });
+  if (input.icon) {
+    try {
+      const icon = await input.icon();
+      if (icon) {
+        await setPageIcon(input.token, page.id, icon);
+      }
+    } catch (error) {
+      console.error("failed to set page icon", input.providerId, error);
+    }
+  }
   await ctx.runMutation(internal.syncData.addRunStats, {
     runId: input.runId,
     added: 1,
@@ -769,7 +967,7 @@ async function syncHoldings(
   const databases = notion.databases!;
   const token = notion.accessToken;
   const userId = connection.userId;
-  const client = plaidClient();
+  const client = plaidClient(connection.plaidEnv ?? "production");
 
   let holdingsData;
   try {
@@ -880,6 +1078,14 @@ async function syncHoldings(
 // ---------- property mappers ----------
 
 // Plaid: positive = money out. Notion convention: negative = outflow.
+// Plaid enriches known merchants with a hosted logo. Coverage is partial —
+// card transactions far more often than ACH — and a transaction with no
+// merchant behind it simply keeps Notion's default icon.
+function transactionIcon(txn: Transaction) {
+  const url = txn.logo_url ?? txn.counterparties?.[0]?.logo_url;
+  return url ? externalIcon(url) : undefined;
+}
+
 function transactionProperties(
   txn: Transaction,
   accountPageId: string,

@@ -132,6 +132,40 @@ export const setCursor = internalMutation({
   },
 });
 
+// Forget every page this app has created for a user, in bounded batches so a
+// large history cannot blow the mutation limit. Returns true while more
+// remain.
+export const clearMapEntries = internalMutation({
+  args: { userId: v.id("users") },
+  handler: async (ctx, args) => {
+    const BATCH = 500;
+    const entries = await ctx.db
+      .query("notionPageMap")
+      .withIndex("by_user_kind_provider", (q) => q.eq("userId", args.userId))
+      .take(BATCH + 1);
+    for (const entry of entries.slice(0, BATCH)) {
+      await ctx.db.delete(entry._id);
+    }
+    return entries.length > BATCH;
+  },
+});
+
+// Rewind every connection's transactions/sync cursor so the next run replays
+// the full history rather than only what has changed since last time.
+export const clearCursors = internalMutation({
+  args: { userId: v.id("users") },
+  handler: async (ctx, args) => {
+    const connections = await ctx.db
+      .query("bankConnections")
+      .withIndex("by_user", (q) => q.eq("userId", args.userId))
+      .collect();
+    for (const connection of connections) {
+      await ctx.db.patch(connection._id, { transactionsCursor: undefined });
+    }
+    return connections.map((connection) => connection._id);
+  },
+});
+
 // ---------- providerId -> Notion page id map ----------
 
 export const getMapEntries = internalQuery({
@@ -152,7 +186,8 @@ export const getMapEntries = internalQuery({
             .eq("providerId", providerId),
         )
         .unique();
-      if (entry) {
+      // An empty id is an in-flight claim, not a page.
+      if (entry?.notionPageId) {
         result[providerId] = entry.notionPageId;
       }
     }
@@ -170,8 +205,60 @@ export const getAllMapEntries = internalQuery({
       )
       .collect();
     return Object.fromEntries(
-      entries.map((entry) => [entry.providerId, entry.notionPageId]),
+      entries
+        .filter((entry) => entry.notionPageId)
+        .map((entry) => [entry.providerId, entry.notionPageId]),
     );
+  },
+});
+
+// A claim whose owner never came back is up for grabs again. Only one Notion
+// create sits between claim and finish, so this just has to outlast a slow
+// API call and its retries.
+const CLAIM_TIMEOUT_MS = 60_000;
+
+// Reserve the right to create the Notion page for a mapped key.
+//
+// Keys scoped to the user rather than to one connection — categories, and
+// securities — are reachable from several connections' syncs at once, and a
+// plain read-then-create let two overlapping runs each create a page for the
+// same key. Mutations are serializable, so exactly one caller comes away with
+// "create"; the rest get "pending" and wait for it to land.
+export const claimMapEntry = internalMutation({
+  args: {
+    userId: v.id("users"),
+    kind: kindValidator,
+    providerId: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const existing = await ctx.db
+      .query("notionPageMap")
+      .withIndex("by_user_kind_provider", (q) =>
+        q
+          .eq("userId", args.userId)
+          .eq("kind", args.kind)
+          .eq("providerId", args.providerId),
+      )
+      .unique();
+
+    if (existing?.notionPageId) {
+      return { status: "ready" as const, notionPageId: existing.notionPageId };
+    }
+    if (existing) {
+      if (Date.now() - (existing.claimedAt ?? 0) < CLAIM_TIMEOUT_MS) {
+        return { status: "pending" as const };
+      }
+      await ctx.db.patch(existing._id, { claimedAt: Date.now() });
+      return { status: "create" as const };
+    }
+    await ctx.db.insert("notionPageMap", {
+      userId: args.userId,
+      kind: args.kind,
+      providerId: args.providerId,
+      notionPageId: "",
+      claimedAt: Date.now(),
+    });
+    return { status: "create" as const };
   },
 });
 

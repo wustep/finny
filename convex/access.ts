@@ -1,6 +1,7 @@
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { v } from "convex/values";
 import { internalMutation, internalQuery } from "./_generated/server";
+import { timingSafeEqualish } from "./secureCompare";
 
 const MAX_FAILURES = 3;
 
@@ -65,13 +66,3 @@ export const hasAccessInternal = internalQuery({
     return user?.accessGrantedAt !== undefined;
   },
 });
-
-// Constant-time-ish comparison; avoids the obvious early-exit timing leak.
-function timingSafeEqualish(a: string, b: string): boolean {
-  const length = Math.max(a.length, b.length);
-  let mismatch = a.length === b.length ? 0 : 1;
-  for (let i = 0; i < length; i++) {
-    mismatch |= (a.charCodeAt(i) || 0) ^ (b.charCodeAt(i) || 0);
-  }
-  return mismatch === 0;
-}

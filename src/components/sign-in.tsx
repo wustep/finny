@@ -1,4 +1,7 @@
 import { useAuthActions } from "@convex-dev/auth/react";
+import { Loader2, Wrench } from "lucide-react";
+import { useState } from "react";
+import { toast } from "sonner";
 import { AppIcon } from "@/components/app-icon";
 import { Button } from "@/components/ui/button";
 import {
@@ -9,8 +12,40 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 
+// Local-only shortcut past Google. The secret is read from .env.local,
+// which is gitignored and never set in Vercel — so this button is absent
+// from deployed builds, and the backend rejects the provider without it.
+const TEST_LOGIN_SECRET = import.meta.env.VITE_TEST_LOGIN_SECRET as
+  | string
+  | undefined;
+
 export function SignIn() {
   const { signIn } = useAuthActions();
+  // signIn hits a Convex action to mint the OAuth URL before redirecting —
+  // on a cold start that's a few seconds of dead air, so show progress.
+  // Stays true on success: the page is on its way to Google.
+  const [pending, setPending] = useState(false);
+  const [testPending, setTestPending] = useState(false);
+
+  const handleSignIn = () => {
+    setPending(true);
+    signIn("google", { redirectTo: window.location.origin }).catch(() => {
+      setPending(false);
+      toast.error("Couldn't start sign-in — try again");
+    });
+  };
+
+  const handleTestSignIn = () => {
+    if (!TEST_LOGIN_SECRET) {
+      return;
+    }
+    setTestPending(true);
+    signIn("test", { secret: TEST_LOGIN_SECRET })
+      .catch(() => {
+        toast.error("Test login rejected — is TEST_LOGIN_SECRET set?");
+      })
+      .finally(() => setTestPending(false));
+  };
 
   return (
     <div className="flex min-h-svh items-center justify-center p-4">
@@ -22,18 +57,30 @@ export function SignIn() {
             Sync your financial data to Notion
           </CardDescription>
         </CardHeader>
-        <CardContent>
-          <Button
-            className="w-full"
-            onClick={() =>
-              void signIn("google", {
-                redirectTo: window.location.origin,
-              })
-            }
-          >
-            <GoogleIcon />
+        <CardContent className="flex flex-col gap-2">
+          <Button className="w-full" onClick={handleSignIn} disabled={pending}>
+            {pending ? (
+              <Loader2 className="size-4 animate-spin" aria-hidden />
+            ) : (
+              <GoogleIcon />
+            )}
             Continue with Google
           </Button>
+          {TEST_LOGIN_SECRET ? (
+            <Button
+              variant="outline"
+              className="w-full"
+              onClick={handleTestSignIn}
+              disabled={testPending}
+            >
+              {testPending ? (
+                <Loader2 className="size-4 animate-spin" aria-hidden />
+              ) : (
+                <Wrench className="size-4" aria-hidden />
+              )}
+              Continue as tester
+            </Button>
+          ) : null}
         </CardContent>
       </Card>
     </div>

@@ -8,15 +8,23 @@ import { CountryCode, Products } from "plaid";
 import { internal } from "./_generated/api";
 import { action, internalAction } from "./_generated/server";
 import { allowedOrigins } from "./origins";
-import { plaidClient, withPlaidError } from "./plaidClient";
+import {
+  plaidClient,
+  plaidEnvForOrigin,
+  withPlaidError,
+  type PlaidEnv,
+} from "./plaidClient";
 
 const WEBHOOK_URL = () => `${process.env.CONVEX_SITE_URL}/plaid/webhook`;
 
 // OAuth institutions (Chase etc.) bounce the user to the bank and back to
 // this app URL. Only used in production; the exact URIs must be registered
 // in the Plaid dashboard under Allowed redirect URIs.
-function oauthRedirectUri(origin: string | undefined): string | undefined {
-  if (process.env.PLAID_ENV !== "production") {
+function oauthRedirectUri(
+  origin: string | undefined,
+  env: PlaidEnv,
+): string | undefined {
+  if (env !== "production") {
     return undefined;
   }
   if (!origin || !allowedOrigins().includes(origin)) {
@@ -44,7 +52,8 @@ export const createLinkToken = action({
       throw new Error("Not signed in");
     }
     await requireAccess(ctx, userId);
-    const client = plaidClient();
+    const env = plaidEnvForOrigin(args.origin);
+    const client = plaidClient(env);
     const response = await withPlaidError(
       client.linkTokenCreate({
         user: { client_user_id: userId },
@@ -58,7 +67,7 @@ export const createLinkToken = action({
         optional_products: [Products.Investments, Products.Liabilities],
         transactions: { days_requested: 730 },
         webhook: WEBHOOK_URL(),
-        redirect_uri: oauthRedirectUri(args.origin),
+        redirect_uri: oauthRedirectUri(args.origin, env),
       }),
     );
     return response.data.link_token;
@@ -83,7 +92,8 @@ export const createUpdateLinkToken = action({
     if (!connection || connection.userId !== userId) {
       throw new Error("Connection not found");
     }
-    const client = plaidClient();
+    const env: PlaidEnv = connection.plaidEnv ?? "production";
+    const client = plaidClient(env);
     const response = await withPlaidError(
       client.linkTokenCreate({
         user: { client_user_id: userId },
@@ -92,7 +102,7 @@ export const createUpdateLinkToken = action({
         country_codes: [CountryCode.Us, CountryCode.Ca],
         access_token: connection.accessToken,
         webhook: WEBHOOK_URL(),
-        redirect_uri: oauthRedirectUri(args.origin),
+        redirect_uri: oauthRedirectUri(args.origin, env),
       }),
     );
     return response.data.link_token;
@@ -100,14 +110,17 @@ export const createUpdateLinkToken = action({
 });
 
 export const exchangePublicToken = action({
-  args: { publicToken: v.string() },
+  args: { publicToken: v.string(), origin: v.optional(v.string()) },
   handler: async (ctx, args) => {
     const userId = await getAuthUserId(ctx);
     if (userId === null) {
       throw new Error("Not signed in");
     }
     await requireAccess(ctx, userId);
-    const client = plaidClient();
+    // Must match the environment createLinkToken used, or the public token
+    // won't be recognized.
+    const env = plaidEnvForOrigin(args.origin);
+    const client = plaidClient(env);
 
     const exchange = await withPlaidError(
       client.itemPublicTokenExchange({ public_token: args.publicToken }),
@@ -143,6 +156,7 @@ export const exchangePublicToken = action({
       userId,
       plaidItemId: itemId,
       accessToken,
+      plaidEnv: env,
       institutionId,
       institutionName,
       institutionLogo,
@@ -183,7 +197,7 @@ export const removeConnection = action({
       throw new Error("Connection not found");
     }
     try {
-      await plaidClient().itemRemove({
+      await plaidClient(connection.plaidEnv ?? "production").itemRemove({
         access_token: connection.accessToken,
       });
     } catch (error) {
@@ -201,11 +215,9 @@ export const removeConnection = action({
 export const handleWebhook = internalAction({
   args: { body: v.string(), signature: v.optional(v.string()) },
   handler: async (ctx, args) => {
-    if (!(await verifyWebhook(args.body, args.signature))) {
-      console.error("plaid webhook: verification failed, dropping");
-      return;
-    }
-
+    // Read the item id before verifying, only to look up which environment
+    // issued this Item — verification keys are environment-specific. The
+    // signature check below still gates everything that follows.
     const payload = JSON.parse(args.body) as {
       webhook_type?: string;
       webhook_code?: string;
@@ -214,10 +226,24 @@ export const handleWebhook = internalAction({
     };
     const { webhook_type: type, webhook_code: code, item_id: itemId } =
       payload;
-    console.log("plaid webhook", type, code, itemId);
     if (!itemId) {
       return;
     }
+    const connection = await ctx.runQuery(
+      internal.connections.getByItemInternal,
+      { plaidItemId: itemId },
+    );
+    if (!connection) {
+      console.log("plaid webhook for unknown item, ignoring", itemId);
+      return;
+    }
+    const env: PlaidEnv = connection.plaidEnv ?? "production";
+
+    if (!(await verifyWebhook(args.body, args.signature, env))) {
+      console.error("plaid webhook: verification failed, dropping");
+      return;
+    }
+    console.log("plaid webhook", type, code, itemId);
 
     if (type === "ITEM") {
       if (code === "ERROR") {
@@ -247,16 +273,10 @@ export const handleWebhook = internalAction({
       (type === "HOLDINGS" && code === "DEFAULT_UPDATE") ||
       (type === "INVESTMENTS_TRANSACTIONS" && code === "DEFAULT_UPDATE")
     ) {
-      const connection = await ctx.runQuery(
-        internal.connections.getByItemInternal,
-        { plaidItemId: itemId },
-      );
-      if (connection) {
-        await ctx.scheduler.runAfter(0, internal.sync.runForConnection, {
-          connectionId: connection._id,
-          trigger: "webhook",
-        });
-      }
+      await ctx.scheduler.runAfter(0, internal.sync.runForConnection, {
+        connectionId: connection._id,
+        trigger: "webhook",
+      });
     }
   },
 });
@@ -264,6 +284,7 @@ export const handleWebhook = internalAction({
 async function verifyWebhook(
   body: string,
   signature: string | undefined,
+  env: PlaidEnv,
 ): Promise<boolean> {
   if (!signature) {
     return false;
@@ -273,7 +294,7 @@ async function verifyWebhook(
     if (!kid) {
       return false;
     }
-    const keyResponse = await plaidClient().webhookVerificationKeyGet({
+    const keyResponse = await plaidClient(env).webhookVerificationKeyGet({
       key_id: kid,
     });
     const key = await importJWK(keyResponse.data.key, "ES256");
