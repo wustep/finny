@@ -11,3 +11,7 @@ Convex agent skills for common tasks can be installed by running
 `npx convex ai-files install`.
 
 <!-- convex-ai-end -->
+
+Working on the sync engine, the Notion schema, or anything in `convex/`? Read
+[.agents/skills/finny-sync/SKILL.md](.agents/skills/finny-sync/SKILL.md) first —
+it lists the invariants that are easy to break silently.

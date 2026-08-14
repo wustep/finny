@@ -19,6 +19,9 @@ Sources: docs.[redacted].io (full crawl), [redacted].io marketing/how-to pages, 
 
 ## Notion schema ([redacted] baseline + approved changes)
 
+> Superseded by [convex/notionSchemas.ts](convex/notionSchemas.ts) — that file
+> is the live schema; the tables below record the original intent.
+
 Baseline verified from the live [redacted] page (8 full-page databases, one table view each). All money fields: number, dollar format, 2 precision. Every DB has an `ID` text property holding the provider ID — **except** Balance History (no ID at all in our version) and Holdings (none).
 
 **Approved deviations from [redacted] (2026-08-12):**
