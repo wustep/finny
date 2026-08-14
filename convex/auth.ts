@@ -2,6 +2,7 @@ import Google from "@auth/core/providers/google";
 import { ConvexCredentials } from "@convex-dev/auth/providers/ConvexCredentials";
 import { convexAuth } from "@convex-dev/auth/server";
 import { internal } from "./_generated/api";
+import { env } from "./_generated/server";
 import { resolveRedirect } from "./origins";
 import { timingSafeEqualish } from "./secureCompare";
 
@@ -14,7 +15,7 @@ import { timingSafeEqualish } from "./secureCompare";
 const TestLogin = ConvexCredentials({
   id: "test",
   authorize: async (credentials: Record<string, unknown>, ctx: any) => {
-    const expected = process.env.TEST_LOGIN_SECRET;
+    const expected = env.TEST_LOGIN_SECRET;
     if (!expected || typeof credentials.secret !== "string") {
       return null;
     }

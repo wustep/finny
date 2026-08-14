@@ -2,7 +2,7 @@ import { httpRouter } from "convex/server";
 import { internal } from "./_generated/api";
 import { httpAction } from "./_generated/server";
 import { auth } from "./auth";
-import { allowedOrigins } from "./origins";
+import { allowedOrigins, siteUrl } from "./origins";
 
 const http = httpRouter();
 
@@ -33,7 +33,7 @@ http.route({
     const code = url.searchParams.get("code");
     const state = url.searchParams.get("state");
     const error = url.searchParams.get("error");
-    const appUrl = process.env.SITE_URL ?? "http://localhost:3466";
+    const appUrl = siteUrl();
     if (error || !code || !state) {
       return Response.redirect(`${appUrl}/notion?error=oauth_denied`, 302);
     }

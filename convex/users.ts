@@ -3,6 +3,7 @@ import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import {
+  env,
   internalMutation,
   mutation,
   query,
@@ -17,7 +18,7 @@ const TEST_EMAIL = "test@wustep.me";
 export const ensureTestUser = internalMutation({
   args: {},
   handler: async (ctx) => {
-    const email = process.env.TEST_LOGIN_EMAIL ?? TEST_EMAIL;
+    const email = env.TEST_LOGIN_EMAIL ?? TEST_EMAIL;
     const existing = await ctx.db
       .query("users")
       .withIndex("email", (q) => q.eq("email", email))

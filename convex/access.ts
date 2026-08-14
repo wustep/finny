@@ -1,6 +1,6 @@
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { v } from "convex/values";
-import { internalMutation, internalQuery } from "./_generated/server";
+import { env, internalMutation, internalQuery } from "./_generated/server";
 import { timingSafeEqualish } from "./secureCompare";
 
 const MAX_FAILURES = 3;
@@ -26,7 +26,7 @@ export const attemptRedeem = internalMutation({
     if (userId === null) {
       return "unauthenticated";
     }
-    const expected = process.env.ACCESS_PASSWORD;
+    const expected = env.ACCESS_PASSWORD;
     if (!expected) {
       return "unconfigured";
     }

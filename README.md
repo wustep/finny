@@ -214,6 +214,11 @@ npx convex env set PLAID_ENV production
 ## Environment variable reference
 
 All on the Convex deployment (`npx convex env set KEY value`) unless noted.
+Every deployment variable is declared, with its type and whether it is
+optional, in [`convex/convex.config.ts`](convex/convex.config.ts); the backend
+reads them through the typed `env` from `convex/_generated/server` rather than
+`process.env`, so that declaration is the one list to keep in step with this
+table.
 
 | Variable | Purpose |
 |---|---|
@@ -224,6 +229,7 @@ All on the Convex deployment (`npx convex env set KEY value`) unless noted.
 | `NOTION_CLIENT_ID`, `NOTION_CLIENT_SECRET` | Notion public integration |
 | `ACCESS_PASSWORD` | Shared invite password (plaintext env var) |
 | `TEST_LOGIN_SECRET` | Optional; enables the local "Continue as tester" button |
+| `TEST_LOGIN_EMAIL` | Optional; email for the test identity (default `test@wustep.me`) |
 | `PLAID_SANDBOX_SECRET` | Optional; lets localhost link Sandbox banks while prod stays production |
 | `VITE_TEST_LOGIN_SECRET` | **`.env.local` only**: must match `TEST_LOGIN_SECRET` |
 | `APP_ORIGINS` | Optional comma-separated extra app origins (e.g. your Vercel URL) |

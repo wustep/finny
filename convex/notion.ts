@@ -4,6 +4,7 @@ import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import {
   action,
+  env,
   internalAction,
   internalMutation,
   internalQuery,
@@ -181,7 +182,7 @@ export const startOAuth = action({
       throw new Error("Not signed in");
     }
     await requireAccess(ctx, userId);
-    const clientId = process.env.NOTION_CLIENT_ID;
+    const clientId = env.NOTION_CLIENT_ID;
     if (!clientId) {
       throw new Error("NOTION_CLIENT_ID not set — see README.md");
     }
@@ -251,8 +252,8 @@ export const completeOAuth = internalAction({
       throw new Error("Invalid or expired OAuth state");
     }
     const { userId, origin } = consumed;
-    const clientId = process.env.NOTION_CLIENT_ID;
-    const clientSecret = process.env.NOTION_CLIENT_SECRET;
+    const clientId = env.NOTION_CLIENT_ID;
+    const clientSecret = env.NOTION_CLIENT_SECRET;
     if (!clientId || !clientSecret) {
       throw new Error("Notion OAuth env vars not set");
     }

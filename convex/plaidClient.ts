@@ -1,10 +1,11 @@
 // Shared Plaid client factory. Only import from "use node" files.
 import { Configuration, PlaidApi, PlaidEnvironments } from "plaid";
+import { env } from "./_generated/server";
 
 export type PlaidEnv = "sandbox" | "production";
 
 export function configuredPlaidEnv(): PlaidEnv {
-  return process.env.PLAID_ENV === "production" ? "production" : "sandbox";
+  return env.PLAID_ENV === "production" ? "production" : "sandbox";
 }
 
 // Local development always talks to the Sandbox, even when the deployment
@@ -16,18 +17,18 @@ export function plaidEnvForOrigin(origin: string | undefined): PlaidEnv {
     return "sandbox";
   }
   const isLocal = !!origin && /^https?:\/\/localhost(:\d+)?$/.test(origin);
-  return isLocal && process.env.PLAID_SANDBOX_SECRET ? "sandbox" : "production";
+  return isLocal && env.PLAID_SANDBOX_SECRET ? "sandbox" : "production";
 }
 
 // Access tokens are environment-specific, so every call for an existing
 // connection must use the environment that connection was created in.
-export function plaidClient(env?: PlaidEnv) {
-  const resolved = env ?? configuredPlaidEnv();
-  const clientId = process.env.PLAID_CLIENT_ID;
+export function plaidClient(forEnv?: PlaidEnv) {
+  const resolved = forEnv ?? configuredPlaidEnv();
+  const clientId = env.PLAID_CLIENT_ID;
   const secret =
     resolved === "sandbox"
-      ? (process.env.PLAID_SANDBOX_SECRET ?? process.env.PLAID_SECRET)
-      : process.env.PLAID_SECRET;
+      ? (env.PLAID_SANDBOX_SECRET ?? env.PLAID_SECRET)
+      : env.PLAID_SECRET;
   if (!clientId || !secret) {
     throw new Error("PLAID_CLIENT_ID / PLAID_SECRET not set — see README.md");
   }
