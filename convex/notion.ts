@@ -71,6 +71,9 @@ export const getStatus = query({
     }
     return {
       connected: true as const,
+      // The client compares this across a reconnect: landing in a different
+      // workspace is what clears the database map (see saveConnection).
+      workspaceId: connection.workspaceId,
       workspaceName: connection.workspaceName,
       workspaceIcon: connection.workspaceIcon,
       parentPageId: connection.parentPageId,
@@ -81,6 +84,64 @@ export const getStatus = query({
   },
 });
 
+// Is the stored token still good? A revoked or expired Notion integration
+// otherwise only shows up as every sync failing.
+//
+// This reports instead of throwing so the caller can tell "reauthorise" from
+// "Notion is down". It hits the Notion API on every call, so it is a one-shot
+// action the destination page runs on load and on demand — never a reactive
+// query.
+export const checkHealth = action({
+  args: {},
+  handler: async (
+    ctx,
+  ): Promise<
+    | { state: "disconnected" }
+    | { state: "ok" }
+    | { state: "unauthorized"; message: string }
+    | { state: "unknown"; message: string }
+  > => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) {
+      throw new Error("Not signed in");
+    }
+    await requireAccess(ctx, userId);
+    const connection = await ctx.runQuery(
+      internal.notion.getConnectionInternal,
+      { userId },
+    );
+    if (!connection) {
+      return { state: "disconnected" };
+    }
+    let response: Response;
+    try {
+      response = await fetch("https://api.notion.com/v1/users/me", {
+        headers: {
+          Authorization: `Bearer ${connection.accessToken}`,
+          "Notion-Version": NOTION_VERSION,
+        },
+      });
+    } catch (error) {
+      return { state: "unknown", message: String(error) };
+    }
+    if (response.ok) {
+      return { state: "ok" };
+    }
+    const data: any = await response.json().catch(() => ({}));
+    const message = data?.message ?? `Notion returned ${response.status}`;
+    // 401 is a revoked or expired token; 403 is a token that no longer has
+    // the access it was granted. Both are fixed by reauthorising.
+    if (response.status === 401 || response.status === 403) {
+      return { state: "unauthorized", message };
+    }
+    return { state: "unknown", message };
+  },
+});
+
+// Forget the workspace entirely: the token and the database map go, the
+// pages in Notion stay. Only the map going is what makes a later connect
+// create a second set of databases — reconnecting through startOAuth without
+// disconnecting keeps it (see saveConnection).
 export const disconnect = mutation({
   args: {},
   handler: async (ctx) => {

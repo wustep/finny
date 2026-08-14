@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useAction, useMutation, useQuery } from "convex/react";
-import { ExternalLink, Unplug } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { ExternalLink, RefreshCw, TriangleAlert, Unplug } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { api } from "../../convex/_generated/api";
 import { Button } from "@/components/ui/button";
@@ -12,6 +12,14 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -42,11 +50,55 @@ function defaultStartDate() {
   return date.toISOString().slice(0, 10);
 }
 
+// Which workspace the row pointed at when a reconnect was started. Survives
+// the round trip through Notion, which a React state variable would not, and
+// is the only way to notice afterwards that the user came back with a
+// different workspace — and so an emptied database map.
+const RECONNECT_KEY = "finny.notion.reconnect";
+
+type PreviousWorkspace = { workspaceId: string; workspaceName?: string };
+
+// A first connect and a reconnect are the same OAuth flow. The difference is
+// that a reconnect leaves the existing row alone, so the workspace the user
+// picks is what decides whether the database map survives.
+function useNotionOAuth() {
+  const startOAuth = useAction(api.notion.startOAuth);
+  const [busy, setBusy] = useState(false);
+
+  const start = (previous?: PreviousWorkspace) => {
+    setBusy(true);
+    if (previous) {
+      sessionStorage.setItem(RECONNECT_KEY, JSON.stringify(previous));
+    }
+    startOAuth({ origin: window.location.origin })
+      .then((url) => {
+        window.location.href = url;
+      })
+      .catch((err: unknown) => {
+        console.error(err);
+        sessionStorage.removeItem(RECONNECT_KEY);
+        toast.error(
+          "Could not start the Notion connection — are the Notion OAuth keys set?",
+        );
+        setBusy(false);
+      });
+  };
+
+  return { start, busy };
+}
+
+type Health = Awaited<
+  ReturnType<ReturnType<typeof useAction<typeof api.notion.checkHealth>>>
+>;
+
 function NotionPage() {
   const { error } = Route.useSearch();
   const status = useQuery(api.notion.getStatus);
-  const startOAuth = useAction(api.notion.startOAuth);
-  const [connecting, setConnecting] = useState(false);
+  const checkHealth = useAction(api.notion.checkHealth);
+  const { start: startOAuth, busy: connecting } = useNotionOAuth();
+  const [health, setHealth] = useState<Health | null>(null);
+  const [changedFrom, setChangedFrom] = useState<PreviousWorkspace | null>(null);
+  const healthChecked = useRef(false);
 
   useEffect(() => {
     if (error === "oauth_denied") {
@@ -56,20 +108,47 @@ function NotionPage() {
     }
   }, [error]);
 
-  const handleConnect = () => {
-    setConnecting(true);
-    startOAuth({ origin: window.location.origin })
-      .then((url) => {
-        window.location.href = url;
-      })
-      .catch((err: unknown) => {
-        console.error(err);
-        toast.error(
-          "Could not start the Notion connection — are the Notion OAuth keys set?",
-        );
-        setConnecting(false);
-      });
-  };
+  // Every call is a request to Notion, so this runs once per page load and
+  // whenever the user asks for it again.
+  const runHealthCheck = useCallback(
+    () =>
+      checkHealth()
+        .then(setHealth)
+        .catch((err: unknown) => console.error(err)),
+    [checkHealth],
+  );
+
+  useEffect(() => {
+    if (!status?.connected || healthChecked.current) {
+      return;
+    }
+    healthChecked.current = true;
+    void runHealthCheck();
+  }, [status, runHealthCheck]);
+
+  // Coming back from a reconnect: same workspace keeps the databases, a
+  // different one has just emptied the map.
+  useEffect(() => {
+    if (!status?.connected) {
+      return;
+    }
+    const stored = sessionStorage.getItem(RECONNECT_KEY);
+    if (!stored) {
+      return;
+    }
+    sessionStorage.removeItem(RECONNECT_KEY);
+    let previous: PreviousWorkspace;
+    try {
+      previous = JSON.parse(stored) as PreviousWorkspace;
+    } catch {
+      return;
+    }
+    if (previous.workspaceId === status.workspaceId) {
+      toast.success("Notion reconnected — your databases were kept");
+    } else {
+      setChangedFrom(previous);
+    }
+  }, [status]);
 
   return (
     <div className="mx-auto flex w-full max-w-3xl flex-col gap-6">
@@ -92,19 +171,135 @@ function NotionPage() {
             </CardDescription>
             <Button
               className="mx-auto mt-2 w-fit"
-              onClick={handleConnect}
+              onClick={() => startOAuth()}
               disabled={connecting}
             >
               {connecting ? "Redirecting…" : "Connect Notion"}
             </Button>
           </CardHeader>
         </Card>
-      ) : !status.databases ? (
-        <SetupCard modules={status.modules} />
       ) : (
-        <DestinationCard status={status} />
+        <>
+          {changedFrom ? (
+            <WorkspaceChangedCard
+              previous={changedFrom}
+              current={status.workspaceName}
+              onRetry={() => startOAuth(changedFrom)}
+              onDismiss={() => setChangedFrom(null)}
+              busy={connecting}
+            />
+          ) : null}
+          {health?.state === "unauthorized" ? (
+            <UnhealthyCard
+              message={health.message}
+              onReconnect={() =>
+                startOAuth({
+                  workspaceId: status.workspaceId,
+                  workspaceName: status.workspaceName,
+                })
+              }
+              busy={connecting}
+            />
+          ) : null}
+          {!status.databases ? (
+            <SetupCard modules={status.modules} />
+          ) : (
+            <DestinationCard
+              status={status}
+              health={health}
+              onCheckHealth={runHealthCheck}
+              onReconnect={() =>
+                startOAuth({
+                  workspaceId: status.workspaceId,
+                  workspaceName: status.workspaceName,
+                })
+              }
+              reconnecting={connecting}
+            />
+          )}
+        </>
       )}
     </div>
+  );
+}
+
+// Reauthorising into another workspace is not a small mistake: the databases
+// Finny built are unreachable with the new token, so the map was dropped and
+// the next setup builds a second set somewhere else.
+function WorkspaceChangedCard({
+  previous,
+  current,
+  onRetry,
+  onDismiss,
+  busy,
+}: {
+  previous: PreviousWorkspace;
+  current?: string;
+  onRetry: () => void;
+  onDismiss: () => void;
+  busy: boolean;
+}) {
+  const from = previous.workspaceName ?? "your previous workspace";
+  return (
+    <Card className="border-destructive">
+      <CardHeader>
+        <div className="flex items-start gap-3">
+          <TriangleAlert className="mt-0.5 size-5 shrink-0 text-destructive" />
+          <div className="flex flex-col gap-1.5">
+            <CardTitle>You reconnected to a different workspace</CardTitle>
+            <CardDescription>
+              Finny was pointed at {from} and is now pointed at{" "}
+              {current ?? "this workspace"}. The databases it built in {from}{" "}
+              cannot be reached with the new token, so Finny has forgotten
+              them: setting up here creates a fresh set of databases and starts
+              syncing from scratch. Everything already in {from} stays where it
+              is.
+            </CardDescription>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="flex flex-wrap gap-2">
+        <Button onClick={onRetry} disabled={busy}>
+          {busy ? "Redirecting…" : `Reconnect to ${from}`}
+        </Button>
+        <Button variant="outline" onClick={onDismiss}>
+          Start fresh here
+        </Button>
+      </CardContent>
+    </Card>
+  );
+}
+
+function UnhealthyCard({
+  message,
+  onReconnect,
+  busy,
+}: {
+  message: string;
+  onReconnect: () => void;
+  busy: boolean;
+}) {
+  return (
+    <Card className="border-destructive">
+      <CardHeader>
+        <div className="flex items-start gap-3">
+          <TriangleAlert className="mt-0.5 size-5 shrink-0 text-destructive" />
+          <div className="flex flex-col gap-1.5">
+            <CardTitle>Notion connection unhealthy — reconnect</CardTitle>
+            <CardDescription>
+              Notion rejected the stored token, so syncs cannot write anything.
+              Reconnect the same workspace to hand Finny a new token; your
+              databases and their rows are kept. ({message})
+            </CardDescription>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <Button onClick={onReconnect} disabled={busy}>
+          {busy ? "Redirecting…" : "Reconnect Notion"}
+        </Button>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -254,14 +449,21 @@ function SetupCard({
 
 function DestinationCard({
   status,
+  health,
+  onCheckHealth,
+  onReconnect,
+  reconnecting,
 }: {
   status: {
     workspaceName?: string;
     startDate?: string;
     databases?: Record<string, string>;
   };
+  health: Health | null;
+  onCheckHealth: () => void;
+  onReconnect: () => void;
+  reconnecting: boolean;
 }) {
-  const disconnect = useMutation(api.notion.disconnect);
   const databases = status.databases ?? {};
 
   return (
@@ -294,16 +496,115 @@ function DestinationCard({
             Syncing history from {status.startDate}
           </p>
         ) : null}
-        <Button
-          variant="outline"
-          className="w-fit"
-          onClick={() =>
-            void disconnect().then(() => toast.success("Notion disconnected"))
-          }
-        >
-          <Unplug /> Disconnect
-        </Button>
+        <HealthLine health={health} onCheck={onCheckHealth} />
+        <div className="flex flex-wrap gap-2">
+          <Button
+            variant="outline"
+            className="w-fit"
+            onClick={onReconnect}
+            disabled={reconnecting}
+          >
+            <RefreshCw /> {reconnecting ? "Redirecting…" : "Reconnect Notion"}
+          </Button>
+          <DisconnectButton />
+        </div>
       </CardContent>
     </Card>
+  );
+}
+
+function HealthLine({
+  health,
+  onCheck,
+}: {
+  health: Health | null;
+  onCheck: () => void;
+}) {
+  const [checking, setChecking] = useState(false);
+  const handleCheck = () => {
+    setChecking(true);
+    Promise.resolve(onCheck()).finally(() => setChecking(false));
+  };
+  const label =
+    health === null
+      ? "Checking the Notion connection…"
+      : health.state === "ok"
+        ? "Notion connection is healthy."
+        : health.state === "unauthorized"
+          ? "Notion rejected the stored token — reconnect above."
+          : health.state === "disconnected"
+            ? "Notion is not connected."
+            : `Could not reach Notion to check the connection (${health.message}).`;
+  return (
+    <p className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+      {label}
+      <button
+        type="button"
+        className="underline underline-offset-4 disabled:opacity-50"
+        onClick={handleCheck}
+        disabled={checking}
+      >
+        {checking ? "Checking…" : "Check again"}
+      </button>
+    </p>
+  );
+}
+
+// Disconnecting forgets which databases Finny made, which is what makes the
+// next connect build a second set — so say that before doing it, and point at
+// Reconnect for the case the user actually wants.
+function DisconnectButton() {
+  const disconnect = useMutation(api.notion.disconnect);
+  const [open, setOpen] = useState(false);
+  const [working, setWorking] = useState(false);
+
+  const handleDisconnect = () => {
+    setWorking(true);
+    disconnect()
+      .then(() => {
+        toast.success("Notion disconnected");
+        setOpen(false);
+      })
+      .catch(() => toast.error("Failed to disconnect Notion"))
+      .finally(() => setWorking(false));
+  };
+
+  return (
+    <>
+      <Button variant="outline" className="w-fit" onClick={() => setOpen(true)}>
+        <Unplug /> Disconnect
+      </Button>
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Disconnect Notion?</DialogTitle>
+            <DialogDescription>
+              Your pages, databases, and every row already synced stay in
+              Notion — Finny just stops writing to them. It also forgets the
+              token and which databases it created, so connecting again builds
+              a fresh set of databases even in the same workspace. If you only
+              need to refresh an expired token, use Reconnect Notion instead:
+              that keeps these databases.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setOpen(false)}
+              disabled={working}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleDisconnect}
+              disabled={working}
+            >
+              {working ? "Disconnecting…" : "Disconnect"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
