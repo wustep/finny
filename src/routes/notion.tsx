@@ -1,6 +1,12 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useAction, useMutation, useQuery } from "convex/react";
-import { ExternalLink, RefreshCw, TriangleAlert, Unplug } from "lucide-react";
+import {
+  ExternalLink,
+  RefreshCw,
+  RotateCcw,
+  TriangleAlert,
+  Unplug,
+} from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { api } from "../../convex/_generated/api";
@@ -567,6 +573,7 @@ function DestinationCard({
             >
               {reconnecting ? "Redirecting…" : "Reconnect Notion"}
             </Button>
+            <ResetResyncButton />
             <DisconnectButton />
           </div>
         </CardContent>
@@ -775,6 +782,79 @@ function HealthLine({
         {checking ? "Checking…" : "Check again"}
       </button>
     </p>
+  );
+}
+
+// Forgetting the page map is only half a reset: nothing here touches Notion,
+// so whatever the last sync wrote is still sitting in those databases and the
+// rebuild writes a second copy alongside it. Say that plainly — deleting the
+// rows first is the user's job, and it has to happen before the button, not
+// after.
+function ResetResyncButton() {
+  const resetAndResync = useAction(api.sync.resetAndResync);
+  const [open, setOpen] = useState(false);
+  const [working, setWorking] = useState(false);
+
+  const handleReset = () => {
+    setWorking(true);
+    resetAndResync()
+      .then((result) => {
+        toast.success(
+          `Rebuilding from scratch across ${result.connections} ${
+            result.connections === 1 ? "bank" : "banks"
+          }`,
+        );
+        setOpen(false);
+      })
+      .catch((err: unknown) => {
+        console.error(err);
+        toast.error("Could not start the rebuild");
+      })
+      .finally(() => setWorking(false));
+  };
+
+  return (
+    <>
+      <Button variant="outline" className="w-fit" onClick={() => setOpen(true)}>
+        <RotateCcw /> Reset mappings & resync
+      </Button>
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Reset mappings and resync?</DialogTitle>
+            <DialogDescription>
+              Finny forgets which Notion page belongs to which transaction,
+              account, and holding, rewinds its Plaid cursors, and syncs every
+              bank again from your start date.
+              <br />
+              <br />
+              Delete the rows Finny created in Notion <em>before</em> doing
+              this. Nothing here touches Notion, so rows left behind stay
+              behind and the rebuild writes fresh ones next to them.
+              Categories are the exception — those are matched back up by
+              their ID property, so they are re-adopted rather than
+              duplicated.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setOpen(false)}
+              disabled={working}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleReset}
+              disabled={working}
+            >
+              {working ? "Starting…" : "Reset & resync"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
 

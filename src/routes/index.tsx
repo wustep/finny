@@ -134,6 +134,39 @@ function AccountsPage() {
   );
 }
 
+type RunData = NonNullable<
+  ReturnType<typeof useQuery<typeof api.connections.recentRuns>>
+>[number];
+
+function formatDuration(ms: number) {
+  const seconds = Math.round(ms / 1000);
+  if (seconds < 60) {
+    return `${seconds}s`;
+  }
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) {
+    return seconds % 60 ? `${minutes}m ${seconds % 60}s` : `${minutes}m`;
+  }
+  const hours = Math.floor(minutes / 60);
+  return minutes % 60 ? `${hours}h ${minutes % 60}m` : `${hours}h`;
+}
+
+// "+3 / ~1 / −0", plus what a run gave up on. Skipped rows are the ones
+// Notion refused often enough that the sync moved past them, so they are
+// worth naming rather than folding into the other counts.
+function statsSummary(stats: RunData["stats"]) {
+  if (!stats) {
+    return null;
+  }
+  const { added, modified, removed, skipped } = stats;
+  if (added + modified + removed + (skipped ?? 0) === 0) {
+    return null;
+  }
+  return `+${added} / ~${modified} / −${removed}${
+    skipped ? ` · ${skipped} skipped` : ""
+  }`;
+}
+
 function SyncHistory() {
   const runs = useQuery(api.connections.recentRuns);
   if (!runs || runs.length === 0) {
@@ -147,41 +180,65 @@ function SyncHistory() {
       <CardContent>
         <ul className="flex flex-col gap-2">
           {runs.map((run) => (
-            <li
-              key={run.id}
-              className="flex items-center gap-3 text-sm"
-            >
-              <Badge
-                variant={
-                  run.status === "error"
-                    ? "destructive"
-                    : run.status === "running"
-                      ? "outline"
-                      : "secondary"
-                }
-              >
-                {run.status}
-              </Badge>
-              <span className="flex-1">
-                {run.institutionName}
-                <span className="text-muted-foreground"> · {run.trigger}</span>
-                {run.stats &&
-                run.stats.added + run.stats.modified + run.stats.removed > 0 ? (
-                  <span className="text-muted-foreground">
-                    {" "}
-                    · +{run.stats.added} / ~{run.stats.modified} / −
-                    {run.stats.removed}
-                  </span>
-                ) : null}
-              </span>
-              <span className="text-xs text-muted-foreground">
-                {new Date(run.startedAt).toLocaleString()}
-              </span>
-            </li>
+            <SyncRunRow key={run.id} run={run} />
           ))}
         </ul>
       </CardContent>
     </Card>
+  );
+}
+
+function SyncRunRow({ run }: { run: RunData }) {
+  const [expanded, setExpanded] = useState(false);
+  const failed = run.status === "error";
+  const summary = statsSummary(run.stats);
+  const duration = run.finishedAt
+    ? formatDuration(run.finishedAt - run.startedAt)
+    : null;
+
+  return (
+    <li
+      className={
+        failed
+          ? "flex flex-col gap-1.5 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm"
+          : "flex flex-col gap-1.5 px-3 py-2 text-sm"
+      }
+    >
+      <div className="flex items-center gap-3">
+        <Badge
+          variant={
+            failed ? "destructive" : run.status === "running" ? "outline" : "secondary"
+          }
+        >
+          {run.status}
+        </Badge>
+        <span className="flex-1">
+          {run.institutionName}
+          <span className="text-muted-foreground"> · {run.trigger}</span>
+          {summary ? (
+            <span className="text-muted-foreground"> · {summary}</span>
+          ) : null}
+          {duration ? (
+            <span className="text-muted-foreground"> · {duration}</span>
+          ) : null}
+        </span>
+        <span className="text-xs text-muted-foreground">
+          {new Date(run.startedAt).toLocaleString()}
+        </span>
+      </div>
+      {run.error ? (
+        <button
+          type="button"
+          title={run.error}
+          onClick={() => setExpanded((open) => !open)}
+          className={`text-left text-xs text-destructive ${
+            expanded ? "" : "line-clamp-2"
+          }`}
+        >
+          {run.error}
+        </button>
+      ) : null}
+    </li>
   );
 }
 

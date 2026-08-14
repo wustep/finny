@@ -216,6 +216,94 @@ test("upsertPlaidAccounts adds unknown accounts disabled and refreshes known one
   expect(opted?.discoveredAt).toBeUndefined();
 });
 
+const HOUR = 60 * 60 * 1000;
+
+test("sweepStuckRuns closes runs whose lease died but leaves live ones alone", async () => {
+  const { t, alice } = await twoUsers();
+  const connectionId = await t.mutation(internal.connections.saveConnection, {
+    userId: alice,
+    plaidItemId: "item_1",
+    accessToken: "access-alice",
+    institutionName: "Alice Bank",
+    accounts: [ACCOUNT],
+  });
+  const now = Date.now();
+  const { dead, alive, recent } = await t.run(async (ctx) => {
+    const run = (startedAt: number) =>
+      ctx.db.insert("syncRuns", {
+        userId: alice,
+        connectionId,
+        trigger: "cron" as const,
+        status: "running" as const,
+        startedAt,
+      });
+    return {
+      dead: await run(now - 5 * HOUR),
+      alive: await run(now - 4 * HOUR),
+      recent: await run(now - 60 * 1000),
+    };
+  });
+
+  // The live one is heartbeating: it holds the connection's lease.
+  await t.run(async (ctx) => {
+    await ctx.db.patch(connectionId, {
+      activeRunId: alive,
+      syncLockExpiresAt: now + 5 * 60 * 1000,
+    });
+  });
+
+  const closed = await t.mutation(internal.syncData.sweepStuckRuns, {});
+  expect(closed).toBe(1);
+
+  const rows = await t.run(async (ctx) => ({
+    dead: await ctx.db.get(dead),
+    alive: await ctx.db.get(alive),
+    recent: await ctx.db.get(recent),
+    connection: await ctx.db.get(connectionId),
+  }));
+  expect(rows.dead?.status).toBe("error");
+  expect(rows.dead?.error).toBe("timed out");
+  expect(rows.dead?.finishedAt).toEqual(expect.any(Number));
+  // Old but heartbeating — a two-year backfill legitimately looks like this.
+  expect(rows.alive?.status).toBe("running");
+  expect(rows.recent?.status).toBe("running");
+  // The lease belongs to the run still going, so it stays put.
+  expect(rows.connection?.activeRunId).toBe(alive);
+});
+
+test("sweepStuckRuns frees a lease still pointing at the dead run", async () => {
+  const { t, alice } = await twoUsers();
+  const connectionId = await t.mutation(internal.connections.saveConnection, {
+    userId: alice,
+    plaidItemId: "item_1",
+    accessToken: "access-alice",
+    institutionName: "Alice Bank",
+    accounts: [ACCOUNT],
+  });
+  const runId = await t.run(async (ctx) => {
+    const id = await ctx.db.insert("syncRuns", {
+      userId: alice,
+      connectionId,
+      trigger: "manual" as const,
+      status: "running" as const,
+      startedAt: Date.now() - 5 * HOUR,
+    });
+    await ctx.db.patch(connectionId, {
+      activeRunId: id,
+      syncLockExpiresAt: Date.now() - HOUR,
+    });
+    return id;
+  });
+
+  expect(await t.mutation(internal.syncData.sweepStuckRuns, {})).toBe(1);
+
+  const connection = await t.run(async (ctx) => ctx.db.get(connectionId));
+  expect(connection?.activeRunId).toBeUndefined();
+  expect(connection?.syncLockExpiresAt).toBeUndefined();
+  const run = await t.run(async (ctx) => ctx.db.get(runId));
+  expect(run?.status).toBe("error");
+});
+
 test("markReconnected refuses another user's connection", async () => {
   const { t, alice, bob } = await twoUsers();
   await t.run(async (ctx) => {

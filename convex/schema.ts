@@ -195,5 +195,8 @@ export default defineSchema({
     error: v.optional(v.string()),
   })
     .index("by_user", ["userId"])
-    .index("by_connection", ["connectionId"]),
+    .index("by_connection", ["connectionId"])
+    // Finds runs left saying "running" by an action that died before
+    // finishRun, oldest first — see syncData.sweepStuckRuns.
+    .index("by_status_and_startedAt", ["status", "startedAt"]),
 });

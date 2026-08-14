@@ -18,11 +18,24 @@ has to pass that test.
 
 ## 2. Sync engine (`convex/sync.ts`, `convex/syncData.ts`)
 
-- One run per connection. `runForConnection` chains actions (connection page
-  → accounts/balances → holdings/securities → `transactionsBatch` →
-  `investmentsBatch` → `finishRun`) so a backfill never hits the action time
-  limit. Webhook and cron triggers bail when a run is already in flight
-  (`syncData.hasRecentRunningRun`); manual and initial runs do not.
+- One run per connection, held by a lease on the connection
+  (`syncLockExpiresAt` / `activeRunId`): `syncData.beginRun` takes it, every
+  hop heartbeats it, `syncData.finishRun` releases it — which is why it sits
+  on every exit path. A trigger that finds the lease held bails; a webhook
+  that loses the race queues itself one retry.
+- `runForConnection` chains actions (connection page → accounts/balances →
+  holdings/securities → `accountBackfill`, once per account flagged
+  `needsBackfill` → `transactionsBatch` → `investmentsBatch` → `finishRun`)
+  so a backfill never hits the action time limit.
+- `accountBackfill` is the catch-up for an account switched back on. The
+  Item's transactions/sync cursor moved on while it was off, so that history
+  is gone from the stream; the catch-up reads the same window through
+  `transactions/get`, which consumes no cursor, and clears `needsBackfill`
+  once a walk finishes without failures.
+- A run that dies without reaching `finishRun` keeps its row on "running"
+  forever. The daily sweep (`syncData.sweepStuckRuns`) closes those out as
+  "timed out" — but only when the lease is not held by that run, since the
+  heartbeat is the only signal separating a corpse from a slow backfill.
 - Advance `transactionsCursor` only after a page has been fully written to
   Notion (`syncData.setCursor`, end of `transactionsBatch`). Advancing early
   drops transactions permanently — Plaid does not resend a consumed page.

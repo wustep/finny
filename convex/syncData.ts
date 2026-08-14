@@ -548,9 +548,73 @@ export const rekeyMapEntry = internalMutation({
 
 // ---------- daily cron sweep ----------
 
+// A run only leaves "running" through finishRun, which every exit path of
+// the chain calls. An action that dies hard — killed mid-hop, a deploy in
+// the middle of a backfill — never reaches it, so the row keeps claiming the
+// sync is in progress long after it stopped. The lease frees itself by
+// expiry; the run row needs telling.
+//
+// Generous on purpose: a first backfill of two years against Notion's ~3 rps
+// legitimately runs for hours, and the heartbeat is what distinguishes it.
+const STUCK_RUN_MS = 2 * 60 * 60 * 1000;
+
+// Bounded so one sweep cannot blow the mutation limit; a backlog clears over
+// consecutive days.
+const STUCK_RUN_LIMIT = 100;
+
+export const sweepStuckRuns = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const now = Date.now();
+    const stale = await ctx.db
+      .query("syncRuns")
+      .withIndex("by_status_and_startedAt", (q) =>
+        q.eq("status", "running").lt("startedAt", now - STUCK_RUN_MS),
+      )
+      .take(STUCK_RUN_LIMIT);
+
+    let closed = 0;
+    for (const run of stale) {
+      const connection = run.connectionId
+        ? await ctx.db.get(run.connectionId)
+        : null;
+      // Every hop of the chain heartbeats the lease, so this run still
+      // holding an unexpired one means it is alive and slow, not dead.
+      const alive =
+        connection?.activeRunId === run._id &&
+        (connection.syncLockExpiresAt ?? 0) > now;
+      if (alive) {
+        continue;
+      }
+      await ctx.db.patch(run._id, {
+        status: "error",
+        error: "timed out",
+        finishedAt: now,
+      });
+      // Only when it is still this run's lease: a newer run may already
+      // have taken the connection over.
+      if (connection?.activeRunId === run._id) {
+        await ctx.db.patch(connection._id, {
+          syncLockExpiresAt: undefined,
+          activeRunId: undefined,
+        });
+      }
+      closed++;
+    }
+    return closed;
+  },
+});
+
 export const sweep = internalMutation({
   args: {},
   handler: async (ctx) => {
+    // Subtransaction: a failure closing out stale runs rolls back on its
+    // own and still leaves the day's syncs scheduled.
+    try {
+      await ctx.runMutation(internal.syncData.sweepStuckRuns, {});
+    } catch (error) {
+      console.error("stuck run sweep failed", error);
+    }
     const connections = await ctx.db.query("bankConnections").collect();
     let delay = 0;
     for (const connection of connections) {
