@@ -1,5 +1,18 @@
 // Shared Notion API helpers — used by both the V8 setup actions (notion.ts)
 // and the node sync engine (sync.ts).
+//
+// The pure value/naming helpers live in syncMappers.ts so they can be unit
+// tested without this module's fetch calls; they are re-exported here
+// because callers think of them as part of the Notion surface.
+
+import { titleCase } from "./syncMappers";
+
+export {
+  P,
+  accountTitle,
+  externalIcon,
+  titleCase,
+} from "./syncMappers";
 
 const NOTION_VERSION = "2022-06-28";
 // File uploads, and file-backed page icons, postdate 2022-06-28. Only those
@@ -49,13 +62,6 @@ export async function notionFetch(
     }
     return data;
   }
-}
-
-// An icon hosted elsewhere. Notion stores the URL and renders it directly,
-// so unlike an uploaded file this costs nothing and needs no bookkeeping —
-// but it breaks if whoever hosts it stops serving that URL.
-export function externalIcon(url: string): Record<string, unknown> {
-  return { type: "external", external: { url } };
 }
 
 export function createPage(
@@ -177,44 +183,7 @@ export function archivePage(token: string, pageId: string): Promise<any> {
   });
 }
 
-// ---------- property value builders ----------
-
-const clip = (s: string) => s.slice(0, 2000);
-
-export const P = {
-  title: (s: string) => ({
-    title: [{ type: "text", text: { content: clip(s || "Untitled") } }],
-  }),
-  text: (s: string | null | undefined) => ({
-    rich_text: s ? [{ type: "text", text: { content: clip(s) } }] : [],
-  }),
-  number: (n: number | null | undefined) => ({
-    number: typeof n === "number" && Number.isFinite(n) ? n : null,
-  }),
-  date: (s: string | null | undefined) => ({
-    date: s ? { start: s } : null,
-  }),
-  // Select option names cannot contain commas.
-  select: (name: string | null | undefined) =>
-    name ? { select: { name: clip(name).replaceAll(",", " ") } } : { select: null },
-  relation: (pageId: string | null | undefined) => ({
-    relation: pageId ? [{ id: pageId }] : [],
-  }),
-  checkbox: (b: boolean) => ({ checkbox: b }),
-};
-
 // ---------- naming helpers ----------
-
-// "FOOD_AND_DRINK" -> "Food and Drink"
-export function titleCase(enumValue: string): string {
-  return enumValue
-    .toLowerCase()
-    .split("_")
-    .map((word) =>
-      word === "and" || word === "of" ? word : word.charAt(0).toUpperCase() + word.slice(1),
-    )
-    .join(" ");
-}
 
 // "FOOD_AND_DRINK_COFFEE" with primary "FOOD_AND_DRINK" -> "Coffee"
 export function categoryName(detailed: string, primary: string): string {
@@ -222,32 +191,6 @@ export function categoryName(detailed: string, primary: string): string {
     ? detailed.slice(primary.length + 1)
     : detailed;
   return titleCase(rest);
-}
-
-// "Chase" + "Freedom Unlimited" + "7449" -> "Chase Freedom Unlimited *7449",
-// unless the user renamed the account, in which case their name wins.
-export function accountTitle(
-  institutionName: string,
-  account: {
-    name: string;
-    official_name?: string | null;
-    mask?: string | null;
-  },
-  customName?: string,
-): string {
-  if (customName) {
-    return customName;
-  }
-  const base =
-    account.official_name && account.official_name.length >= account.name.length
-      ? account.official_name
-      : account.name;
-  const institutionWord = institutionName.split(" ")[0]?.toLowerCase() ?? "";
-  const withInstitution =
-    institutionWord && base.toLowerCase().startsWith(institutionWord)
-      ? base
-      : `${institutionName} ${base}`;
-  return account.mask ? `${withInstitution} *${account.mask}` : withInstitution;
 }
 
 export function todayUTC(): string {

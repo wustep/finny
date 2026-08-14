@@ -20,9 +20,7 @@
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { v } from "convex/values";
 import type {
-  AccountBase,
   CreditCardLiability,
-  InvestmentTransaction,
   Security,
   Transaction,
 } from "plaid";
@@ -45,6 +43,13 @@ import {
   uploadDataUri,
 } from "./notionApi";
 import { plaidClient } from "./plaidClient";
+import {
+  accountProperties,
+  balanceForNotion,
+  investmentTransactionProperties,
+  transactionIcon,
+  transactionProperties,
+} from "./syncMappers";
 
 const TXN_BATCH_SIZE = 100;
 const INV_BATCH_SIZE = 100;
@@ -1090,93 +1095,4 @@ async function syncHoldings(
     runId: input.runId,
     ...stats,
   });
-}
-
-// ---------- property mappers ----------
-
-// Plaid: positive = money out. Notion convention: negative = outflow.
-// Plaid enriches known merchants with a hosted logo. Coverage is partial —
-// card transactions far more often than ACH — and a transaction with no
-// merchant behind it simply keeps Notion's default icon.
-function transactionIcon(txn: Transaction) {
-  const url = txn.logo_url ?? txn.counterparties?.[0]?.logo_url;
-  return url ? externalIcon(url) : undefined;
-}
-
-function transactionProperties(
-  txn: Transaction,
-  accountPageId: string,
-  categoryPageId: string | null,
-) {
-  return {
-    Name: P.title(txn.merchant_name || txn.name || "Transaction"),
-    ID: P.text(txn.transaction_id),
-    "Original Description": P.text(txn.original_description ?? txn.name),
-    Account: P.relation(accountPageId),
-    Category: P.relation(categoryPageId),
-    Amount: P.number(-txn.amount),
-    Date: P.date(txn.datetime ?? txn.authorized_datetime ?? txn.date),
-    Pending: P.checkbox(txn.pending),
-  };
-}
-
-// Credit-card balances arrive positive from Plaid (amount owed), matching
-// the [redacted] convention, so no sign flip here.
-function balanceForNotion(account: AccountBase): number | null {
-  return account.balances.current ?? account.balances.available ?? null;
-}
-
-function accountProperties(
-  institutionName: string,
-  account: AccountBase,
-  credit: CreditCardLiability | undefined,
-  connectionPageId: string,
-  customName?: string,
-) {
-  const apr = credit?.aprs?.find(
-    (entry) => entry.apr_type === "purchase_apr",
-  )?.apr_percentage;
-  return {
-    "Account Name": P.title(accountTitle(institutionName, account, customName)),
-    ID: P.text(account.account_id),
-    "Account Type": P.select(account.type),
-    "Account Subtype": P.select(
-      account.subtype ? account.subtype.replaceAll("_", " ") : null,
-    ),
-    "Current Balance": P.number(account.balances.current),
-    "Available Balance": P.number(account.balances.available),
-    "Account Limit": P.number(account.balances.limit),
-    "Next Payment Due": P.date(credit?.next_payment_due_date ?? null),
-    "Minimum Payment": P.number(credit?.minimum_payment_amount),
-    "Last Statement Balance": P.number(credit?.last_statement_balance),
-    // Notion percent format renders 0.2499 as 24.99%.
-    APR: P.number(typeof apr === "number" ? apr / 100 : null),
-    "Bank Connection": P.relation(connectionPageId),
-  };
-}
-
-// Plaid cash flows: positive = out of the account. For cash-type rows we
-// flip so deposits/contributions read positive in Notion ([redacted] convention);
-// trade rows (buy/sell) keep Plaid's sign.
-function investmentTransactionProperties(
-  txn: InvestmentTransaction,
-  accountPageId: string,
-  securityPageId: string | null | undefined,
-) {
-  const amount = txn.type === "cash" ? -txn.amount : txn.amount;
-  return {
-    "Transaction Summary": P.title(txn.name || titleCase(txn.subtype ?? txn.type)),
-    "Transaction ID": P.text(txn.investment_transaction_id),
-    "Transaction Type": P.select(txn.type),
-    "Transaction Subtype": P.select(
-      txn.subtype ? txn.subtype.replaceAll("_", " ") : null,
-    ),
-    Amount: P.number(amount),
-    Price: P.number(txn.price),
-    Quantity: P.number(txn.quantity),
-    Fees: P.number(txn.fees ?? 0),
-    Date: P.date(txn.date),
-    "Related Account": P.relation(accountPageId),
-    "Related Security": P.relation(securityPageId),
-  };
 }
