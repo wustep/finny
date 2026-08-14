@@ -421,6 +421,84 @@ export const deleteMapEntries = internalMutation({
   },
 });
 
+// ---------- investment transaction reconciliation ----------
+
+// Note which investment transactions Plaid still reports, and which account
+// each belongs to. Called once per page of the window walk, for every id on
+// the page whether or not it was in scope to sync — an id the walk mentioned
+// is an id that still exists, which is all reconciliation asks.
+export const markInvestmentTransactionsSeen = internalMutation({
+  args: {
+    userId: v.id("users"),
+    runId: v.id("syncRuns"),
+    entries: v.array(
+      v.object({ providerId: v.string(), accountId: v.string() }),
+    ),
+  },
+  handler: async (ctx, args) => {
+    for (const entry of args.entries) {
+      const row = await ctx.db
+        .query("notionPageMap")
+        .withIndex("by_user_kind_provider", (q) =>
+          q
+            .eq("userId", args.userId)
+            .eq("kind", "investmentTransaction")
+            .eq("providerId", entry.providerId),
+        )
+        .unique();
+      if (!row) {
+        continue;
+      }
+      await ctx.db.patch(row._id, {
+        accountId: entry.accountId,
+        lastSeenRunId: args.runId,
+      });
+    }
+  },
+});
+
+// A run archives at most this many vanished rows; the next one picks up the
+// rest. Keeps a first reconciliation over a long history from trying to make
+// hundreds of Notion calls in a single action.
+const RECONCILE_LIMIT = 500;
+
+// Mapped investment transactions on this Item's accounts that the given run
+// never saw. Rows with no accountId predate that field and are skipped —
+// archiving on a guess is worse than reconciling one run late.
+export const getVanishedInvestmentTransactions = internalQuery({
+  args: {
+    userId: v.id("users"),
+    runId: v.id("syncRuns"),
+    accountIds: v.array(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const accountIds = new Set(args.accountIds);
+    const vanished: Array<{ providerId: string; notionPageId: string }> = [];
+    const rows = ctx.db
+      .query("notionPageMap")
+      .withIndex("by_user_kind_provider", (q) =>
+        q.eq("userId", args.userId).eq("kind", "investmentTransaction"),
+      );
+    for await (const row of rows) {
+      if (
+        row.notionPageId &&
+        row.accountId &&
+        accountIds.has(row.accountId) &&
+        row.lastSeenRunId !== args.runId
+      ) {
+        vanished.push({
+          providerId: row.providerId,
+          notionPageId: row.notionPageId,
+        });
+        if (vanished.length >= RECONCILE_LIMIT) {
+          break;
+        }
+      }
+    }
+    return vanished;
+  },
+});
+
 // Pending transaction re-key: move the Notion page mapping from the pending
 // transaction id to the posted transaction id.
 export const rekeyMapEntry = internalMutation({

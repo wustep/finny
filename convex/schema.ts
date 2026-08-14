@@ -145,6 +145,15 @@ export default defineSchema({
     // Notion page yet; such a row carries an empty notionPageId.
     claimedAt: v.optional(v.number()),
     notionPageId: v.string(),
+    // Which Plaid account this row belongs to. The map is keyed by user, so
+    // without this a reconciliation pass for one Item cannot tell its own
+    // rows from another connection's. Absent on rows written before this
+    // was tracked; those are left alone until a sync sees them again.
+    accountId: v.optional(v.string()),
+    // The last run that saw this provider id still present at Plaid. Lets a
+    // full-window walk find the rows that have since vanished without
+    // carrying the seen set through scheduler arguments.
+    lastSeenRunId: v.optional(v.id("syncRuns")),
   }).index("by_user_kind_provider", ["userId", "kind", "providerId"]),
 
   syncRuns: defineTable({

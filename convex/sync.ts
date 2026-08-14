@@ -374,6 +374,13 @@ export const transactionsBatch = internalAction({
   handler: async (ctx, args) => {
     const context = await loadContext(ctx, args.connectionId);
     if (!context) {
+      // Returning here without finishing left the run "running" forever, and
+      // with it the connection's lease.
+      await ctx.runMutation(internal.syncData.finishRun, {
+        runId: args.runId,
+        status: "error",
+        error: "The connection or its Notion destination went away mid-sync.",
+      });
       return;
     }
     const { connection, notion, accounts } = context;
@@ -671,10 +678,18 @@ export const investmentsBatch = internalAction({
     connectionId: v.id("bankConnections"),
     runId: v.id("syncRuns"),
     offset: v.number(),
+    // Rows earlier pages of this window failed to write. Carried along
+    // because reconciliation may only run after a walk that saw everything.
+    pageErrors: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
     const context = await loadContext(ctx, args.connectionId);
     if (!context) {
+      await ctx.runMutation(internal.syncData.finishRun, {
+        runId: args.runId,
+        status: "error",
+        error: "The connection or its Notion destination went away mid-sync.",
+      });
       return;
     }
     const { connection, notion, accounts } = context;
@@ -751,12 +766,18 @@ export const investmentsBatch = internalAction({
       });
 
       let stats = { added: 0, modified: 0, removed: 0 };
+      let failures = 0;
       for (const txn of investment_transactions) {
         if (!enabledIds.has(txn.account_id)) {
           continue;
         }
         const accountPage = accountPages[txn.account_id];
         if (!accountPage) {
+          console.error(
+            "no account page for investment transaction",
+            txn.investment_transaction_id,
+          );
+          failures++;
           continue;
         }
         try {
@@ -794,7 +815,24 @@ export const investmentsBatch = internalAction({
             txn.investment_transaction_id,
             error,
           );
+          failures++;
         }
+      }
+
+      // Every id on the page, in scope or not: an id Plaid still lists is an
+      // id that has not been canceled, which is all reconciliation asks.
+      if (investment_transactions.length > 0) {
+        await ctx.runMutation(
+          internal.syncData.markInvestmentTransactionsSeen,
+          {
+            userId,
+            runId: args.runId,
+            entries: investment_transactions.map((txn) => ({
+              providerId: txn.investment_transaction_id,
+              accountId: txn.account_id,
+            })),
+          },
+        );
       }
 
       await ctx.runMutation(internal.syncData.addRunStats, {
@@ -802,19 +840,66 @@ export const investmentsBatch = internalAction({
         ...stats,
       });
 
+      const pageErrors = (args.pageErrors ?? 0) + failures;
       const nextOffset = args.offset + investment_transactions.length;
       if (nextOffset < total_investment_transactions) {
+        if (investment_transactions.length === 0) {
+          // Plaid claims more rows but returned none, so the window can
+          // never be walked to the end. Stop rather than reschedule the same
+          // offset forever, and leave reconciliation alone.
+          await ctx.runMutation(internal.syncData.finishRun, {
+            runId: args.runId,
+            status: "error",
+            error:
+              `Plaid returned an empty investments page at offset ` +
+              `${args.offset} of ${total_investment_transactions}.`,
+          });
+          return;
+        }
         await ctx.scheduler.runAfter(0, internal.sync.investmentsBatch, {
           connectionId: connection._id,
           runId: args.runId,
           offset: nextOffset,
+          pageErrors,
         });
-      } else {
+        return;
+      }
+
+      // The window is fully walked. Plaid drops a canceled investment
+      // transaction out of the window rather than reporting it as removed,
+      // so anything still mapped for this Item's accounts that the walk
+      // never mentioned is gone and its Notion row should be archived.
+      //
+      // Only after a clean walk: a window cut short by write failures would
+      // archive live history.
+      if (pageErrors === 0) {
+        const archived = await reconcileInvestmentTransactions(ctx, {
+          userId,
+          runId: args.runId,
+          token,
+          accountIds: accounts.map((account) => account.plaidAccountId),
+        });
+        if (archived > 0) {
+          await ctx.runMutation(internal.syncData.addRunStats, {
+            runId: args.runId,
+            added: 0,
+            modified: 0,
+            removed: archived,
+          });
+        }
         await ctx.runMutation(internal.syncData.finishRun, {
           runId: args.runId,
           status: "success",
         });
+        return;
       }
+      await ctx.runMutation(internal.syncData.finishRun, {
+        runId: args.runId,
+        status: "error",
+        error:
+          `${pageErrors} investment transaction(s) failed to reach Notion; ` +
+          `skipped archiving rows that vanished from Plaid this run.`,
+      });
     } catch (error) {
       console.error("investments batch failed", error);
       await ctx.runMutation(internal.syncData.finishRun, {
@@ -830,6 +915,51 @@ export const investmentsBatch = internalAction({
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Archive the Notion rows for investment transactions this Item's accounts no
+// longer have at Plaid. Cash transactions arrive with a `removed` list and
+// holdings are a full snapshot, but investment transactions are create-and-
+// update only, so a canceled trade sits in Notion forever without this.
+//
+// Only ever called after a complete window walk with no failed writes. Note
+// that "the window" is notion.startDate onwards, so moving that date forward
+// would read as history vanishing — rewind cursors rather than narrow the
+// window if that ever becomes editable.
+async function reconcileInvestmentTransactions(
+  ctx: ActionCtx,
+  input: {
+    userId: Id<"users">;
+    runId: Id<"syncRuns">;
+    token: string;
+    accountIds: string[];
+  },
+): Promise<number> {
+  const vanished = await ctx.runQuery(
+    internal.syncData.getVanishedInvestmentTransactions,
+    { userId: input.userId, runId: input.runId, accountIds: input.accountIds },
+  );
+  const archived: string[] = [];
+  for (const entry of vanished) {
+    try {
+      await archivePage(input.token, entry.notionPageId);
+      archived.push(entry.providerId);
+    } catch (error) {
+      console.error(
+        "failed to archive investment transaction",
+        entry.providerId,
+        error,
+      );
+    }
+  }
+  if (archived.length > 0) {
+    await ctx.runMutation(internal.syncData.deleteMapEntries, {
+      userId: input.userId,
+      kind: "investmentTransaction",
+      providerIds: archived,
+    });
+  }
+  return archived.length;
 }
 
 // Push the sync lease out by another window at the top of each batch hop, so
