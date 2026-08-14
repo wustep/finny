@@ -216,6 +216,52 @@ test("upsertPlaidAccounts adds unknown accounts disabled and refreshes known one
   expect(opted?.discoveredAt).toBeUndefined();
 });
 
+test("activeRuns returns only the caller's in-flight runs", async () => {
+  const { t, alice, bob } = await twoUsers();
+  const connectionId = await t.mutation(internal.connections.saveConnection, {
+    userId: alice,
+    plaidItemId: "item_1",
+    accessToken: "access-alice",
+    institutionName: "Alice Bank",
+    accounts: [ACCOUNT],
+  });
+  await t.run(async (ctx) => {
+    await ctx.db.insert("syncRuns", {
+      userId: alice,
+      connectionId,
+      trigger: "initial" as const,
+      status: "running" as const,
+      startedAt: Date.now(),
+      stats: { added: 7, modified: 2, removed: 0 },
+    });
+    await ctx.db.insert("syncRuns", {
+      userId: alice,
+      connectionId,
+      trigger: "cron" as const,
+      status: "success" as const,
+      startedAt: Date.now() - 1000,
+      finishedAt: Date.now(),
+    });
+  });
+
+  const mine = await t
+    .withIdentity({ subject: `${alice}|session-alice` })
+    .query(api.connections.activeRuns);
+  expect(mine).toHaveLength(1);
+  expect(mine[0]).toMatchObject({
+    connectionId,
+    trigger: "initial",
+    stats: { added: 7, modified: 2, removed: 0 },
+  });
+
+  expect(
+    await t
+      .withIdentity({ subject: `${bob}|session-bob` })
+      .query(api.connections.activeRuns),
+  ).toEqual([]);
+  expect(await t.query(api.connections.activeRuns)).toEqual([]);
+});
+
 const HOUR = 60 * 60 * 1000;
 
 test("sweepStuckRuns closes runs whose lease died but leaves live ones alone", async () => {

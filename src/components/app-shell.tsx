@@ -71,6 +71,16 @@ export function PublicShell({ children }: { children: ReactNode }) {
 export function AppShell({ children }: { children: ReactNode }) {
   const { signOut } = useAuthActions();
   const viewer = useQuery(api.users.viewer);
+  const connections = useQuery(api.connections.list);
+  const notion = useQuery(api.notion.getStatus);
+  // Banks linked and no destination is the state where every sync quietly
+  // does nothing, and it is reachable from a page that never mentions
+  // Notion. One dot, only while that is true.
+  const notionNeedsSetup =
+    (connections?.length ?? 0) > 0 &&
+    notion !== undefined &&
+    notion !== null &&
+    !(notion.connected && notion.databases);
 
   return (
     <div className="flex min-h-svh flex-col">
@@ -89,6 +99,12 @@ export function AppShell({ children }: { children: ReactNode }) {
                 className="rounded-md px-3 py-1.5 text-muted-foreground transition-colors hover:text-foreground [&.active]:bg-muted [&.active]:text-foreground"
               >
                 {item.label}
+                {item.to === "/notion" && notionNeedsSetup ? (
+                  <span
+                    aria-label="Notion setup unfinished"
+                    className="ml-1.5 inline-block size-1.5 rounded-full bg-primary align-middle"
+                  />
+                ) : null}
               </Link>
             ))}
           </nav>

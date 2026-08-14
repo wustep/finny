@@ -1,6 +1,8 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { useAction, useMutation, useQuery } from "convex/react";
 import {
+  ArrowRight,
+  CircleCheck,
   Landmark,
   MoreHorizontal,
   Pencil,
@@ -89,7 +91,23 @@ function connectionAlert(connection: ConnectionData) {
 
 function AccountsPage() {
   const connections = useQuery(api.connections.list);
+  const notion = useQuery(api.notion.getStatus);
+  const running = useQuery(api.connections.activeRuns);
   const { start: startLink, busy } = usePlaidConnect();
+
+  const hasBank = (connections?.length ?? 0) > 0;
+  const hasDestination = Boolean(notion?.connected && notion.databases);
+  // A connection only gets a lastSyncedAt from a run that finished
+  // successfully, which is the same thing as "the first sync worked".
+  const hasSynced = connections?.some((c) => c.lastSyncedAt) ?? false;
+  const loaded = connections !== undefined && notion !== undefined;
+  const showChecklist = loaded && !(hasBank && hasDestination && hasSynced);
+
+  const runByConnection = new Map(
+    (running ?? [])
+      .filter((run) => run.connectionId)
+      .map((run) => [run.connectionId, run]),
+  );
 
   return (
     <div className="mx-auto flex w-full max-w-3xl flex-col gap-6">
@@ -105,32 +123,182 @@ function AccountsPage() {
         </Button>
       </div>
 
+      {loaded && hasBank && !hasDestination ? <NoDestinationBanner /> : null}
+
+      {showChecklist ? (
+        <GettingStarted
+          hasBank={hasBank}
+          hasDestination={hasDestination}
+          hasSynced={hasSynced}
+          onAddBank={startLink}
+          addingBank={busy}
+        />
+      ) : null}
+
       {connections === undefined ? (
         <div className="flex flex-col gap-4">
           <Skeleton className="h-32 w-full" />
           <Skeleton className="h-32 w-full" />
         </div>
       ) : connections.length === 0 ? (
-        <Card>
-          <CardHeader className="items-center text-center">
-            <div className="mx-auto mb-2 flex size-12 items-center justify-center rounded-full bg-muted">
-              <Landmark className="size-6 text-muted-foreground" />
-            </div>
-            <CardTitle>No bank connections yet</CardTitle>
-            <CardDescription>
-              Connect a bank through Plaid to start syncing accounts,
-              transactions, and investments to Notion.
-            </CardDescription>
-          </CardHeader>
-        </Card>
+        // The checklist already asks for a bank, with the same button.
+        showChecklist ? null : (
+          <Card>
+            <CardHeader className="items-center text-center">
+              <div className="mx-auto mb-2 flex size-12 items-center justify-center rounded-full bg-muted">
+                <Landmark className="size-6 text-muted-foreground" />
+              </div>
+              <CardTitle>No bank connections yet</CardTitle>
+              <CardDescription>
+                Connect a bank through Plaid to start syncing accounts,
+                transactions, and investments to Notion.
+              </CardDescription>
+            </CardHeader>
+          </Card>
+        )
       ) : (
         connections.map((connection) => (
-          <ConnectionCard key={connection.id} connection={connection} />
+          <ConnectionCard
+            key={connection.id}
+            connection={connection}
+            run={runByConnection.get(connection.id)}
+          />
         ))
       )}
 
       <SyncHistory />
     </div>
+  );
+}
+
+// Banks but nowhere to put them is the one dead end the app can land in
+// without saying anything: syncs are scheduled, every one of them returns
+// early, and the Accounts page looks perfectly healthy.
+function NoDestinationBanner() {
+  return (
+    <Card className="border-primary/40 bg-primary/5">
+      <CardContent className="flex flex-wrap items-center gap-4 py-4">
+        <div className="min-w-64 flex-1">
+          <p className="text-sm font-medium">
+            Your banks are connected but nothing is syncing yet
+          </p>
+          <p className="text-sm text-muted-foreground">
+            Pick the Notion page Finny should build its databases in — the first
+            sync starts straight after.
+          </p>
+        </div>
+        <Button asChild>
+          <Link
+            to="/notion"
+            search={{ connected: undefined, error: undefined }}
+          >
+            Pick a Notion page <ArrowRight />
+          </Link>
+        </Button>
+      </CardContent>
+    </Card>
+  );
+}
+
+// Setup spans two pages and a wait, so each of the three steps reads its own
+// state rather than being ticked off by anything the user clicked. Nothing
+// is stored: the card is gone once all three are true.
+function GettingStarted({
+  hasBank,
+  hasDestination,
+  hasSynced,
+  onAddBank,
+  addingBank,
+}: {
+  hasBank: boolean;
+  hasDestination: boolean;
+  hasSynced: boolean;
+  onAddBank: () => void;
+  addingBank: boolean;
+}) {
+  const steps = [
+    {
+      title: "Connect a bank",
+      detail:
+        "Plaid handles the sign-in. Finny only ever reads what your bank shares.",
+      done: hasBank,
+      action: (
+        <Button size="sm" onClick={onAddBank} disabled={addingBank}>
+          <Plus /> Add connection
+        </Button>
+      ),
+    },
+    {
+      title: "Connect Notion and create the databases",
+      detail:
+        "Choose the page Finny should build its databases inside, and which modules you want.",
+      done: hasDestination,
+      action: (
+        <Button size="sm" asChild>
+          <Link
+            to="/notion"
+            search={{ connected: undefined, error: undefined }}
+          >
+            Set up Notion
+          </Link>
+        </Button>
+      ),
+    },
+    {
+      title: "First sync",
+      detail:
+        hasBank && hasDestination
+          ? "Running now — the connection above shows how far it has got."
+          : "Starts on its own as soon as the first two are done.",
+      done: hasSynced,
+      action: null,
+    },
+  ];
+  const done = steps.filter((step) => step.done).length;
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Finish setting up</CardTitle>
+        <CardDescription>
+          {done} of {steps.length} done
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <ol className="flex flex-col gap-4">
+          {steps.map((step, index) => (
+            <li key={step.title} className="flex items-start gap-3">
+              {step.done ? (
+                <CircleCheck className="mt-0.5 size-5 shrink-0 text-primary" />
+              ) : (
+                <span className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full border text-xs text-muted-foreground">
+                  {index + 1}
+                </span>
+              )}
+              <div className="flex flex-1 flex-col items-start gap-2">
+                <div>
+                  <p
+                    className={
+                      step.done
+                        ? "text-sm text-muted-foreground"
+                        : "text-sm font-medium"
+                    }
+                  >
+                    {step.title}
+                  </p>
+                  {step.done ? null : (
+                    <p className="text-sm text-muted-foreground">
+                      {step.detail}
+                    </p>
+                  )}
+                </div>
+                {step.done ? null : step.action}
+              </div>
+            </li>
+          ))}
+        </ol>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -207,7 +375,11 @@ function SyncRunRow({ run }: { run: RunData }) {
       <div className="flex items-center gap-3">
         <Badge
           variant={
-            failed ? "destructive" : run.status === "running" ? "outline" : "secondary"
+            failed
+              ? "destructive"
+              : run.status === "running"
+                ? "outline"
+                : "secondary"
           }
         >
           {run.status}
@@ -322,7 +494,69 @@ function RenameAccountDialog({
   );
 }
 
-function ConnectionCard({ connection }: { connection: ConnectionData }) {
+type ActiveRun = NonNullable<
+  ReturnType<typeof useQuery<typeof api.connections.activeRuns>>
+>[number];
+
+const triggerLabels = {
+  initial: "First sync",
+  webhook: "Bank update",
+  manual: "Manual sync",
+  cron: "Scheduled sync",
+} as const;
+
+// Only for the elapsed clock. Everything else on this card comes from
+// reactive queries, which update themselves as the sync writes.
+function useTicker() {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+  return now;
+}
+
+function LiveSyncProgress({
+  run,
+  firstSync,
+}: {
+  run: ActiveRun;
+  firstSync: boolean;
+}) {
+  const now = useTicker();
+  const stats = run.stats ?? { added: 0, modified: 0, removed: 0 };
+
+  return (
+    <div className="mb-5 flex gap-3 rounded-lg border bg-muted/40 p-4">
+      <RefreshCw className="mt-0.5 size-4 shrink-0 animate-spin text-muted-foreground" />
+      <div className="flex flex-col gap-1">
+        <p className="text-sm font-medium">
+          {triggerLabels[run.trigger]} in progress ·{" "}
+          {formatDuration(Math.max(0, now - run.startedAt))}
+        </p>
+        <p className="text-sm text-muted-foreground">
+          {stats.added} added · {stats.modified} updated · {stats.removed}{" "}
+          removed so far
+        </p>
+        {firstSync ? (
+          <p className="text-xs text-muted-foreground">
+            A first sync walks up to two years of history, and Notion accepts
+            about three writes a second, so this can take a while. It keeps
+            going whether or not this page is open.
+          </p>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function ConnectionCard({
+  connection,
+  run,
+}: {
+  connection: ConnectionData;
+  run?: ActiveRun;
+}) {
   const toggleAccountSync = useMutation(api.connections.toggleAccountSync);
   const removeConnection = useAction(api.plaid.removeConnection);
   const triggerSync = useAction(api.sync.triggerManual);
@@ -451,6 +685,12 @@ function ConnectionCard({ connection }: { connection: ConnectionData }) {
               </Button>
             </div>
           </div>
+        ) : null}
+        {run ? (
+          <LiveSyncProgress
+            run={run}
+            firstSync={connection.lastSyncedAt === undefined}
+          />
         ) : null}
         <ul className="flex flex-col gap-3">
           {connection.accounts.map((account) => (

@@ -322,6 +322,37 @@ export const recentRuns = query({
   },
 });
 
+// Runs still in flight, for the live progress line on a connection's card.
+// Queries are reactive, so the counts a running sync writes as it goes reach
+// the page on their own — nothing here needs polling.
+//
+// A run that has been going for longer than the last 25 runs took to start
+// falls out of this window; it stops showing progress rather than showing
+// the wrong thing.
+export const activeRuns = query({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) {
+      return [];
+    }
+    const runs = await ctx.db
+      .query("syncRuns")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .order("desc")
+      .take(25);
+    return runs
+      .filter((run) => run.status === "running")
+      .map((run) => ({
+        id: run._id,
+        connectionId: run.connectionId,
+        trigger: run.trigger,
+        startedAt: run.startedAt,
+        stats: run.stats,
+      }));
+  },
+});
+
 export const setNotionIconFileUpload = internalMutation({
   args: {
     connectionId: v.id("bankConnections"),
