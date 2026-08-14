@@ -127,6 +127,7 @@ export const addRunStats = internalMutation({
     added: v.number(),
     modified: v.number(),
     removed: v.number(),
+    skipped: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
     const run = await ctx.db.get(args.runId);
@@ -139,6 +140,7 @@ export const addRunStats = internalMutation({
         added: stats.added + args.added,
         modified: stats.modified + args.modified,
         removed: stats.removed + args.removed,
+        skipped: (stats.skipped ?? 0) + (args.skipped ?? 0),
       },
     });
   },
@@ -190,7 +192,24 @@ export const setCursor = internalMutation({
   handler: async (ctx, args) => {
     await ctx.db.patch(args.connectionId, {
       transactionsCursor: args.cursor,
+      // The page this counter was about is behind us now.
+      cursorFailures: undefined,
     });
+  },
+});
+
+// Count one run that could not write every row of the page at the current
+// cursor. Returns the number of consecutive failed attempts so far.
+export const recordCursorFailure = internalMutation({
+  args: { connectionId: v.id("bankConnections") },
+  handler: async (ctx, args) => {
+    const connection = await ctx.db.get(args.connectionId);
+    if (!connection) {
+      return 0;
+    }
+    const failures = (connection.cursorFailures ?? 0) + 1;
+    await ctx.db.patch(args.connectionId, { cursorFailures: failures });
+    return failures;
   },
 });
 

@@ -49,6 +49,11 @@ export default defineSchema({
     errorCode: v.optional(v.string()),
     // Plaid transactions/sync cursor
     transactionsCursor: v.optional(v.string()),
+    // Consecutive runs that failed to write every row of the page at the
+    // current cursor. Reset whenever the cursor moves; once it hits the
+    // retry limit the page is skipped so one unwritable row cannot stall
+    // the Item forever.
+    cursorFailures: v.optional(v.number()),
     lastSyncedAt: v.optional(v.number()),
     // Exclusive sync lease. Only one run may touch this connection at a
     // time, or two runs race the shared Plaid cursor and duplicate Notion
@@ -163,6 +168,9 @@ export default defineSchema({
         added: v.number(),
         modified: v.number(),
         removed: v.number(),
+        // Rows abandoned after repeated write failures, so a run that
+        // advanced the cursor past a poison page says how much it dropped.
+        skipped: v.optional(v.number()),
       }),
     ),
     error: v.optional(v.string()),

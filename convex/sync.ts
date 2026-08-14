@@ -59,6 +59,10 @@ import {
 const TXN_BATCH_SIZE = 100;
 const INV_BATCH_SIZE = 100;
 
+// How many runs may fail on the same transactions/sync page before its
+// unwritable rows are abandoned and the cursor moves on.
+const MAX_CURSOR_ATTEMPTS = 3;
+
 interface SyncContext {
   connection: Doc<"bankConnections">;
   notion: Doc<"notionConnections">;
@@ -408,6 +412,9 @@ export const transactionsBatch = internalAction({
       });
 
       let stats = { added: 0, modified: 0, removed: 0 };
+      // Plaid never re-sends a page once its cursor is consumed, so a row we
+      // could not write is a row lost forever unless the cursor stays put.
+      let failures = 0;
       const newEntries: Array<{ providerId: string; notionPageId: string }> =
         [];
 
@@ -439,6 +446,9 @@ export const transactionsBatch = internalAction({
         }
         const accountPage = accountPages[txn.account_id];
         if (!accountPage) {
+          // The account page is made in stage 1; missing means that failed.
+          console.error("no account page for transaction", txn.transaction_id);
+          failures++;
           continue;
         }
         try {
@@ -483,6 +493,7 @@ export const transactionsBatch = internalAction({
           }
         } catch (error) {
           console.error("failed to sync transaction", txn.transaction_id, error);
+          failures++;
         }
       }
 
@@ -493,6 +504,8 @@ export const transactionsBatch = internalAction({
         const pageId = txnPages[txn.transaction_id];
         const accountPage = accountPages[txn.account_id];
         if (!accountPage) {
+          console.error("no account page for transaction", txn.transaction_id);
+          failures++;
           continue;
         }
         try {
@@ -517,6 +530,7 @@ export const transactionsBatch = internalAction({
           }
         } catch (error) {
           console.error("failed to update transaction", txn.transaction_id, error);
+          failures++;
         }
       }
 
@@ -536,6 +550,7 @@ export const transactionsBatch = internalAction({
           stats.removed++;
         } catch (error) {
           console.error("failed to archive transaction", id, error);
+          failures++;
         }
       }
 
@@ -553,15 +568,51 @@ export const transactionsBatch = internalAction({
           providerIds: removedIds,
         });
       }
+      // Consuming the cursor tells Plaid this page landed. Do it only when
+      // it did: otherwise stop here and let the next run replay the page.
+      // Rows already in notionPageMap replay as updates, not duplicates.
+      const attempt = (connection.cursorFailures ?? 0) + 1;
+      const abandonPage = failures > 0 && attempt >= MAX_CURSOR_ATTEMPTS;
       await ctx.runMutation(internal.syncData.addRunStats, {
         runId: args.runId,
         ...stats,
+        skipped: abandonPage ? failures : 0,
       });
-      // Only advance the cursor after this page is fully processed.
+
+      if (failures > 0 && !abandonPage) {
+        await ctx.runMutation(internal.syncData.recordCursorFailure, {
+          connectionId: connection._id,
+        });
+        await ctx.runMutation(internal.syncData.finishRun, {
+          runId: args.runId,
+          status: "error",
+          error:
+            `${failures} transaction(s) failed to reach Notion (attempt ` +
+            `${attempt} of ${MAX_CURSOR_ATTEMPTS}). Leaving the Plaid cursor ` +
+            `in place so the next run retries this page.`,
+        });
+        return;
+      }
+
       await ctx.runMutation(internal.syncData.setCursor, {
         connectionId: connection._id,
         cursor: next_cursor,
       });
+
+      if (abandonPage) {
+        // A row Notion will never accept — a rejected select option, a
+        // deleted database — would otherwise block this Item's whole
+        // transaction stream. Move past it and say so on the run.
+        await ctx.runMutation(internal.syncData.finishRun, {
+          runId: args.runId,
+          status: "error",
+          error:
+            `Gave up on ${failures} transaction(s) after ${attempt} attempts ` +
+            `and advanced the Plaid cursor past them. They will not be ` +
+            `retried; check the logs for the underlying Notion error.`,
+        });
+        return;
+      }
 
       if (has_more) {
         await ctx.scheduler.runAfter(0, internal.sync.transactionsBatch, {
