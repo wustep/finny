@@ -4,7 +4,9 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "concurrently -k -n convex,vite -c magenta,cyan \"npm:convex:dev\" \"npm:dev:app\"",
+    "dev:app": "vite",
+    "convex:dev": "convex dev",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "typecheck": "tsc -b && tsc -p convex",
@@ -38,6 +40,7 @@
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.4",
+    "concurrently": "^10.0.4",
     "convex-test": "^0.0.55",
     "oxlint": "^1.75.0",
     "tailwindcss": "^4.3.3",

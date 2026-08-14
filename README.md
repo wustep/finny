@@ -39,7 +39,8 @@ npx convex dev
 
 Log in / create the project when prompted. This writes `.env.local`
 (`CONVEX_DEPLOYMENT`, `VITE_CONVEX_URL`) and generates `convex/_generated/`.
-Keep it running while developing.
+This first run is interactive; from then on `npm run dev` starts it for you
+alongside the app (step 8).
 
 Your deployment has two URLs you'll use below:
 
@@ -154,6 +155,12 @@ for it (sync, reconnect, remove, webhooks) uses that environment.
 ```bash
 npm run dev
 ```
+
+This runs both halves in one terminal: `convex dev` (pushes backend changes
+and keeps `.env.local` current) and the Vite dev server. Quitting stops both;
+if either exits, the other is killed with it. To run them apart, use
+`npm run convex:dev` and `npm run dev:app`. On a brand new checkout do step 1
+(`npx convex dev`) once first — that login and project picker is interactive.
 
 Open http://localhost:3466 → sign in with Google → enter the access
 password → **Accounts → Add connection** (Sandbox credentials:
