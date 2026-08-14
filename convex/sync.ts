@@ -63,6 +63,17 @@ const INV_BATCH_SIZE = 100;
 // unwritable rows are abandoned and the cursor moves on.
 const MAX_CURSOR_ATTEMPTS = 3;
 
+// Plaid error codes that mean "this Item simply has nothing to report for
+// investments" — a cash-only bank, or an Item whose investments product has
+// not finished initialising. These are the only outcomes a sync may treat as
+// a successful skip; anything else is a real failure. The plaid package does
+// not export these as an enum, so they are strings here.
+const NO_INVESTMENTS_CODES = new Set([
+  "PRODUCTS_NOT_SUPPORTED",
+  "PRODUCTS_NOT_READY",
+  "NO_INVESTMENT_ACCOUNTS",
+]);
+
 interface SyncContext {
   connection: Doc<"bankConnections">;
   notion: Doc<"notionConnections">;
@@ -689,11 +700,26 @@ export const investmentsBatch = internalAction({
           options: { count: INV_BATCH_SIZE, offset: args.offset },
         });
       } catch (error: any) {
-        // Items without investment accounts throw PRODUCTS_NOT_SUPPORTED.
-        console.log("investment transactions unavailable", error?.message);
+        // Only "this Item has no investments" is a clean skip. Catching
+        // everything here used to finish the run successfully, and finishRun
+        // forces the connection back to active — so ITEM_LOGIN_REQUIRED, a
+        // rate limit, or a 5xx made a broken Item look healthy.
+        const code: string | undefined = error?.response?.data?.error_code;
+        if (code && NO_INVESTMENTS_CODES.has(code)) {
+          console.log("investment transactions unavailable", code);
+          await ctx.runMutation(internal.syncData.finishRun, {
+            runId: args.runId,
+            status: "success",
+          });
+          return;
+        }
+        console.error("investment transactions failed", code, error?.message);
         await ctx.runMutation(internal.syncData.finishRun, {
           runId: args.runId,
-          status: "success",
+          status: "error",
+          error: `Plaid investments/transactions/get failed (${code ?? "unknown"}): ${
+            error?.response?.data?.error_message ?? error?.message ?? error
+          }`,
         });
         return;
       }
