@@ -182,6 +182,57 @@ async function resetUser(
   return { connections: connectionIds.length };
 }
 
+// ---------- connection status ----------
+
+// The Status select option in the Notion Bank Connections database. Live
+// contract with notionSchemas.ts, which creates those three options.
+function notionStatus(status: Doc<"bankConnections">["status"]): string {
+  return status === "active"
+    ? "Active"
+    : status === "error"
+      ? "Error"
+      : "Pending expiration";
+}
+
+// Write just the Status of a connection's Notion row.
+//
+// A full sync also writes Status, but a broken Item is exactly the case
+// where no sync will run — so without this the Notion row keeps saying
+// "Active" for as long as the bank stays broken. Called from the webhook
+// handler and the daily sweep, and safe to run repeatedly.
+//
+// Never throws: a webhook must not be held up by Notion being unreachable.
+export const pushConnectionStatusToNotion = internalAction({
+  args: { connectionId: v.id("bankConnections") },
+  handler: async (ctx, args) => {
+    try {
+      const context = await ctx.runQuery(internal.syncData.getContext, {
+        connectionId: args.connectionId,
+      });
+      if (!context?.notion?.databases?.bankConnections) {
+        return;
+      }
+      const { connection, notion } = context;
+      const pages = await ctx.runQuery(internal.syncData.getMapEntries, {
+        userId: connection.userId,
+        kind: "bankConnection",
+        providerIds: [connection.plaidItemId],
+      });
+      const pageId = pages[connection.plaidItemId];
+      if (!pageId) {
+        // Never synced, so there is no row to correct; the first sync
+        // writes the status it finds.
+        return;
+      }
+      await updatePage(notion.accessToken, pageId, {
+        Status: P.select(notionStatus(connection.status)),
+      });
+    } catch (error) {
+      console.error("failed to write connection status to Notion", error);
+    }
+  },
+});
+
 // ---------- stage 1: connection, accounts, balances, holdings ----------
 
 export const runForConnection = internalAction({
@@ -239,13 +290,7 @@ export const runForConnection = internalAction({
         properties: {
           Name: P.title(connection.institutionName),
           ID: P.text(connection.plaidItemId),
-          Status: P.select(
-            connection.status === "active"
-              ? "Active"
-              : connection.status === "error"
-                ? "Error"
-                : "Pending expiration",
-          ),
+          Status: P.select(notionStatus(connection.status)),
           "Last Update": P.date(new Date().toISOString()),
         },
         runId,

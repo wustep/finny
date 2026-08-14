@@ -555,6 +555,15 @@ export const sweep = internalMutation({
     let delay = 0;
     for (const connection of connections) {
       if (connection.status === "error") {
+        // Syncing a broken Item only produces Plaid errors, but its Notion
+        // row still has to say so — a status the app knows and Notion does
+        // not is how a bank stays broken unnoticed for weeks.
+        await ctx.scheduler.runAfter(
+          delay,
+          internal.sync.pushConnectionStatusToNotion,
+          { connectionId: connection._id },
+        );
+        delay += 2 * 1000;
         continue;
       }
       await ctx.scheduler.runAfter(delay, internal.sync.runForConnection, {

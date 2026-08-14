@@ -158,6 +158,14 @@ export const markReconnected = mutation({
       connectionId: args.connectionId,
       trigger: "manual",
     });
+    // The sync writes the status too, but it may find nothing to do (no
+    // Notion destination yet, another run holding the lease) and the Notion
+    // row would stay on "Error" after a repair that worked.
+    await ctx.scheduler.runAfter(
+      0,
+      internal.sync.pushConnectionStatusToNotion,
+      { connectionId: args.connectionId },
+    );
   },
 });
 

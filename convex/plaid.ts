@@ -246,22 +246,31 @@ export const handleWebhook = internalAction({
     console.log("plaid webhook", type, code, itemId);
 
     if (type === "ITEM") {
+      // A broken Item stops syncing, so the sync is no longer what keeps the
+      // Notion row honest — each status change pushes itself.
+      const mirrorStatus = () =>
+        ctx.scheduler.runAfter(0, internal.sync.pushConnectionStatusToNotion, {
+          connectionId: connection._id,
+        });
       if (code === "ERROR") {
         await ctx.runMutation(internal.connections.setStatusByItem, {
           plaidItemId: itemId,
           status: "error",
           errorCode: payload.error?.error_code,
         });
+        await mirrorStatus();
       } else if (code === "PENDING_EXPIRATION") {
         await ctx.runMutation(internal.connections.setStatusByItem, {
           plaidItemId: itemId,
           status: "pending_expiration",
         });
+        await mirrorStatus();
       } else if (code === "LOGIN_REPAIRED") {
         await ctx.runMutation(internal.connections.setStatusByItem, {
           plaidItemId: itemId,
           status: "active",
         });
+        await mirrorStatus();
       } else if (code === "NEW_ACCOUNTS_AVAILABLE") {
         // The sync's accountsGet is what records new accounts, so this is
         // just a nudge to run one.

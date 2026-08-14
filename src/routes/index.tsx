@@ -7,6 +7,7 @@ import {
   Plus,
   RefreshCw,
   Trash2,
+  TriangleAlert,
   Wrench,
 } from "lucide-react";
 import { useEffect, useState, type FormEvent } from "react";
@@ -51,6 +52,40 @@ const statusLabels = {
   error: "Needs attention",
   pending_expiration: "Expiring soon",
 } as const;
+
+// Plaid's error codes in the words of someone who just wants their bank to
+// work again. Anything not listed falls back to naming the code.
+const errorExplanations: Record<string, string> = {
+  ITEM_LOGIN_REQUIRED: "Your bank needs you to sign in again.",
+  INVALID_CREDENTIALS: "The sign-in details your bank has on file no longer work.",
+  INVALID_MFA: "The security code your bank asked for didn't go through.",
+  INVALID_UPDATED_USERNAME: "Your username at the bank changed.",
+  ITEM_LOCKED: "Your bank has locked the account. Sign in at your bank to unlock it, then reconnect here.",
+  USER_PERMISSION_REVOKED: "Access to this bank was revoked, so it stopped sharing data.",
+  USER_INPUT_TIMEOUT: "The last reconnect timed out before it finished.",
+  ITEM_NOT_SUPPORTED: "Your bank no longer supports this kind of connection.",
+  INSUFFICIENT_CREDENTIALS: "Your bank is asking for more than the saved credentials.",
+  INSTITUTION_DOWN: "Your bank is down. This usually clears on its own.",
+  INSTITUTION_NOT_RESPONDING: "Your bank isn't responding. This usually clears on its own.",
+  INSTITUTION_NO_LONGER_SUPPORTED: "This bank is no longer supported.",
+};
+
+function connectionAlert(connection: ConnectionData) {
+  if (connection.status === "pending_expiration") {
+    return {
+      title: "This connection expires soon",
+      detail:
+        "Your bank shares data for a fixed stretch and this one is nearly up.",
+    };
+  }
+  return {
+    title: "This connection stopped working",
+    detail: connection.errorCode
+      ? (errorExplanations[connection.errorCode] ??
+        `Your bank reported ${connection.errorCode}.`)
+      : "Your bank stopped sharing data with Finny.",
+  };
+}
 
 function AccountsPage() {
   const connections = useQuery(api.connections.list);
@@ -241,6 +276,7 @@ function ConnectionCard({ connection }: { connection: ConnectionData }) {
   const [removing, setRemoving] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [renaming, setRenaming] = useState<AccountData | null>(null);
+  const problem = connectionAlert(connection);
 
   const handleSync = () => {
     setSyncing(true);
@@ -328,6 +364,37 @@ function ConnectionCard({ connection }: { connection: ConnectionData }) {
         </div>
       </CardHeader>
       <CardContent>
+        {connection.status !== "active" ? (
+          <div className="mb-5 flex gap-3 rounded-lg border border-destructive/30 bg-destructive/5 p-4">
+            <TriangleAlert className="mt-0.5 size-4 shrink-0 text-destructive" />
+            <div className="flex flex-1 flex-col items-start gap-3">
+              <div className="flex flex-col gap-1">
+                <p className="text-sm font-medium">{problem.title}</p>
+                <p className="text-sm text-muted-foreground">
+                  {problem.detail}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  Nothing from this bank reaches Notion until it's
+                  reconnected. Banks that sign you in through their own site
+                  expire every few months, so this is routine.
+                  {connection.errorCode ? (
+                    <>
+                      {" "}
+                      <span className="font-mono">{connection.errorCode}</span>
+                    </>
+                  ) : null}
+                </p>
+              </div>
+              <Button
+                size="sm"
+                disabled={reconnecting}
+                onClick={startReconnect}
+              >
+                <Wrench /> {reconnecting ? "Opening…" : "Reconnect"}
+              </Button>
+            </div>
+          </div>
+        ) : null}
         <ul className="flex flex-col gap-3">
           {connection.accounts.map((account) => (
             <li key={account.id} className="flex items-center gap-3 text-sm">
