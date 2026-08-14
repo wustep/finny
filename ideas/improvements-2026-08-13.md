@@ -93,7 +93,7 @@
 
 ### 13. Pass-through transaction rules (categorize / rename / hide)
 - **Impact:** 🔴 high · **Effort:** L · **Status:** ✅ accepted
-- **Problem.** [redacted]’s rules engine is why a Notion ledger is usable; PLAN.md names it phase 6 / deferred. There is no `rules` table and no Rules route. Sync writes PFC category and cleaned merchant with no user override. Edits to Finny-owned properties in Notion get overwritten on the next `updatePage`. Hide is impossible without storing amounts: evaluation must happen in the sync pass-through.
+- **Problem.** A rules engine is what makes a Notion ledger usable; PLAN.md names it phase 6 / deferred. There is no `rules` table and no Rules route. Sync writes PFC category and cleaned merchant with no user override. Edits to Finny-owned properties in Notion get overwritten on the next `updatePage`. Hide is impossible without storing amounts: evaluation must happen in the sync pass-through.
 - **Proposal.** `rules` config only (merchant/summary/account/day/amount conditions; outcomes: set category, rename title, skip/archive). Apply in `transactionsBatch` before create/update. Priority-ordered; document that Notion edits to Finny-owned properties lose. Hide = don’t create, or archive + drop map entry so later syncs don’t resurrect.
 - **Risks / trade-offs.** Amount conditions already see Plaid payloads in memory, but logs that echo merchants fight the “we don’t store financial data” story. Regex + hide can drop real spend with no in-app preview. Large L that delays reconnect/onboarding polish.
 - **Files.** `convex/schema.ts`, `convex/sync.ts`, `convex/rules.ts` (new), `src/routes/` (Rules page), `src/components/app-shell.tsx`

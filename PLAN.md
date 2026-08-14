@@ -1,15 +1,15 @@
-# Finny — Plaid → Notion sync (a [redacted] clone, Notion-only)
+# Finny — Plaid → Notion sync (Notion-only)
 
 Personal finance sync: connect banks via Plaid, sync accounts / transactions / investments into Notion databases. No charts, no MCP/API, no storage of financial data — purely sync.
 
-## What [redacted] actually does (research summary)
+## Core sync behavior (research summary)
 
-Sources: docs.[redacted].io (full crawl), [redacted].io marketing/how-to pages, [redacted]'s v2 OpenAPI schemas, and a full inspection of the [redacted]-produced Notion page in Stephen's workspace.
+Distilled from researching commercial Plaid → Notion sync products and inspecting a live synced Notion workspace.
 
-- **One-way sync**, [redacted] → Notion. User edits to [redacted]-owned properties get overwritten; users are encouraged to add their *own* extra properties/rollups/formulas, which [redacted] never touches.
+- **One-way sync**, Finny → Notion. User edits to Finny-owned properties get overwritten; users are encouraged to add their *own* extra properties/rollups/formulas, which Finny never touches.
 - **Event-driven**: Plaid webhooks trigger syncs "within minutes"; periodic backfill catches missed webhooks; manual sync button.
 - **Dedup/update-in-place** keyed on provider transaction ID: pending → posted updates the existing Notion page rather than inserting a new one. Removed transactions are handled via Plaid's `removed` list.
-- **Setup flow**: sign in → Plaid Link a bank → connect Notion (OAuth) → pick a page → pick tracking modules → [redacted] creates databases inside that page → first sync runs immediately.
+- **Setup flow**: sign in → Plaid Link a bank → connect Notion (OAuth) → pick a page → pick tracking modules → Finny creates databases inside that page → first sync runs immediately.
 - **Tracking modules** determine which databases get created:
   - *Balances*: Bank Connections (Institutions), Accounts, Balance History
   - *Spending*: Accounts, Transactions, Categories
@@ -17,16 +17,16 @@ Sources: docs.[redacted].io (full crawl), [redacted].io marketing/how-to pages, 
 - **Categories** = Plaid Personal Finance Categories (the "AI categorization" toggle), synced into a Categories DB with a relation from Transactions.
 - **Rules engine** (phase 2 for us): conditions on merchant/summary/amount/account/day with contains/equals/regex; outcomes: set category, rename merchant, hide transaction. Priority-ordered, manual assignment always wins.
 
-## Notion schema ([redacted] baseline + approved changes)
+## Notion schema (baseline + approved changes)
 
 > Superseded by [convex/notionSchemas.ts](convex/notionSchemas.ts) — that file
 > is the live schema; the tables below record the original intent.
 
-Baseline verified from the live [redacted] page (8 full-page databases, one table view each). All money fields: number, dollar format, 2 precision. Every DB has an `ID` text property holding the provider ID — **except** Balance History (no ID at all in our version) and Holdings (none).
+Baseline verified from a live reference Notion page (8 full-page databases, one table view each). All money fields: number, dollar format, 2 precision. Every DB has an `ID` text property holding the provider ID — **except** Balance History (no ID at all in our version) and Holdings (none).
 
-**Approved deviations from [redacted] (2026-08-12):**
+**Approved deviations from the baseline (2026-08-12):**
 - *Balance History*: title is `YYYY-MM-DD · <Account Name>` (keyed on account+date); the UUID title property is dropped.
-- *Holdings*: add **Cost Basis** ($). [redacted]'s "Formula" (market value) is not created — Notion rejects a rollup pointing at a relation made in the same request, so the Security Price rollup and the `Quantity * price` formula are left for the user to add by hand.
+- *Holdings*: add **Cost Basis** ($). The baseline's "Formula" (market value) is not created — Notion rejects a rollup pointing at a relation made in the same request, so the Security Price rollup and the `Quantity * price` formula are left for the user to add by hand.
 - *Transactions*: title is the **cleaned merchant name** (fallback: Plaid's `name`); raw bank string goes to a new **Original Description** text property; "Is Pending?" renamed **Pending**.
 - *Accounts*: add credit liability fields — **Next Payment Due** (date), **Minimum Payment** ($), **Last Statement Balance** ($), **APR** (%); row icon = institution logo.
 - *Bank Connections*: add **Status** select (Active / Error / Pending expiration); row icon = institution logo.
@@ -123,7 +123,7 @@ Sorted Date desc.
 
 Notes:
 - Relations are one-directional (no reverse properties on the target DBs).
-- [redacted] uses hosted SVG icons per DB (`assets.[redacted].io/icons/*`); we'll use emoji or our own hosted icons.
+- Each DB gets an emoji or one of our own hosted icons.
 - The Notion API has limited control over view config (sorts/grouping); replicate what's possible, don't block on it.
 
 ## Architecture
@@ -161,9 +161,9 @@ Not stored: amounts, merchants, dates, balances, holdings — no financial data 
 3. **Accounts/balances**: `accounts/get` → update Accounts DB rows; daily cron appends Balance History rows (one per account per day, keyed so re-runs don't duplicate).
 4. **Investments**: `investments/holdings/get` + `investments/transactions/get` → upsert Securities, Holdings, Investment Transactions.
 5. Notion writes go through a rate-limited queue (≤3 rps, retry on 409/429), batched via Convex scheduler so long backfills survive.
-6. First sync: backfill from the configured start date (default 2 years, like [redacted]).
+6. First sync: backfill from the configured start date (default 2 years).
 
-### App pages (mirroring [redacted]'s app)
+### App pages
 
 - **Onboarding**: sign in → connect Notion → pick page → pick modules + start date → connect bank(s) via Plaid Link → first sync with progress.
 - **Accounts**: bank connections with status, last sync, account list with sync toggles; add connection (Plaid Link); reconnect (Link update mode); remove.
@@ -186,4 +186,4 @@ Not stored: amounts, merchants, dates, balances, holdings — no financial data 
 3. **ID map in Convex approved** (cursor + providerId→Notion page id, opaque ids only).
 4. **Convex Auth with Google sign-in.**
 5. v1 always creates fresh databases; rules engine and map-to-existing deferred.
-6. Schema need not replicate [redacted] exactly — improvements proposed and pending Stephen's sign-off (see conversation).
+6. Schema need not replicate the baseline exactly — improvements proposed and pending Stephen's sign-off (see conversation).

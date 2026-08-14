@@ -489,7 +489,7 @@ export const deleteCascade = internalMutation({
       await ctx.db.delete(account._id);
     }
     await ctx.db.delete(args.connectionId);
-    // Notion pages created by past syncs are left in place, matching [redacted]:
-    // the destination stops updating but keeps its data.
+    // Notion pages created by past syncs are left in place: the destination
+    // stops updating but keeps its data.
   },
 });

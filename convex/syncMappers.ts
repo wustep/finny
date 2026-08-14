@@ -144,8 +144,8 @@ export function transactionProperties(
   };
 }
 
-// Credit-card balances arrive positive from Plaid (amount owed), matching
-// the [redacted] convention, so no sign flip here.
+// Credit-card balances arrive positive from Plaid (amount owed) and stay
+// positive in Notion, so no sign flip here.
 export function balanceForNotion(account: AccountBase): number | null {
   return account.balances.current ?? account.balances.available ?? null;
 }
@@ -180,8 +180,8 @@ export function accountProperties(
 }
 
 // Plaid cash flows: positive = out of the account. For cash-type rows we
-// flip so deposits/contributions read positive in Notion ([redacted] convention);
-// trade rows (buy/sell) keep Plaid's sign.
+// flip so deposits/contributions read positive in Notion; trade rows
+// (buy/sell) keep Plaid's sign.
 export function investmentTransactionProperties(
   txn: InvestmentTransaction,
   accountPageId: string,

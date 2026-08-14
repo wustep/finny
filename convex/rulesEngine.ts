@@ -8,7 +8,7 @@
 // dates, so there is nothing to re-run a rule against afterwards — only the
 // next sync event for that transaction.
 //
-// Semantics, matching [redacted]: rules are ordered by priority ascending and the
+// Semantics: rules are ordered by priority ascending and the
 // FIRST enabled rule whose conditions all match wins outright. Its outcomes
 // are applied together and no later rule is consulted, so one rule can
 // recategorise and rename at once, and a rule cannot be half-overridden by

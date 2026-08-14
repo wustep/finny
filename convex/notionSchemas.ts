@@ -1,5 +1,5 @@
 // Notion database property schemas (API version 2022-06-28).
-// [redacted]'s schema with the deviations approved in PLAN.md.
+// The baseline schema with the deviations approved in PLAN.md.
 
 type Props = Record<string, unknown>;
 
