@@ -10,6 +10,9 @@ crons.daily(
   "daily sync sweep",
   { hourUTC: 11, minuteUTC: 0 }, // ~6-7am ET
   internal.syncData.sweep,
+  // No continuation cursor: this is the first pass, which also closes out
+  // stale runs before scheduling the day's syncs.
+  {},
 );
 
 export default crons;

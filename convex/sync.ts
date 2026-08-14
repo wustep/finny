@@ -359,6 +359,7 @@ export const runForConnection = internalAction({
             customNames.get(account.account_id),
           ),
           runId,
+          accountId: account.account_id,
           icon,
         });
         accountPages[account.account_id] = pageId;
@@ -384,6 +385,7 @@ export const runForConnection = internalAction({
               Date: P.date(day),
             },
             runId,
+            accountId: account.account_id,
           });
         }
       }
@@ -1047,6 +1049,7 @@ export const investmentsBatch = internalAction({
               token,
               databaseId: databases.investmentTransactions,
               properties,
+              accountId: txn.account_id,
             });
             if (!claimed) {
               throw new Error(
@@ -1166,10 +1169,25 @@ function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// A run archives at most this many vanished rows; the next one picks up the
+// rest. Keeps a first reconciliation over a long history from trying to make
+// hundreds of Notion calls in a single action.
+const RECONCILE_ARCHIVE_LIMIT = 500;
+
+// Rows one unmap mutation deletes. Each is a point lookup plus a delete, so
+// this only has to stay inside one transaction's write budget.
+const ARCHIVE_UNMAP_BATCH = 200;
+
 // Archive the Notion rows for investment transactions this Item's accounts no
 // longer have at Plaid. Cash transactions arrive with a `removed` list and
 // holdings are a full snapshot, but investment transactions are create-and-
 // update only, so a canceled trade sits in Notion forever without this.
+//
+// Walked one account at a time, a bounded page per query, resuming from the
+// providerId each page ended on: the map holds every investment transaction
+// the user has ever synced, so there is no version of this that reads them
+// all. Rows with no accountId are outside every page this reads and are
+// therefore never archived — see getVanishedInvestmentTransactions.
 //
 // Only ever called after a complete window walk with no failed writes. Note
 // that "the window" is notion.startDate onwards, so moving that date forward
@@ -1184,29 +1202,66 @@ async function reconcileInvestmentTransactions(
     accountIds: string[];
   },
 ): Promise<number> {
-  const vanished = await ctx.runQuery(
-    internal.syncData.getVanishedInvestmentTransactions,
-    { userId: input.userId, runId: input.runId, accountIds: input.accountIds },
-  );
   const archived: string[] = [];
-  for (const entry of vanished) {
-    try {
-      await archivePage(input.token, entry.notionPageId);
-      archived.push(entry.providerId);
-    } catch (error) {
-      console.error(
-        "failed to archive investment transaction",
-        entry.providerId,
-        error,
+  for (const accountId of input.accountIds) {
+    let after: string | undefined = undefined;
+    do {
+      // Annotated because the inferred type flows back into `after`, which
+      // this call's own arguments read.
+      const page: {
+        vanished: Array<{ providerId: string; notionPageId: string }>;
+        nextProviderId: string | null;
+      } = await ctx.runQuery(
+        internal.syncData.getVanishedInvestmentTransactions,
+        {
+          userId: input.userId,
+          runId: input.runId,
+          accountId,
+          afterProviderId: after,
+        },
       );
+      for (const entry of page.vanished) {
+        if (archived.length >= RECONCILE_ARCHIVE_LIMIT) {
+          break;
+        }
+        try {
+          await archivePage(input.token, entry.notionPageId);
+          archived.push(entry.providerId);
+        } catch (error) {
+          console.error(
+            "failed to archive investment transaction",
+            entry.providerId,
+            error,
+          );
+        }
+      }
+      after = page.nextProviderId ?? undefined;
+    } while (after !== undefined && archived.length < RECONCILE_ARCHIVE_LIMIT);
+    if (archived.length >= RECONCILE_ARCHIVE_LIMIT) {
+      break;
     }
   }
   if (archived.length > 0) {
-    await ctx.runMutation(internal.syncData.deleteMapEntries, {
-      userId: input.userId,
-      kind: "investmentTransaction",
-      providerIds: archived,
-    });
+    // One mutation per batch, not per row: the map keys are short and the
+    // delete is a point lookup each.
+    for (let index = 0; index < archived.length; index += ARCHIVE_UNMAP_BATCH) {
+      await ctx.runMutation(internal.syncData.deleteMapEntries, {
+        userId: input.userId,
+        kind: "investmentTransaction",
+        providerIds: archived.slice(index, index + ARCHIVE_UNMAP_BATCH),
+      });
+    }
+  }
+  const unscoped = await ctx.runQuery(
+    internal.syncData.countUnscopedInvestmentTransactions,
+    { userId: input.userId },
+  );
+  if (unscoped.count > 0) {
+    console.log(
+      `skipped ${unscoped.count}${unscoped.more ? "+" : ""} mapped ` +
+        `investment transaction(s) with no account scope; run ` +
+        `syncData.backfillMapScopes to make them reconcilable`,
+    );
   }
   return archived.length;
 }
@@ -1280,6 +1335,11 @@ async function claimAndCreatePage(
     databaseId: string;
     properties: Record<string, unknown>;
     icon?: NotionIcon;
+    // The Plaid account this row belongs to, where there is one. Recorded on
+    // the map row so reconciliation can find it without reading the user's
+    // whole history; rows created before this was passed are scoped by
+    // syncData.backfillMapScopes instead.
+    accountId?: string;
     // Query Notion before every create, not just after a reclaimed claim.
     // Only worth the extra request where rows routinely outlive the map —
     // categories survive resetAndResync, transactions do not.
@@ -1291,6 +1351,7 @@ async function claimAndCreatePage(
       userId: input.userId,
       kind: input.kind,
       providerId: input.providerId,
+      accountId: input.accountId,
     });
     if (claim.status === "ready") {
       return { pageId: claim.notionPageId, created: false };
@@ -1325,7 +1386,13 @@ async function claimAndCreatePage(
       await ctx.runMutation(internal.syncData.putMapEntries, {
         userId: input.userId,
         kind: input.kind,
-        entries: [{ providerId: input.providerId, notionPageId: pageId }],
+        entries: [
+          {
+            providerId: input.providerId,
+            notionPageId: pageId,
+            accountId: input.accountId,
+          },
+        ],
       });
       return { pageId, created: !adopted };
     } catch (error) {
@@ -1433,6 +1500,7 @@ async function upsertTransaction(
     token: input.token,
     databaseId: input.databaseId,
     properties,
+    accountId: txn.account_id,
     icon,
   });
   if (!claimed) {
@@ -1628,6 +1696,8 @@ async function upsertMapped(
     databaseId: string;
     properties: Record<string, unknown>;
     runId: Id<"syncRuns">;
+    // Scopes the map row to a Plaid account where the entity has one.
+    accountId?: string;
     // Applied on creation only, so a later sync never overwrites an icon
     // the user has since chosen themselves.
     icon?: () => Promise<NotionIcon | undefined>;
@@ -1640,6 +1710,7 @@ async function upsertMapped(
     token: input.token,
     databaseId: input.databaseId,
     properties: input.properties,
+    accountId: input.accountId,
   });
   if (!claimed) {
     throw new Error(
@@ -1773,10 +1844,23 @@ async function syncHoldings(
     accounts.filter((a) => a.syncEnabled).map((a) => a.plaidAccountId),
   );
 
-  const holdingPages = await ctx.runQuery(internal.syncData.getAllMapEntries, {
-    userId,
-    kind: "holding",
-  });
+  // One bounded read per account of this Item, rather than every holding row
+  // the user has across every connection. A holding's providerId is
+  // `${plaidAccountId}|${securityId}`, so account scoping covers them exactly.
+  // Legacy rows with no accountId are invisible here: a create still finds
+  // them through claimMapEntry (so no duplicate page), they just are not
+  // archived until syncData.backfillMapScopes derives their account.
+  const holdingPages: Record<string, string> = {};
+  for (const account of accounts) {
+    Object.assign(
+      holdingPages,
+      await ctx.runQuery(internal.syncData.getAccountMapEntries, {
+        userId,
+        kind: "holding",
+        accountId: account.plaidAccountId,
+      }),
+    );
+  }
   const seen = new Set<string>();
   let stats = { added: 0, modified: 0, removed: 0 };
 
@@ -1816,6 +1900,7 @@ async function syncHoldings(
           token,
           databaseId: databases.holdings,
           properties,
+          accountId: holding.account_id,
         });
         if (!claimed) {
           console.error("holding claim never resolved", providerId);
@@ -1831,13 +1916,12 @@ async function syncHoldings(
     }
   }
 
-  // Archive holdings that disappeared (sold positions) for this item's
-  // accounts.
-  const itemAccountIds = new Set(accounts.map((a) => a.plaidAccountId));
+  // Archive holdings that disappeared (sold positions). Everything read above
+  // already belongs to one of this Item's accounts, so there is nothing left
+  // to filter by connection.
   const removedIds: string[] = [];
   for (const [providerId, pageId] of Object.entries(holdingPages)) {
-    const accountId = providerId.split("|")[0];
-    if (!itemAccountIds.has(accountId) || seen.has(providerId)) {
+    if (seen.has(providerId)) {
       continue;
     }
     try {

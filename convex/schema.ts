@@ -206,14 +206,35 @@ export default defineSchema({
     notionPageId: v.string(),
     // Which Plaid account this row belongs to. The map is keyed by user, so
     // without this a reconciliation pass for one Item cannot tell its own
-    // rows from another connection's. Absent on rows written before this
-    // was tracked; those are left alone until a sync sees them again.
+    // rows from another connection's — and, more to the point, could not read
+    // its own rows without scanning every transaction the user has ever
+    // synced. Absent on rows written before this was tracked; those are left
+    // alone (never archived) until syncData.backfillMapScopes or a sync
+    // scopes them.
     accountId: v.optional(v.string()),
     // The last run that saw this provider id still present at Plaid. Lets a
     // full-window walk find the rows that have since vanished without
     // carrying the seen set through scheduler arguments.
     lastSeenRunId: v.optional(v.id("syncRuns")),
-  }).index("by_user_kind_provider", ["userId", "kind", "providerId"]),
+  })
+    .index("by_user_kind_provider", ["userId", "kind", "providerId"])
+    // The only index a reconciliation pass may read through: the unbounded
+    // kinds (transaction, investmentTransaction, balanceSnapshot) grow with
+    // history, so they can only be walked one account at a time, with
+    // providerId as the continuation cursor. Rows with no accountId are not
+    // in the range an `.eq("accountId", id)` scan reads, which is what keeps
+    // legacy rows out of archival by construction.
+    //
+    // Not staged: this table is small today (tens of thousands of rows at
+    // most), so the deploy-blocking backfill is seconds. A user base with
+    // millions of mapped rows would want `staged: true` here and a follow-up
+    // deploy to drop the flag.
+    .index("by_user_kind_account_provider", [
+      "userId",
+      "kind",
+      "accountId",
+      "providerId",
+    ]),
 
   // User overrides applied to transactions as they sync: recategorise,
   // retitle, or keep out of Notion. Config, not data — the conditions are

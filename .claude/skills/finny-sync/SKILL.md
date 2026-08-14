@@ -47,6 +47,21 @@ the right side of that line.
   empty `notionPageId` is an in-flight claim, not a page — readers skip it.
   This exists because user-scoped keys (categories, securities) are reachable
   from several connections' syncs at the same time.
+- `notionPageMap` rows for transactions, investment transactions and balance
+  snapshots grow with a user's history, so no read may span a whole
+  `(userId, kind)` range: `syncData.getAllMapEntries` throws for those kinds,
+  and everything else goes one Plaid account at a time through
+  `by_user_kind_account_provider` in bounded pages (`accountId` is written at
+  claim time). A row with no `accountId` is outside every scoped read, so it
+  is never archived — unattributable rows are left in Notion rather than
+  guessed at.
+- Vanished investment transactions: Plaid drops a canceled one out of the
+  window instead of listing it as removed, so after a complete failure-free
+  walk each of the Item's accounts is paged for rows this run never marked
+  seen, and those are archived (capped per run). A short walk archives live
+  history, which is why `pageErrors` gates it.
+- The daily sweep walks all users' connections in batched passes, carrying its
+  15s stagger and its creation-time cursor through the continuation.
 - Pending → posted: when an added transaction carries a
   `pending_transaction_id` that is already mapped, update that page and
   `syncData.rekeyMapEntry` to the posted id. Never create a second page.

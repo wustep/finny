@@ -260,6 +260,19 @@ export const clearCursors = internalMutation({
 
 // ---------- providerId -> Notion page id map ----------
 
+// Kinds whose row count per user grows with how long they have been using
+// Finny rather than with the shape of their accounts. A whole (userId, kind)
+// range of one of these is unbounded by construction, so nothing may read it:
+// walk one account at a time through by_user_kind_account_provider instead
+// (see getVanishedInvestmentTransactions).
+const UNBOUNDED_KINDS: ReadonlySet<string> = new Set([
+  "transaction",
+  "investmentTransaction",
+  "balanceSnapshot",
+]);
+
+// Point lookups, so the read is bounded by the caller's providerIds — which
+// is one Plaid page (≤ 100 ids) at every call site.
 export const getMapEntries = internalQuery({
   args: {
     userId: v.id("users"),
@@ -287,15 +300,69 @@ export const getMapEntries = internalQuery({
   },
 });
 
+// Every row of one bounded kind, as providerId -> Notion page id.
+//
+// "Bounded" is the whole contract: this reads a full (userId, kind) range, so
+// it is only ever correct for a kind whose row count is set by the shape of
+// the user's accounts — bankConnection (one per Item), account (one per
+// account), category (≤ 127 Plaid personal finance categories), security (one
+// per instrument the user holds). The kinds that grow with history are
+// rejected rather than documented, because the failure mode is a query that
+// works fine for a year and then stops.
 export const getAllMapEntries = internalQuery({
   args: { userId: v.id("users"), kind: kindValidator },
   handler: async (ctx, args) => {
+    if (UNBOUNDED_KINDS.has(args.kind)) {
+      throw new Error(
+        `getAllMapEntries is not safe for kind "${args.kind}": that range ` +
+          `grows with the user's history. Read it per account through ` +
+          `by_user_kind_account_provider instead.`,
+      );
+    }
+    // Bounded by the kinds allowed above, none of which grows with history.
     const entries = await ctx.db
       .query("notionPageMap")
       .withIndex("by_user_kind_provider", (q) =>
         q.eq("userId", args.userId).eq("kind", args.kind),
       )
       .collect();
+    return Object.fromEntries(
+      entries
+        .filter((entry) => entry.notionPageId)
+        .map((entry) => [entry.providerId, entry.notionPageId]),
+    );
+  },
+});
+
+// Rows for one Plaid account of a kind whose per-account count is bounded by
+// the account itself — holdings, where there is one row per portfolio
+// position. Capped anyway: an account with more positions than this loses
+// archival of the overflow, never correctness, because a create still finds
+// the existing row through claimMapEntry.
+const ACCOUNT_SCOPED_MAX = 500;
+
+export const getAccountMapEntries = internalQuery({
+  args: {
+    userId: v.id("users"),
+    kind: kindValidator,
+    accountId: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const entries = await ctx.db
+      .query("notionPageMap")
+      .withIndex("by_user_kind_account_provider", (q) =>
+        q
+          .eq("userId", args.userId)
+          .eq("kind", args.kind)
+          .eq("accountId", args.accountId),
+      )
+      .take(ACCOUNT_SCOPED_MAX);
+    if (entries.length === ACCOUNT_SCOPED_MAX) {
+      console.error(
+        `more than ${ACCOUNT_SCOPED_MAX} ${args.kind} rows on account ` +
+          `${args.accountId}; the rest are not visible to this pass`,
+      );
+    }
     return Object.fromEntries(
       entries
         .filter((entry) => entry.notionPageId)
@@ -325,6 +392,10 @@ export const claimMapEntry = internalMutation({
     userId: v.id("users"),
     kind: kindValidator,
     providerId: v.string(),
+    // The Plaid account this row belongs to, where the caller knows it.
+    // Written at insert time so rows created from now on are already scoped
+    // for reconciliation; backfillMapScopes handles the ones that are not.
+    accountId: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const existing = await ctx.db
@@ -355,6 +426,7 @@ export const claimMapEntry = internalMutation({
       providerId: args.providerId,
       notionPageId: "",
       claimedAt: Date.now(),
+      accountId: args.accountId,
     });
     return { status: "create" as const, reclaimed: false };
   },
@@ -365,7 +437,11 @@ export const putMapEntries = internalMutation({
     userId: v.id("users"),
     kind: kindValidator,
     entries: v.array(
-      v.object({ providerId: v.string(), notionPageId: v.string() }),
+      v.object({
+        providerId: v.string(),
+        notionPageId: v.string(),
+        accountId: v.optional(v.string()),
+      }),
     ),
   },
   handler: async (ctx, args) => {
@@ -380,9 +456,15 @@ export const putMapEntries = internalMutation({
         )
         .unique();
       if (existing) {
-        if (existing.notionPageId !== entry.notionPageId) {
+        if (
+          existing.notionPageId !== entry.notionPageId ||
+          (entry.accountId !== undefined && existing.accountId === undefined)
+        ) {
           await ctx.db.patch(existing._id, {
             notionPageId: entry.notionPageId,
+            // Scope a row this caller knows the account for, so a legacy row
+            // the sync touches again stops being legacy.
+            accountId: entry.accountId ?? existing.accountId,
           });
         }
       } else {
@@ -391,6 +473,7 @@ export const putMapEntries = internalMutation({
           kind: args.kind,
           providerId: entry.providerId,
           notionPageId: entry.notionPageId,
+          accountId: entry.accountId,
         });
       }
     }
@@ -427,6 +510,11 @@ export const deleteMapEntries = internalMutation({
 // each belongs to. Called once per page of the window walk, for every id on
 // the page whether or not it was in scope to sync — an id the walk mentioned
 // is an id that still exists, which is all reconciliation asks.
+//
+// Bounded by the Plaid page size: one indexed lookup and at most one patch
+// per id on the page the caller just fetched (INV_BATCH_SIZE = 100 in
+// sync.ts), never per id in the user's history. Keep it that way — a caller
+// that accumulated ids across pages would turn this into an unbounded write.
 export const markInvestmentTransactionsSeen = internalMutation({
   args: {
     userId: v.id("users"),
@@ -457,45 +545,82 @@ export const markInvestmentTransactionsSeen = internalMutation({
   },
 });
 
-// A run archives at most this many vanished rows; the next one picks up the
-// rest. Keeps a first reconciliation over a long history from trying to make
-// hundreds of Notion calls in a single action.
-const RECONCILE_LIMIT = 500;
+// Rows one reconciliation pass reads. A user's mapped investment
+// transactions grow without bound, so the pass that looks for vanished ones
+// can only ever read a window of them: one account, 200 rows, resumed from
+// the providerId the last pass stopped at.
+const RECONCILE_BATCH = 200;
 
-// Mapped investment transactions on this Item's accounts that the given run
-// never saw. Rows with no accountId predate that field and are skipped —
-// archiving on a guess is worse than reconciling one run late.
+// One page of mapped investment transactions on a single Plaid account that
+// the given run never saw, plus where to resume.
+//
+// Scoped through by_user_kind_account_provider, so rows with no accountId are
+// not in the range this reads at all. That is deliberate: such a row predates
+// scoping and cannot be attributed to a connection, and archiving a Notion
+// page on a guess is worse than reconciling one run late (or never — see
+// syncData.backfillMapScopes, which scopes what it can derive).
 export const getVanishedInvestmentTransactions = internalQuery({
   args: {
     userId: v.id("users"),
     runId: v.id("syncRuns"),
-    accountIds: v.array(v.string()),
+    accountId: v.string(),
+    // Exclusive lower bound: the providerId the previous pass stopped at.
+    afterProviderId: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    const accountIds = new Set(args.accountIds);
-    const vanished: Array<{ providerId: string; notionPageId: string }> = [];
-    const rows = ctx.db
+    const after = args.afterProviderId;
+    const rows = await ctx.db
       .query("notionPageMap")
-      .withIndex("by_user_kind_provider", (q) =>
-        q.eq("userId", args.userId).eq("kind", "investmentTransaction"),
-      );
-    for await (const row of rows) {
-      if (
-        row.notionPageId &&
-        row.accountId &&
-        accountIds.has(row.accountId) &&
-        row.lastSeenRunId !== args.runId
-      ) {
-        vanished.push({
-          providerId: row.providerId,
-          notionPageId: row.notionPageId,
-        });
-        if (vanished.length >= RECONCILE_LIMIT) {
-          break;
-        }
-      }
-    }
-    return vanished;
+      .withIndex("by_user_kind_account_provider", (q) => {
+        const scoped = q
+          .eq("userId", args.userId)
+          .eq("kind", "investmentTransaction")
+          .eq("accountId", args.accountId);
+        return after === undefined ? scoped : scoped.gt("providerId", after);
+      })
+      .take(RECONCILE_BATCH);
+    const vanished = rows
+      .filter(
+        (row) => row.notionPageId && row.lastSeenRunId !== args.runId,
+      )
+      .map((row) => ({
+        providerId: row.providerId,
+        notionPageId: row.notionPageId,
+      }));
+    return {
+      vanished,
+      // Null once this account is walked to the end. A short page is the end:
+      // the index is ordered by providerId, so nothing can appear behind us.
+      nextProviderId:
+        rows.length === RECONCILE_BATCH
+          ? rows[rows.length - 1].providerId
+          : null,
+    };
+  },
+});
+
+// How many unscoped rows a log line will admit to. Counting them all would be
+// the unbounded read this whole change exists to remove.
+const UNSCOPED_SAMPLE = 500;
+
+// Mapped investment transactions this user has that carry no accountId, so a
+// run can say how many rows it is knowingly leaving unreconciled.
+export const countUnscopedInvestmentTransactions = internalQuery({
+  args: { userId: v.id("users") },
+  handler: async (ctx, args) => {
+    const rows = await ctx.db
+      .query("notionPageMap")
+      .withIndex("by_user_kind_account_provider", (q) =>
+        q
+          .eq("userId", args.userId)
+          .eq("kind", "investmentTransaction")
+          .eq("accountId", undefined),
+      )
+      .take(UNSCOPED_SAMPLE + 1);
+    return {
+      count: Math.min(rows.length, UNSCOPED_SAMPLE),
+      more: rows.length > UNSCOPED_SAMPLE,
+    };
   },
 });
 
@@ -605,18 +730,39 @@ export const sweepStuckRuns = internalMutation({
   },
 });
 
+// Connections one sweep pass schedules. The sweep is the one place that walks
+// every user's connections, so it cannot read the table in one go — a pass
+// takes a batch and hands the rest to a continuation.
+const SWEEP_BATCH = 100;
+
 export const sweep = internalMutation({
-  args: {},
-  handler: async (ctx) => {
-    // Subtransaction: a failure closing out stale runs rolls back on its
-    // own and still leaves the day's syncs scheduled.
-    try {
-      await ctx.runMutation(internal.syncData.sweepStuckRuns, {});
-    } catch (error) {
-      console.error("stuck run sweep failed", error);
+  args: {
+    // Continuation cursor: schedule connections created after this time.
+    // Absent on the first pass, which is also the one that closes out stale
+    // runs. Creation time orders the built-in index, so a pass that resumes
+    // from the last row it saw cannot revisit or skip one.
+    after: v.optional(v.number()),
+    // Carried across passes so the stagger keeps counting up instead of
+    // restarting at zero and firing a hundred runs at once.
+    delayMs: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    if (args.after === undefined) {
+      // Subtransaction: a failure closing out stale runs rolls back on its
+      // own and still leaves the day's syncs scheduled.
+      try {
+        await ctx.runMutation(internal.syncData.sweepStuckRuns, {});
+      } catch (error) {
+        console.error("stuck run sweep failed", error);
+      }
     }
-    const connections = await ctx.db.query("bankConnections").collect();
-    let delay = 0;
+    const connections = await ctx.db
+      .query("bankConnections")
+      .withIndex("by_creation_time", (q) =>
+        q.gt("_creationTime", args.after ?? 0),
+      )
+      .take(SWEEP_BATCH);
+    let delay = args.delayMs ?? 0;
     for (const connection of connections) {
       if (connection.status === "error") {
         // Syncing a broken Item only produces Plaid errors, but its Notion
@@ -636,6 +782,12 @@ export const sweep = internalMutation({
       });
       // Space runs out to be gentle on Plaid/Notion rate limits.
       delay += 15 * 1000;
+    }
+    if (connections.length === SWEEP_BATCH) {
+      await ctx.scheduler.runAfter(0, internal.syncData.sweep, {
+        after: connections[connections.length - 1]._creationTime,
+        delayMs: delay,
+      });
     }
   },
 });
