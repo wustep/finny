@@ -93,7 +93,10 @@ function AccountsPage() {
   const connections = useQuery(api.connections.list);
   const notion = useQuery(api.notion.getStatus);
   const running = useQuery(api.connections.activeRuns);
-  const { start: startLink, busy } = usePlaidConnect();
+  // One shared Plaid Link instance for the whole page: adding a bank and
+  // every card's Reconnect all go through it (multiple usePlaidLink hooks
+  // would embed the Plaid script once each).
+  const { start: startLink, busy, busyFor } = usePlaidConnect();
 
   const hasBank = (connections?.length ?? 0) > 0;
   const hasDestination = Boolean(notion?.connected && notion.databases);
@@ -118,7 +121,7 @@ function AccountsPage() {
             Bank connections synced to Notion
           </p>
         </div>
-        <Button onClick={startLink} disabled={busy}>
+        <Button onClick={() => startLink()} disabled={busy}>
           <Plus /> Add connection
         </Button>
       </div>
@@ -130,7 +133,7 @@ function AccountsPage() {
           hasBank={hasBank}
           hasDestination={hasDestination}
           hasSynced={hasSynced}
-          onAddBank={startLink}
+          onAddBank={() => startLink()}
           addingBank={busy}
         />
       ) : null}
@@ -162,6 +165,8 @@ function AccountsPage() {
             key={connection.id}
             connection={connection}
             run={runByConnection.get(connection.id)}
+            reconnecting={busyFor === connection.id}
+            onReconnect={() => startLink(connection.id)}
           />
         ))
       )}
@@ -553,16 +558,17 @@ function LiveSyncProgress({
 function ConnectionCard({
   connection,
   run,
+  reconnecting,
+  onReconnect,
 }: {
   connection: ConnectionData;
   run?: ActiveRun;
+  reconnecting: boolean;
+  onReconnect: () => void;
 }) {
   const toggleAccountSync = useMutation(api.connections.toggleAccountSync);
   const removeConnection = useAction(api.plaid.removeConnection);
   const triggerSync = useAction(api.sync.triggerManual);
-  const { start: startReconnect, busy: reconnecting } = usePlaidConnect({
-    connectionId: connection.id,
-  });
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [removing, setRemoving] = useState(false);
   const [syncing, setSyncing] = useState(false);
@@ -638,10 +644,7 @@ function ConnectionCard({
               <DropdownMenuItem disabled={syncing} onClick={handleSync}>
                 <RefreshCw /> Sync now
               </DropdownMenuItem>
-              <DropdownMenuItem
-                disabled={reconnecting}
-                onClick={startReconnect}
-              >
+              <DropdownMenuItem disabled={reconnecting} onClick={onReconnect}>
                 <Wrench /> Reconnect
               </DropdownMenuItem>
               <DropdownMenuItem
@@ -676,11 +679,7 @@ function ConnectionCard({
                   ) : null}
                 </p>
               </div>
-              <Button
-                size="sm"
-                disabled={reconnecting}
-                onClick={startReconnect}
-              >
+              <Button size="sm" disabled={reconnecting} onClick={onReconnect}>
                 <Wrench /> {reconnecting ? "Opening…" : "Reconnect"}
               </Button>
             </div>
