@@ -106,6 +106,7 @@ test("toggleAccountSync refuses another user's account", async () => {
 
   const account = await t.run(async (ctx) => ctx.db.get(accountId));
   expect(account?.syncEnabled).toBe(true);
+  expect(account?.needsBackfill).toBeUndefined();
 });
 
 test("toggleAccountSync updates the owner's own account", async () => {
@@ -131,6 +132,40 @@ test("toggleAccountSync updates the owner's own account", async () => {
 
   const account = await t.run(async (ctx) => ctx.db.get(accountId));
   expect(account?.syncEnabled).toBe(false);
+});
+
+test("toggleAccountSync queues a catch-up when an account is switched on", async () => {
+  const { t, alice } = await twoUsers();
+  await t.mutation(internal.connections.saveConnection, {
+    userId: alice,
+    plaidItemId: "item_1",
+    accessToken: "access-alice",
+    institutionName: "Alice Bank",
+    accounts: [ACCOUNT],
+  });
+  const accountId = await t.run(async (ctx) => {
+    const account = await ctx.db.query("accounts").first();
+    return account!._id;
+  });
+  const asAlice = t.withIdentity({ subject: `${alice}|session-alice` });
+  const read = () => t.run(async (ctx) => ctx.db.get(accountId));
+
+  // Off: the Item's cursor keeps moving without this account, so there is
+  // nothing to catch up on until it comes back.
+  await asAlice.mutation(api.connections.toggleAccountSync, {
+    accountId,
+    enabled: false,
+  });
+  expect((await read())?.needsBackfill).toBeUndefined();
+
+  await asAlice.mutation(api.connections.toggleAccountSync, {
+    accountId,
+    enabled: true,
+  });
+  expect((await read())?.needsBackfill).toBe(true);
+
+  await t.mutation(internal.connections.clearAccountBackfill, { accountId });
+  expect((await read())?.needsBackfill).toBeUndefined();
 });
 
 test("upsertPlaidAccounts adds unknown accounts disabled and refreshes known ones", async () => {

@@ -7,6 +7,8 @@
 //
 //   runForConnection            (bank connection page, accounts, balances,
 //                                holdings + securities)
+//     -> accountBackfill        (one transactions/get page per invocation,
+//                                once per account switched back on)
 //     -> transactionsBatch      (one transactions/sync page per invocation,
 //                                reschedules itself while has_more)
 //     -> investmentsBatch       (one page of investment transactions per
@@ -394,24 +396,9 @@ export const runForConnection = internalAction({
         });
       }
 
-      // 5. Hand off to the transaction chain
-      if (notion.modules.spending && databases.transactions) {
-        await ctx.scheduler.runAfter(0, internal.sync.transactionsBatch, {
-          connectionId: connection._id,
-          runId,
-        });
-      } else if (notion.modules.investments && databases.investmentTransactions) {
-        await ctx.scheduler.runAfter(0, internal.sync.investmentsBatch, {
-          connectionId: connection._id,
-          runId,
-          offset: 0,
-        });
-      } else {
-        await ctx.runMutation(internal.syncData.finishRun, {
-          runId,
-          status: "success",
-        });
-      }
+      // 5. Hand off to the transaction chain, catching up any account that
+      //    was switched back on first.
+      await scheduleNextStage(ctx, { context, runId, completed: [] });
     } catch (error) {
       console.error("sync failed", error);
       await ctx.runMutation(internal.syncData.finishRun, {
@@ -422,6 +409,260 @@ export const runForConnection = internalAction({
     }
   },
 });
+
+// ---------- stage 1b: per-account catch-up (self-rescheduling) ----------
+
+const BACKFILL_PAGE_SIZE = 100;
+
+// Plaid keeps about two years of transactions, so a wider window is only
+// wasted requests.
+const BACKFILL_MAX_DAYS = 730;
+
+// A walk this long means an account nobody meant to backfill. Stop rather
+// than re-walk the same thousands of rows on every run forever.
+const MAX_BACKFILL_PAGES = 50;
+
+function backfillStart(startDate: string | undefined, end: string): string {
+  const earliest = new Date(`${end}T00:00:00Z`);
+  earliest.setUTCDate(earliest.getUTCDate() - BACKFILL_MAX_DAYS);
+  const capped = earliest.toISOString().slice(0, 10);
+  return startDate && startDate > capped ? startDate : capped;
+}
+
+// Fetch one account's history straight from Plaid, a page at a time.
+//
+// transactions/sync is per Item, and its cursor advances whether or not a
+// given account was switched on, so everything that streamed by while an
+// account was off is not coming back. transactions/get reads the same data
+// without touching that cursor, which is why the catch-up uses it. Rows go
+// through the same map as everything else, so re-running only updates.
+export const accountBackfill = internalAction({
+  args: {
+    connectionId: v.id("bankConnections"),
+    runId: v.id("syncRuns"),
+    plaidAccountId: v.string(),
+    offset: v.number(),
+    // Accounts this run has already walked. A walk that ends with failures
+    // leaves its flag set to retry later, so without this the run would
+    // pick the same account again and never reach the next stage.
+    completed: v.array(v.string()),
+    failures: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const context = await loadContext(ctx, args.connectionId);
+    if (!context) {
+      await ctx.runMutation(internal.syncData.finishRun, {
+        runId: args.runId,
+        status: "error",
+        error: "The connection or its Notion destination went away mid-sync.",
+      });
+      return;
+    }
+    if (!(await heartbeat(ctx, args.connectionId, args.runId))) {
+      return;
+    }
+    const { connection, notion } = context;
+    const databases = notion.databases!;
+    const token = notion.accessToken;
+    const userId = connection.userId;
+    const completed = [...args.completed, args.plaidAccountId];
+    const moveOn = () =>
+      scheduleNextStage(ctx, { context, runId: args.runId, completed });
+
+    try {
+      const account = context.accounts.find(
+        (row) => row.plaidAccountId === args.plaidAccountId,
+      );
+      if (
+        !account ||
+        !account.syncEnabled ||
+        !account.needsBackfill ||
+        !databases.transactions
+      ) {
+        // Switched off again mid-run, or already caught up.
+        await moveOn();
+        return;
+      }
+
+      const accountPages = await ctx.runQuery(
+        internal.syncData.getAllMapEntries,
+        { userId, kind: "account" },
+      );
+      const accountPage = accountPages[args.plaidAccountId];
+      if (!accountPage) {
+        // Stage 1 makes the account page. Without it these rows have
+        // nothing to relate to, so leave the flag for the next run.
+        console.error("no account page for catch-up", args.plaidAccountId);
+        await moveOn();
+        return;
+      }
+
+      const client = plaidClient(connection.plaidEnv ?? "production");
+      const end = todayUTC();
+      let response;
+      try {
+        response = await client.transactionsGet({
+          access_token: connection.accessToken,
+          start_date: backfillStart(notion.startDate, end),
+          end_date: end,
+          options: {
+            account_ids: [args.plaidAccountId],
+            count: BACKFILL_PAGE_SIZE,
+            offset: args.offset,
+            include_original_description: true,
+          },
+        });
+      } catch (error: any) {
+        // Nothing here has consumed a cursor, so a failed catch-up costs
+        // only this attempt: keep the flag and let a later run retry.
+        console.error(
+          "account catch-up failed",
+          args.plaidAccountId,
+          error?.response?.data?.error_code,
+          error?.message,
+        );
+        await moveOn();
+        return;
+      }
+      const { transactions, total_transactions } = response.data;
+
+      const categoryPages = await ctx.runQuery(
+        internal.syncData.getAllMapEntries,
+        { userId, kind: "category" },
+      );
+      const ensureCategory = categoryResolver(ctx, {
+        userId,
+        token,
+        databaseId: databases.categories,
+        cache: categoryPages,
+      });
+      const txnPages = await ctx.runQuery(internal.syncData.getMapEntries, {
+        userId,
+        kind: "transaction",
+        providerIds: [
+          ...transactions.map((txn) => txn.transaction_id),
+          ...transactions
+            .map((txn) => txn.pending_transaction_id)
+            .filter(Boolean),
+        ] as string[],
+      });
+
+      const stats = { added: 0, modified: 0, removed: 0 };
+      let failures = args.failures ?? 0;
+      for (const txn of transactions) {
+        try {
+          const result = await upsertTransaction(ctx, {
+            userId,
+            token,
+            databaseId: databases.transactions,
+            txn,
+            accountPage,
+            categoryPage: await ensureCategory(txn),
+            txnPages,
+          });
+          stats[result]++;
+        } catch (error) {
+          console.error("failed to catch up transaction", txn.transaction_id, error);
+          failures++;
+        }
+      }
+      await ctx.runMutation(internal.syncData.addRunStats, {
+        runId: args.runId,
+        ...stats,
+      });
+
+      const walked = args.offset + transactions.length;
+      const capped = walked >= MAX_BACKFILL_PAGES * BACKFILL_PAGE_SIZE;
+      if (transactions.length > 0 && walked < total_transactions && !capped) {
+        await ctx.scheduler.runAfter(0, internal.sync.accountBackfill, {
+          connectionId: connection._id,
+          runId: args.runId,
+          plaidAccountId: args.plaidAccountId,
+          offset: walked,
+          completed: args.completed,
+          failures,
+        });
+        return;
+      }
+
+      if (capped && walked < total_transactions) {
+        console.error(
+          `catch-up for ${args.plaidAccountId} stopped at ${walked} of ` +
+            `${total_transactions} transactions; the rest of that window ` +
+            `will not be fetched.`,
+        );
+      } else if (failures > 0) {
+        console.error(
+          `${failures} row(s) failed the catch-up for ${args.plaidAccountId}; ` +
+            `leaving it queued for the next run.`,
+        );
+      }
+      if (failures === 0 || capped) {
+        await ctx.runMutation(internal.connections.clearAccountBackfill, {
+          accountId: account._id,
+        });
+      }
+      await moveOn();
+    } catch (error) {
+      console.error("account catch-up batch failed", error);
+      await ctx.runMutation(internal.syncData.finishRun, {
+        runId: args.runId,
+        status: "error",
+        error: String(error),
+      });
+    }
+  },
+});
+
+// What follows the account pass: any account still waiting on a catch-up,
+// then the transaction stream, then investments.
+async function scheduleNextStage(
+  ctx: ActionCtx,
+  input: {
+    context: SyncContext;
+    runId: Id<"syncRuns">;
+    completed: string[];
+  },
+): Promise<void> {
+  const { connection, notion, accounts } = input.context;
+  const databases = notion.databases!;
+
+  if (notion.modules.spending && databases.transactions) {
+    const pending = accounts.find(
+      (account) =>
+        account.syncEnabled &&
+        account.needsBackfill &&
+        !input.completed.includes(account.plaidAccountId),
+    );
+    if (pending) {
+      await ctx.scheduler.runAfter(0, internal.sync.accountBackfill, {
+        connectionId: connection._id,
+        runId: input.runId,
+        plaidAccountId: pending.plaidAccountId,
+        offset: 0,
+        completed: input.completed,
+      });
+      return;
+    }
+    await ctx.scheduler.runAfter(0, internal.sync.transactionsBatch, {
+      connectionId: connection._id,
+      runId: input.runId,
+    });
+    return;
+  }
+  if (notion.modules.investments && databases.investmentTransactions) {
+    await ctx.scheduler.runAfter(0, internal.sync.investmentsBatch, {
+      connectionId: connection._id,
+      runId: input.runId,
+      offset: 0,
+    });
+    return;
+  }
+  await ctx.runMutation(internal.syncData.finishRun, {
+    runId: input.runId,
+    status: "success",
+  });
+}
 
 // ---------- stage 2: transactions (self-rescheduling) ----------
 
@@ -480,6 +721,7 @@ export const transactionsBatch = internalAction({
         ...added.map((t) => t.transaction_id),
         ...added.map((t) => t.pending_transaction_id).filter(Boolean),
         ...modified.map((t) => t.transaction_id),
+        ...modified.map((t) => t.pending_transaction_id).filter(Boolean),
         ...removed.map((t) => t.transaction_id ?? ""),
       ].filter(Boolean) as string[];
       const txnPages = await ctx.runQuery(internal.syncData.getMapEntries, {
@@ -493,135 +735,54 @@ export const transactionsBatch = internalAction({
       // could not write is a row lost forever unless the cursor stays put.
       let failures = 0;
 
-      const ensureCategory = async (txn: Transaction) => {
-        const pfc = txn.personal_finance_category;
-        if (!pfc?.detailed || !databases.categories) {
-          return null;
-        }
-        if (categoryPages[pfc.detailed]) {
-          return categoryPages[pfc.detailed];
-        }
-        const pageId = await ensureCategoryPage(ctx, {
-          userId,
-          token,
-          databaseId: databases.categories,
-          detailed: pfc.detailed,
-          primary: pfc.primary,
-          iconUrl: txn.personal_finance_category_icon_url ?? undefined,
-        });
-        if (pageId) {
-          categoryPages[pfc.detailed] = pageId;
-        }
-        return pageId;
-      };
+      const ensureCategory = categoryResolver(ctx, {
+        userId,
+        token,
+        databaseId: databases.categories,
+        cache: categoryPages,
+      });
 
-      for (const txn of added) {
-        if (!inScope(txn)) {
+      // A transaction whose account is switched off (or that predates the
+      // start date) still gets its updates if it already has a Notion page:
+      // this stream is the only place a pending row learns it posted, or
+      // that an amount was corrected, and the cursor moves past it either
+      // way. Only the create is skipped — that is what "off" means.
+      const mappedPage = (txn: Transaction) =>
+        txnPages[txn.transaction_id] ??
+        (txn.pending_transaction_id
+          ? txnPages[txn.pending_transaction_id]
+          : undefined);
+
+      for (const txn of [...added, ...modified]) {
+        const scoped = inScope(txn);
+        if (!scoped && !mappedPage(txn)) {
           continue;
         }
         const accountPage = accountPages[txn.account_id];
         if (!accountPage) {
+          if (!scoped) {
+            // Nothing to relate the row to, and writing it without the
+            // relation would clear the one it has.
+            continue;
+          }
           // The account page is made in stage 1; missing means that failed.
           console.error("no account page for transaction", txn.transaction_id);
           failures++;
           continue;
         }
         try {
-          const categoryPage = await ensureCategory(txn);
-          const properties = transactionProperties(txn, accountPage, categoryPage);
-          // Merchant logos ride along in the request we are already making,
-          // so keeping them current costs no extra calls.
-          const icon = transactionIcon(txn);
-          const existing = txnPages[txn.transaction_id];
-          const pendingPage = txn.pending_transaction_id
-            ? txnPages[txn.pending_transaction_id]
-            : undefined;
-          if (existing) {
-            await updatePage(token, existing, properties, icon);
-            stats.modified++;
-          } else if (pendingPage) {
-            // Pending -> posted: update the page we made for the pending
-            // transaction and re-key its mapping to the posted id.
-            await updatePage(token, pendingPage, properties, icon);
-            await ctx.runMutation(internal.syncData.rekeyMapEntry, {
-              userId,
-              kind: "transaction",
-              fromProviderId: txn.pending_transaction_id!,
-              toProviderId: txn.transaction_id,
-            });
-            txnPages[txn.transaction_id] = pendingPage;
-            delete txnPages[txn.pending_transaction_id!];
-            stats.modified++;
-          } else {
-            const claimed = await claimAndCreatePage(ctx, {
-              userId,
-              kind: "transaction",
-              providerId: txn.transaction_id,
-              token,
-              databaseId: databases.transactions,
-              properties,
-              icon,
-            });
-            if (!claimed) {
-              throw new Error(
-                `another sync holds the transaction claim for ${txn.transaction_id}`,
-              );
-            }
-            if (!claimed.created) {
-              // Adopted a page a previous attempt left behind; make sure it
-              // carries this page's values.
-              await updatePage(token, claimed.pageId, properties, icon);
-            }
-            txnPages[txn.transaction_id] = claimed.pageId;
-            stats.added++;
-          }
+          const result = await upsertTransaction(ctx, {
+            userId,
+            token,
+            databaseId: databases.transactions,
+            txn,
+            accountPage,
+            categoryPage: await ensureCategory(txn),
+            txnPages,
+          });
+          stats[result]++;
         } catch (error) {
           console.error("failed to sync transaction", txn.transaction_id, error);
-          failures++;
-        }
-      }
-
-      for (const txn of modified) {
-        if (!inScope(txn)) {
-          continue;
-        }
-        const pageId = txnPages[txn.transaction_id];
-        const accountPage = accountPages[txn.account_id];
-        if (!accountPage) {
-          console.error("no account page for transaction", txn.transaction_id);
-          failures++;
-          continue;
-        }
-        try {
-          const categoryPage = await ensureCategory(txn);
-          const properties = transactionProperties(txn, accountPage, categoryPage);
-          const icon = transactionIcon(txn);
-          if (pageId) {
-            await updatePage(token, pageId, properties, icon);
-            stats.modified++;
-          } else {
-            const claimed = await claimAndCreatePage(ctx, {
-              userId,
-              kind: "transaction",
-              providerId: txn.transaction_id,
-              token,
-              databaseId: databases.transactions,
-              properties,
-              icon,
-            });
-            if (!claimed) {
-              throw new Error(
-                `another sync holds the transaction claim for ${txn.transaction_id}`,
-              );
-            }
-            if (!claimed.created) {
-              await updatePage(token, claimed.pageId, properties, icon);
-            }
-            txnPages[txn.transaction_id] = claimed.pageId;
-            stats.added++;
-          }
-        } catch (error) {
-          console.error("failed to update transaction", txn.transaction_id, error);
           failures++;
         }
       }
@@ -1150,6 +1311,117 @@ async function claimAndCreatePage(
   }
   console.error("claim never resolved", input.kind, input.providerId);
   return null;
+}
+
+// Create or update the Notion row for one Plaid transaction and keep the
+// caller's providerId -> page map in step. Shared by the transactions/sync
+// stream and the per-account catch-up so the pending -> posted rule and the
+// claim-then-create rule have one implementation between them.
+//
+// Callers decide whether a create is allowed: pass a txn with no mapping
+// only when it should be created.
+async function upsertTransaction(
+  ctx: ActionCtx,
+  input: {
+    userId: Id<"users">;
+    token: string;
+    databaseId: string;
+    txn: Transaction;
+    accountPage: string;
+    categoryPage: string | null;
+    txnPages: Record<string, string>;
+  },
+): Promise<"added" | "modified"> {
+  const { txn, txnPages } = input;
+  const properties = transactionProperties(
+    txn,
+    input.accountPage,
+    input.categoryPage,
+  );
+  // Merchant logos ride along in the request we are already making, so
+  // keeping them current costs no extra calls.
+  const icon = transactionIcon(txn);
+
+  const existing = txnPages[txn.transaction_id];
+  if (existing) {
+    await updatePage(input.token, existing, properties, icon);
+    return "modified";
+  }
+
+  const pendingPage = txn.pending_transaction_id
+    ? txnPages[txn.pending_transaction_id]
+    : undefined;
+  if (pendingPage) {
+    // Pending -> posted: update the page made for the pending transaction
+    // and re-key its mapping to the posted id.
+    await updatePage(input.token, pendingPage, properties, icon);
+    await ctx.runMutation(internal.syncData.rekeyMapEntry, {
+      userId: input.userId,
+      kind: "transaction",
+      fromProviderId: txn.pending_transaction_id!,
+      toProviderId: txn.transaction_id,
+    });
+    txnPages[txn.transaction_id] = pendingPage;
+    delete txnPages[txn.pending_transaction_id!];
+    return "modified";
+  }
+
+  const claimed = await claimAndCreatePage(ctx, {
+    userId: input.userId,
+    kind: "transaction",
+    providerId: txn.transaction_id,
+    token: input.token,
+    databaseId: input.databaseId,
+    properties,
+    icon,
+  });
+  if (!claimed) {
+    throw new Error(
+      `another sync holds the transaction claim for ${txn.transaction_id}`,
+    );
+  }
+  if (!claimed.created) {
+    // Adopted a page a previous attempt left behind; make sure it carries
+    // this transaction's values.
+    await updatePage(input.token, claimed.pageId, properties, icon);
+  }
+  txnPages[txn.transaction_id] = claimed.pageId;
+  return "added";
+}
+
+// Resolve a transaction's category page, creating it the first time it is
+// seen. The cache is the caller's, so one pass never asks twice.
+function categoryResolver(
+  ctx: ActionCtx,
+  input: {
+    userId: Id<"users">;
+    token: string;
+    databaseId: string | undefined;
+    cache: Record<string, string>;
+  },
+): (txn: Transaction) => Promise<string | null> {
+  return async (txn) => {
+    const pfc = txn.personal_finance_category;
+    const databaseId = input.databaseId;
+    if (!pfc?.detailed || !databaseId) {
+      return null;
+    }
+    if (input.cache[pfc.detailed]) {
+      return input.cache[pfc.detailed];
+    }
+    const pageId = await ensureCategoryPage(ctx, {
+      userId: input.userId,
+      token: input.token,
+      databaseId,
+      detailed: pfc.detailed,
+      primary: pfc.primary,
+      iconUrl: txn.personal_finance_category_icon_url ?? undefined,
+    });
+    if (pageId) {
+      input.cache[pfc.detailed] = pageId;
+    }
+    return pageId;
+  };
 }
 
 // Categories belong to the user, not to one connection, so two connections

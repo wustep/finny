@@ -85,6 +85,12 @@ export default defineSchema({
     // first linked — the user has never been asked whether to sync it, so
     // it starts disabled and the UI flags it. Cleared once they answer.
     discoveredAt: v.optional(v.number()),
+    // Set when the account is switched on. The transactions/sync cursor is
+    // shared by the whole Item and moves on whether or not this account was
+    // syncing, so everything that streamed past while it was off is gone
+    // from that stream; the next run fetches the window separately. Cleared
+    // once that catch-up completes without failures.
+    needsBackfill: v.optional(v.boolean()),
   })
     .index("by_user", ["userId"])
     .index("by_connection", ["connectionId"])

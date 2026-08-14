@@ -420,6 +420,9 @@ function ConnectionCard({ connection }: { connection: ConnectionData }) {
                   {account.isNew
                     ? " · found after linking, turn on to sync it"
                     : null}
+                  {account.catchingUp
+                    ? " · catching up on missed history"
+                    : null}
                 </div>
               </div>
               <Button
@@ -433,6 +436,7 @@ function ConnectionCard({ connection }: { connection: ConnectionData }) {
               </Button>
               <Switch
                 checked={account.syncEnabled}
+                aria-label={`Sync ${account.name} to Notion`}
                 onCheckedChange={(enabled) =>
                   void toggleAccountSync({
                     accountId: account.id as Id<"accounts">,
@@ -443,6 +447,11 @@ function ConnectionCard({ connection }: { connection: ConnectionData }) {
             </li>
           ))}
         </ul>
+        <p className="mt-4 text-xs text-muted-foreground">
+          Switching an account off pauses its sync — rows already in Notion
+          stay put, but nothing new is added while it's off. Switch it back on
+          and the next sync fills in the history it missed.
+        </p>
       </CardContent>
 
       <RenameAccountDialog

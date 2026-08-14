@@ -48,6 +48,7 @@ export const list = query({
             subtype: account.subtype,
             syncEnabled: account.syncEnabled,
             isNew: account.discoveredAt !== undefined,
+            catchingUp: account.syncEnabled && account.needsBackfill === true,
           })),
         };
       }),
@@ -70,7 +71,17 @@ export const toggleAccountSync = mutation({
       syncEnabled: args.enabled,
       // Either answer to "do you want this one?" retires the new badge.
       discoveredAt: undefined,
+      // Switching an account on has to reach back for what its Item's
+      // cursor consumed while it was off — see accountBackfill in sync.ts.
+      needsBackfill: args.enabled ? true : undefined,
     });
+  },
+});
+
+export const clearAccountBackfill = internalMutation({
+  args: { accountId: v.id("accounts") },
+  handler: async (ctx, args) => {
+    await ctx.db.patch(args.accountId, { needsBackfill: undefined });
   },
 });
 
