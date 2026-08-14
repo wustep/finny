@@ -1,6 +1,6 @@
 /// <reference types="vite/client" />
 import { convexTest } from "convex-test";
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
@@ -10,6 +10,9 @@ const modules = import.meta.glob("./**/*.ts");
 // Rows one reconciliation page reads (syncData.RECONCILE_BATCH). Mirrored
 // here so the fixtures below are deliberately bigger than one page.
 const RECONCILE_BATCH = 200;
+
+// Rows one backfill pass patches (syncData.BACKFILL_BATCH), same idea.
+const BACKFILL_BATCH = 200;
 
 type Seeded = {
   userId: Id<"users">;
@@ -236,6 +239,128 @@ test("getAllMapEntries refuses the kinds that grow with history", async () => {
       kind: "category",
     }),
   ).toEqual({});
+});
+
+// providerId -> accountId for every map row of a user, so a test can assert on
+// what the backfill did and did not scope.
+async function scopesFor(
+  t: ReturnType<typeof convexTest>,
+  userId: Id<"users">,
+): Promise<Record<string, string | null>> {
+  return await t.run(async (ctx) => {
+    const rows = await ctx.db.query("notionPageMap").collect();
+    return Object.fromEntries(
+      rows
+        .filter((row) => row.userId === userId)
+        .map((row) => [row.providerId, row.accountId ?? null]),
+    );
+  });
+}
+
+test("backfillMapScopes scopes the rows whose keys say where they belong", async () => {
+  const t = convexTest(schema, modules);
+  const seeded = await seed(t);
+
+  await t.run(async (ctx) => {
+    const insert = (
+      kind:
+        | "account"
+        | "holding"
+        | "balanceSnapshot"
+        | "transaction"
+        | "investmentTransaction"
+        | "category",
+      providerId: string,
+      accountId?: string,
+    ) =>
+      ctx.db.insert("notionPageMap", {
+        userId: seeded.userId,
+        kind,
+        providerId,
+        notionPageId: `page-${providerId}`,
+        accountId,
+      });
+
+    await insert("account", "acct-a");
+    // A Plaid account this user does not have: nothing may invent a scope for
+    // it, or reconciliation would start archiving from it.
+    await insert("account", "acct-gone");
+    await insert("holding", "acct-b|sec-1");
+    await insert("holding", "malformed-no-separator");
+    await insert("balanceSnapshot", "acct-a|2026-08-13");
+    // Opaque Plaid ids: no account in the key, and Finny stores nothing to
+    // look them up against.
+    await insert("transaction", "txn-opaque");
+    await insert("investmentTransaction", "inv-opaque");
+    await insert("category", "FOOD_AND_DRINK_COFFEE");
+    // Already scoped, including to an account that no longer exists: the
+    // backfill must not second-guess a row a sync wrote.
+    await insert("holding", "acct-b|sec-2", "acct-stale");
+  });
+
+  const result = await t.mutation(internal.syncData.backfillMapScopes, {});
+  expect(result).toMatchObject({ done: true, scoped: 3 });
+
+  expect(await scopesFor(t, seeded.userId)).toEqual({
+    "acct-a": "acct-a",
+    "acct-gone": null,
+    "acct-b|sec-1": "acct-b",
+    "malformed-no-separator": null,
+    "acct-a|2026-08-13": "acct-a",
+    "txn-opaque": null,
+    "inv-opaque": null,
+    FOOD_AND_DRINK_COFFEE: null,
+    "acct-b|sec-2": "acct-stale",
+  });
+
+  // Idempotent: a second run finds nothing left to do.
+  expect(
+    await t.mutation(internal.syncData.backfillMapScopes, {}),
+  ).toMatchObject({ done: true, scoped: 0 });
+});
+
+test("backfillMapScopes finishes a large map across scheduled passes", async () => {
+  const t = convexTest(schema, modules);
+  const seeded = await seed(t);
+  const TOTAL = BACKFILL_BATCH * 2 + 30;
+  await t.run(async (ctx) => {
+    for (let index = 0; index < TOTAL; index++) {
+      await ctx.db.insert("notionPageMap", {
+        userId: seeded.userId,
+        kind: "holding",
+        providerId: `acct-a|sec-${index}`,
+        notionPageId: `page-${index}`,
+      });
+    }
+  });
+
+  const first = await t.mutation(internal.syncData.backfillMapScopes, {});
+  expect(first).toMatchObject({
+    done: false,
+    scanned: BACKFILL_BATCH,
+    scoped: BACKFILL_BATCH,
+  });
+
+  vi.useFakeTimers();
+  try {
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+  } finally {
+    vi.useRealTimers();
+  }
+
+  const scopes = await scopesFor(t, seeded.userId);
+  expect(Object.keys(scopes)).toHaveLength(TOTAL);
+  expect(Object.values(scopes).every((accountId) => accountId === "acct-a")).toBe(
+    true,
+  );
+
+  // And what it scoped is now reconcilable through the account-scoped index.
+  const holdings = await t.query(internal.syncData.getAccountMapEntries, {
+    userId: seeded.userId,
+    kind: "holding",
+    accountId: "acct-a",
+  });
+  expect(Object.keys(holdings)).toHaveLength(TOTAL);
 });
 
 test("the daily sweep schedules every connection across batched passes", async () => {

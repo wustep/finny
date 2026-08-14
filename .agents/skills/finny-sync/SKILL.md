@@ -54,7 +54,11 @@ the right side of that line.
   `by_user_kind_account_provider` in bounded pages (`accountId` is written at
   claim time). A row with no `accountId` is outside every scoped read, so it
   is never archived — unattributable rows are left in Notion rather than
-  guessed at.
+  guessed at. `syncData.backfillMapScopes` (batched, idempotent, run by hand)
+  scopes the rows whose key proves the account: `account` keys are the account
+  id, `holding` / `balanceSnapshot` keys are prefixed with it. Transaction and
+  investment-transaction ids carry nothing, so those stay unscoped until a sync
+  mentions them again.
 - Vanished investment transactions: Plaid drops a canceled one out of the
   window instead of listing it as removed, so after a complete failure-free
   walk each of the Item's accounts is paged for rows this run never marked

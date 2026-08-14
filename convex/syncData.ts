@@ -1,6 +1,11 @@
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
-import { internalMutation, internalQuery } from "./_generated/server";
+import type { Doc, Id } from "./_generated/dataModel";
+import {
+  internalMutation,
+  internalQuery,
+  type MutationCtx,
+} from "./_generated/server";
 
 const kindValidator = v.union(
   v.literal("bankConnection"),
@@ -668,6 +673,127 @@ export const rekeyMapEntry = internalMutation({
     // Notion. Dropping the mapping is still right — the alternative is a
     // duplicate that later syncs keep writing to.
     await ctx.db.delete(from._id);
+  },
+});
+
+// ---------- one-off: scope legacy map rows ----------
+
+// Rows one backfill pass reads. Each may cost one extra index lookup to
+// confirm the account it derives, so a pass is ~400 reads and a few hundred
+// patches — comfortably inside one transaction.
+const BACKFILL_BATCH = 200;
+
+// Accounts rows read while confirming a Plaid account id. There is one in
+// practice; a handful is headroom for an id that somehow repeats.
+const ACCOUNT_LOOKUP_MAX = 8;
+
+// Does this user still have the given Plaid account? The map's keys are the
+// only evidence a legacy row carries, and scoping a row to an account that
+// does not exist would put it in the range reconciliation archives from.
+async function ownsPlaidAccount(
+  ctx: MutationCtx,
+  userId: Id<"users">,
+  plaidAccountId: string,
+): Promise<boolean> {
+  const accounts = await ctx.db
+    .query("accounts")
+    .withIndex("by_plaid_account", (q) =>
+      q.eq("plaidAccountId", plaidAccountId),
+    )
+    .take(ACCOUNT_LOOKUP_MAX);
+  return accounts.some((account) => account.userId === userId);
+}
+
+// The Plaid account a legacy row belongs to, or null when nothing in the row
+// says. Only the kinds whose providerId carries an account id can be answered:
+// `account` is keyed on it outright, and `holding` / `balanceSnapshot` prefix
+// their composite keys with it.
+async function deriveAccountId(
+  ctx: MutationCtx,
+  row: Doc<"notionPageMap">,
+): Promise<string | null> {
+  if (row.kind === "account") {
+    return (await ownsPlaidAccount(ctx, row.userId, row.providerId))
+      ? row.providerId
+      : null;
+  }
+  if (row.kind === "holding" || row.kind === "balanceSnapshot") {
+    const separator = row.providerId.indexOf("|");
+    if (separator <= 0 || separator === row.providerId.length - 1) {
+      return null;
+    }
+    const plaidAccountId = row.providerId.slice(0, separator);
+    return (await ownsPlaidAccount(ctx, row.userId, plaidAccountId))
+      ? plaidAccountId
+      : null;
+  }
+  // Everything else stays unscoped. A transaction or investment transaction id
+  // is an opaque Plaid string with no account in it, and Finny stores no
+  // transaction data to look it up against — the account is only knowable the
+  // next time Plaid mentions that id, which is when the sync records it.
+  // bankConnection, security and category rows belong to the user rather than
+  // to an account and have nothing to scope to. Unscoped means excluded from
+  // reconciliation, which is the safe direction.
+  return null;
+}
+
+// Backfill notionPageMap.accountId on rows written before it was tracked, in
+// bounded passes that continue through the scheduler.
+//
+// Idempotent: a row that already carries an accountId is skipped, and every
+// derivation reads only the row's own key plus the accounts table, so re-runs
+// converge on the same answer. Safe to run while syncs are live — the patch
+// only fills in a missing field, and a pass that loses an OCC race against a
+// sync writing the same row simply retries.
+//
+// Run it once after deploy:
+//   npx convex run syncData:backfillMapScopes '{}'
+export const backfillMapScopes = internalMutation({
+  args: {
+    // Continuation cursor: rows created after this time. Absent on the first
+    // pass. Creation time orders the built-in index, so a pass that resumes
+    // from the last row it read cannot revisit or skip one.
+    after: v.optional(v.number()),
+    scanned: v.optional(v.number()),
+    scoped: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const rows = await ctx.db
+      .query("notionPageMap")
+      .withIndex("by_creation_time", (q) =>
+        q.gt("_creationTime", args.after ?? 0),
+      )
+      .take(BACKFILL_BATCH);
+
+    let scoped = 0;
+    for (const row of rows) {
+      if (row.accountId !== undefined) {
+        continue;
+      }
+      const accountId = await deriveAccountId(ctx, row);
+      if (accountId === null) {
+        continue;
+      }
+      await ctx.db.patch(row._id, { accountId });
+      scoped++;
+    }
+
+    const totals = {
+      scanned: (args.scanned ?? 0) + rows.length,
+      scoped: (args.scoped ?? 0) + scoped,
+    };
+    if (rows.length === BACKFILL_BATCH) {
+      await ctx.scheduler.runAfter(0, internal.syncData.backfillMapScopes, {
+        after: rows[rows.length - 1]._creationTime,
+        ...totals,
+      });
+      return { done: false, ...totals };
+    }
+    console.log(
+      `backfillMapScopes finished: scanned ${totals.scanned} row(s), ` +
+        `scoped ${totals.scoped}`,
+    );
+    return { done: true, ...totals };
   },
 });
 
