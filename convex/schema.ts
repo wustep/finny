@@ -2,6 +2,55 @@ import { authTables } from "@convex-dev/auth/server";
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 
+// A text match a rule condition can ask for. `contains` and `equals` ignore
+// case; `regex` is a JavaScript regular expression, compiled defensively by
+// the engine (an invalid one matches nothing rather than throwing).
+export const ruleTextConditionValidator = v.object({
+  op: v.union(v.literal("contains"), v.literal("equals"), v.literal("regex")),
+  value: v.string(),
+});
+
+// Compared against Plaid's amount, where positive means money left the
+// account. Notion shows the same transaction with the sign flipped, which the
+// Rules page spells out next to the field.
+export const ruleAmountConditionValidator = v.object({
+  op: v.union(
+    v.literal("lt"),
+    v.literal("lte"),
+    v.literal("gt"),
+    v.literal("gte"),
+    v.literal("eq"),
+  ),
+  value: v.number(),
+});
+
+// Conditions AND together; a rule needs at least one (enforced in rules.ts,
+// and again by the engine, because a rule that asks nothing plus a hide
+// outcome empties the Transactions database).
+export const ruleConditionsValidator = v.object({
+  // Plaid's enriched merchant name, falling back to the raw description —
+  // the same string the Notion title uses.
+  merchant: v.optional(ruleTextConditionValidator),
+  // The bank's own string, as synced to Original Description.
+  description: v.optional(ruleTextConditionValidator),
+  amount: v.optional(ruleAmountConditionValidator),
+  accountId: v.optional(v.id("accounts")),
+});
+
+// What a matching rule changes about the Notion row. At least one is
+// required; all of them apply together.
+export const ruleOutcomesValidator = v.object({
+  // A Plaid personal finance category, e.g. GENERAL_MERCHANDISE_ELECTRONICS,
+  // replacing the one Plaid assigned. Validated against the taxonomy in
+  // rulesEngine.ts on write.
+  categoryId: v.optional(v.string()),
+  // Replaces the Notion title; Original Description is left alone.
+  rename: v.optional(v.string()),
+  // No Notion row: skip the create, and archive + unmap a row that already
+  // exists (see upsertTransaction in sync.ts).
+  hide: v.optional(v.boolean()),
+});
+
 // Config and sync bookkeeping only — no financial data (amounts, merchants,
 // balances, dates of transactions) is ever stored here. See PLAN.md.
 export default defineSchema({
@@ -165,6 +214,23 @@ export default defineSchema({
     // carrying the seen set through scheduler arguments.
     lastSeenRunId: v.optional(v.id("syncRuns")),
   }).index("by_user_kind_provider", ["userId", "kind", "providerId"]),
+
+  // User overrides applied to transactions as they sync: recategorise,
+  // retitle, or keep out of Notion. Config, not data — the conditions are
+  // what to look for, never what was found.
+  rules: defineTable({
+    userId: v.id("users"),
+    name: v.string(),
+    // Evaluation order, ascending: the first enabled rule whose conditions
+    // all match wins outright and no later rule is consulted (see
+    // rulesEngine.ts). Unique per user by construction — create takes max + 1
+    // and reorder swaps two values — rather than by an index, since Convex
+    // has no unique indexes.
+    priority: v.number(),
+    enabled: v.boolean(),
+    conditions: ruleConditionsValidator,
+    outcomes: ruleOutcomesValidator,
+  }).index("by_user_priority", ["userId", "priority"]),
 
   syncRuns: defineTable({
     userId: v.id("users"),

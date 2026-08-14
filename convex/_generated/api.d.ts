@@ -19,9 +19,12 @@ import type * as notionSchemas from "../notionSchemas.js";
 import type * as origins from "../origins.js";
 import type * as plaid from "../plaid.js";
 import type * as plaidClient from "../plaidClient.js";
+import type * as rules from "../rules.js";
+import type * as rulesEngine from "../rulesEngine.js";
 import type * as secureCompare from "../secureCompare.js";
 import type * as sync from "../sync.js";
 import type * as syncData from "../syncData.js";
+import type * as syncMappers from "../syncMappers.js";
 import type * as users from "../users.js";
 
 import type {
@@ -42,9 +45,12 @@ declare const fullApi: ApiFromModules<{
   origins: typeof origins;
   plaid: typeof plaid;
   plaidClient: typeof plaidClient;
+  rules: typeof rules;
+  rulesEngine: typeof rulesEngine;
   secureCompare: typeof secureCompare;
   sync: typeof sync;
   syncData: typeof syncData;
+  syncMappers: typeof syncMappers;
   users: typeof users;
 }>;
 
