@@ -311,11 +311,15 @@ const CLAIM_TIMEOUT_MS = 60_000;
 
 // Reserve the right to create the Notion page for a mapped key.
 //
-// Keys scoped to the user rather than to one connection — categories, and
-// securities — are reachable from several connections' syncs at once, and a
-// plain read-then-create let two overlapping runs each create a page for the
-// same key. Mutations are serializable, so exactly one caller comes away with
-// "create"; the rest get "pending" and wait for it to land.
+// Every kind goes through this. Creating first and mapping afterwards leaves
+// a window in which a crash, a retried Plaid page, or a second run scheduled
+// against the same connection makes a duplicate Notion row that nothing
+// points at. Mutations are serializable, so exactly one caller comes away
+// with "create"; the rest get "pending" and wait for it to land.
+//
+// Convex has no unique indexes, so by_user_kind_provider uniqueness is
+// enforced here and in putMapEntries / rekeyMapEntry: read and write in one
+// transaction, never patch a key that already has a row.
 export const claimMapEntry = internalMutation({
   args: {
     userId: v.id("users"),
@@ -341,7 +345,9 @@ export const claimMapEntry = internalMutation({
         return { status: "pending" as const };
       }
       await ctx.db.patch(existing._id, { claimedAt: Date.now() });
-      return { status: "create" as const };
+      // Whoever held this claim never came back, and may well have created
+      // the Notion page before dying. Tell the taker to look before creating.
+      return { status: "create" as const, reclaimed: true };
     }
     await ctx.db.insert("notionPageMap", {
       userId: args.userId,
@@ -350,7 +356,7 @@ export const claimMapEntry = internalMutation({
       notionPageId: "",
       claimedAt: Date.now(),
     });
-    return { status: "create" as const };
+    return { status: "create" as const, reclaimed: false };
   },
 });
 
@@ -425,18 +431,40 @@ export const rekeyMapEntry = internalMutation({
     toProviderId: v.string(),
   },
   handler: async (ctx, args) => {
-    const entry = await ctx.db
-      .query("notionPageMap")
-      .withIndex("by_user_kind_provider", (q) =>
-        q
-          .eq("userId", args.userId)
-          .eq("kind", args.kind)
-          .eq("providerId", args.fromProviderId),
-      )
-      .unique();
-    if (entry) {
-      await ctx.db.patch(entry._id, { providerId: args.toProviderId });
+    const byProviderId = (providerId: string) =>
+      ctx.db
+        .query("notionPageMap")
+        .withIndex("by_user_kind_provider", (q) =>
+          q
+            .eq("userId", args.userId)
+            .eq("kind", args.kind)
+            .eq("providerId", providerId),
+        )
+        .unique();
+
+    const from = await byProviderId(args.fromProviderId);
+    if (!from) {
+      return;
     }
+    const to = await byProviderId(args.toProviderId);
+    if (!to) {
+      await ctx.db.patch(from._id, { providerId: args.toProviderId });
+      return;
+    }
+    // The destination key already has a row. Patching onto it would leave two
+    // rows under one key, which every .unique() read of this index then
+    // throws on. Merge instead: the destination wins unless it is only a
+    // claim, in which case it inherits the page the pending row found.
+    if (!to.notionPageId && from.notionPageId) {
+      await ctx.db.patch(to._id, {
+        notionPageId: from.notionPageId,
+        claimedAt: undefined,
+      });
+    }
+    // If both rows point at real pages the pending one is now orphaned in
+    // Notion. Dropping the mapping is still right — the alternative is a
+    // duplicate that later syncs keep writing to.
+    await ctx.db.delete(from._id);
   },
 });
 

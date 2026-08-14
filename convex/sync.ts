@@ -415,8 +415,6 @@ export const transactionsBatch = internalAction({
       // Plaid never re-sends a page once its cursor is consumed, so a row we
       // could not write is a row lost forever unless the cursor stays put.
       let failures = 0;
-      const newEntries: Array<{ providerId: string; notionPageId: string }> =
-        [];
 
       const ensureCategory = async (txn: Transaction) => {
         const pfc = txn.personal_finance_category;
@@ -478,17 +476,26 @@ export const transactionsBatch = internalAction({
             delete txnPages[txn.pending_transaction_id!];
             stats.modified++;
           } else {
-            const page = await createPage(
+            const claimed = await claimAndCreatePage(ctx, {
+              userId,
+              kind: "transaction",
+              providerId: txn.transaction_id,
               token,
-              databases.transactions,
+              databaseId: databases.transactions,
               properties,
               icon,
-            );
-            newEntries.push({
-              providerId: txn.transaction_id,
-              notionPageId: page.id,
             });
-            txnPages[txn.transaction_id] = page.id;
+            if (!claimed) {
+              throw new Error(
+                `another sync holds the transaction claim for ${txn.transaction_id}`,
+              );
+            }
+            if (!claimed.created) {
+              // Adopted a page a previous attempt left behind; make sure it
+              // carries this page's values.
+              await updatePage(token, claimed.pageId, properties, icon);
+            }
+            txnPages[txn.transaction_id] = claimed.pageId;
             stats.added++;
           }
         } catch (error) {
@@ -516,16 +523,24 @@ export const transactionsBatch = internalAction({
             await updatePage(token, pageId, properties, icon);
             stats.modified++;
           } else {
-            const page = await createPage(
+            const claimed = await claimAndCreatePage(ctx, {
+              userId,
+              kind: "transaction",
+              providerId: txn.transaction_id,
               token,
-              databases.transactions,
+              databaseId: databases.transactions,
               properties,
               icon,
-            );
-            newEntries.push({
-              providerId: txn.transaction_id,
-              notionPageId: page.id,
             });
+            if (!claimed) {
+              throw new Error(
+                `another sync holds the transaction claim for ${txn.transaction_id}`,
+              );
+            }
+            if (!claimed.created) {
+              await updatePage(token, claimed.pageId, properties, icon);
+            }
+            txnPages[txn.transaction_id] = claimed.pageId;
             stats.added++;
           }
         } catch (error) {
@@ -554,13 +569,6 @@ export const transactionsBatch = internalAction({
         }
       }
 
-      if (newEntries.length > 0) {
-        await ctx.runMutation(internal.syncData.putMapEntries, {
-          userId,
-          kind: "transaction",
-          entries: newEntries,
-        });
-      }
       if (removedIds.length > 0) {
         await ctx.runMutation(internal.syncData.deleteMapEntries, {
           userId,
@@ -717,8 +725,6 @@ export const investmentsBatch = internalAction({
       });
 
       let stats = { added: 0, modified: 0, removed: 0 };
-      const newEntries: Array<{ providerId: string; notionPageId: string }> =
-        [];
       for (const txn of investment_transactions) {
         if (!enabledIds.has(txn.account_id)) {
           continue;
@@ -738,15 +744,22 @@ export const investmentsBatch = internalAction({
             await updatePage(token, existing, properties);
             stats.modified++;
           } else {
-            const page = await createPage(
-              token,
-              databases.investmentTransactions,
-              properties,
-            );
-            newEntries.push({
+            const claimed = await claimAndCreatePage(ctx, {
+              userId,
+              kind: "investmentTransaction",
               providerId: txn.investment_transaction_id,
-              notionPageId: page.id,
+              token,
+              databaseId: databases.investmentTransactions,
+              properties,
             });
+            if (!claimed) {
+              throw new Error(
+                `another sync holds the investment transaction claim for ${txn.investment_transaction_id}`,
+              );
+            }
+            if (!claimed.created) {
+              await updatePage(token, claimed.pageId, properties);
+            }
             stats.added++;
           }
         } catch (error) {
@@ -758,13 +771,6 @@ export const investmentsBatch = internalAction({
         }
       }
 
-      if (newEntries.length > 0) {
-        await ctx.runMutation(internal.syncData.putMapEntries, {
-          userId,
-          kind: "investmentTransaction",
-          entries: newEntries,
-        });
-      }
       await ctx.runMutation(internal.syncData.addRunStats, {
         runId: args.runId,
         ...stats,
@@ -823,9 +829,116 @@ async function heartbeat(
   return held;
 }
 
+type NotionIcon = Record<string, unknown>;
+
+type MapKind =
+  | "bankConnection"
+  | "account"
+  | "transaction"
+  | "security"
+  | "holding"
+  | "investmentTransaction"
+  | "category"
+  | "balanceSnapshot";
+
+// The Notion property each database keeps the provider id in. Used to adopt
+// a row a previous attempt already created rather than making a second one.
+// Holdings and Balance History have none — they are keyed on account +
+// security and account + date in their titles — so those rely on the claim
+// alone (see notionSchemas.ts).
+const ID_PROPERTY: Partial<Record<MapKind, string>> = {
+  bankConnection: "ID",
+  account: "ID",
+  transaction: "ID",
+  security: "ID",
+  investmentTransaction: "Transaction ID",
+  category: "ID",
+};
+
+// Reserve the map entry for a key, then create its Notion page, then write
+// the real page id — in that order, and never batched with other rows.
+//
+// Creating first and mapping later leaves a window where a crash, a replayed
+// Plaid page, or a second run produces a duplicate Notion row that nothing
+// points at. Claiming first turns that window into a stale claim, which the
+// next attempt recognises and resolves by adopting the page instead.
+//
+// Returns null when another caller holds the claim and never resolves it;
+// the caller should treat that as a failure for this row and move on.
+async function claimAndCreatePage(
+  ctx: ActionCtx,
+  input: {
+    userId: Id<"users">;
+    kind: MapKind;
+    providerId: string;
+    token: string;
+    databaseId: string;
+    properties: Record<string, unknown>;
+    icon?: NotionIcon;
+    // Query Notion before every create, not just after a reclaimed claim.
+    // Only worth the extra request where rows routinely outlive the map —
+    // categories survive resetAndResync, transactions do not.
+    alwaysAdopt?: boolean;
+  },
+): Promise<{ pageId: string; created: boolean } | null> {
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const claim = await ctx.runMutation(internal.syncData.claimMapEntry, {
+      userId: input.userId,
+      kind: input.kind,
+      providerId: input.providerId,
+    });
+    if (claim.status === "ready") {
+      return { pageId: claim.notionPageId, created: false };
+    }
+    if (claim.status === "pending") {
+      await sleep(250 * (attempt + 1));
+      continue;
+    }
+    const idProperty = ID_PROPERTY[input.kind];
+    try {
+      // Notion's rate limit is the binding constraint on a backfill, so this
+      // extra query only happens where a duplicate is actually plausible.
+      const adopted =
+        idProperty && (input.alwaysAdopt || claim.reclaimed)
+          ? await findPageByText(
+              input.token,
+              input.databaseId,
+              idProperty,
+              input.providerId,
+            )
+          : undefined;
+      const pageId =
+        adopted ??
+        ((
+          await createPage(
+            input.token,
+            input.databaseId,
+            input.properties,
+            input.icon,
+          )
+        ).id as string);
+      await ctx.runMutation(internal.syncData.putMapEntries, {
+        userId: input.userId,
+        kind: input.kind,
+        entries: [{ providerId: input.providerId, notionPageId: pageId }],
+      });
+      return { pageId, created: !adopted };
+    } catch (error) {
+      // Drop the claim so the next sync retries instead of waiting it out.
+      await ctx.runMutation(internal.syncData.deleteMapEntries, {
+        userId: input.userId,
+        kind: input.kind,
+        providerIds: [input.providerId],
+      });
+      throw error;
+    }
+  }
+  console.error("claim never resolved", input.kind, input.providerId);
+  return null;
+}
+
 // Categories belong to the user, not to one connection, so two connections
-// syncing at once can reach the same one. Claim it first: the winner creates
-// the page, the losers wait for it instead of creating a second copy.
+// syncing at once can reach the same one.
 async function ensureCategoryPage(
   ctx: ActionCtx,
   input: {
@@ -839,66 +952,27 @@ async function ensureCategoryPage(
     iconUrl?: string;
   },
 ): Promise<string | null> {
-  for (let attempt = 0; attempt < 6; attempt++) {
-    const claim = await ctx.runMutation(internal.syncData.claimMapEntry, {
-      userId: input.userId,
-      kind: "category",
-      providerId: input.detailed,
-    });
-    if (claim.status === "ready") {
-      return claim.notionPageId;
-    }
-    if (claim.status === "pending") {
-      await sleep(250 * (attempt + 1));
-      continue;
-    }
-    try {
-      // Adopt a row that already carries this id before making another one.
-      // The map and Notion drift apart whenever pages are restored from
-      // trash, or a past duplicate left a row nothing points at.
-      const adopted = await findPageByText(
-        input.token,
-        input.databaseId,
-        "ID",
-        input.detailed,
-      );
-      const pageId =
-        adopted ??
-        ((
-          await createPage(
-            input.token,
-            input.databaseId,
-            {
-              Name: P.title(categoryName(input.detailed, input.primary)),
-              ID: P.text(input.detailed),
-              "Category Group": P.select(titleCase(input.primary)),
-            },
-            input.iconUrl ? externalIcon(input.iconUrl) : undefined,
-          )
-        ).id as string);
-      await ctx.runMutation(internal.syncData.putMapEntries, {
-        userId: input.userId,
-        kind: "category",
-        entries: [{ providerId: input.detailed, notionPageId: pageId }],
-      });
-      return pageId;
-    } catch (error) {
-      // Drop the claim so the next sync retries instead of waiting it out.
-      await ctx.runMutation(internal.syncData.deleteMapEntries, {
-        userId: input.userId,
-        kind: "category",
-        providerIds: [input.detailed],
-      });
-      throw error;
-    }
-  }
-  // The holder of the claim is taking an unusual amount of time. Leave the
-  // transaction uncategorised; the next sync picks it up.
-  console.error("category claim never resolved", input.detailed);
-  return null;
+  const claimed = await claimAndCreatePage(ctx, {
+    userId: input.userId,
+    kind: "category",
+    providerId: input.detailed,
+    token: input.token,
+    databaseId: input.databaseId,
+    properties: {
+      Name: P.title(categoryName(input.detailed, input.primary)),
+      ID: P.text(input.detailed),
+      "Category Group": P.select(titleCase(input.primary)),
+    },
+    icon: input.iconUrl ? externalIcon(input.iconUrl) : undefined,
+    // The map and Notion drift apart whenever category pages are restored
+    // from trash or a past duplicate left a row nothing points at, and there
+    // are only ever a hundred or so of them.
+    alwaysAdopt: true,
+  });
+  // No page means someone else is mid-create. Leave the transaction
+  // uncategorised; the next sync picks it up.
+  return claimed?.pageId ?? null;
 }
-
-type NotionIcon = Record<string, unknown>;
 
 // Plaid hands us the institution logo as base64, which Notion can only use
 // as a page icon once it has been uploaded. Upload it once per connection
@@ -945,15 +1019,7 @@ async function upsertMapped(
   ctx: ActionCtx,
   userId: Id<"users">,
   input: {
-    kind:
-      | "bankConnection"
-      | "account"
-      | "transaction"
-      | "security"
-      | "holding"
-      | "investmentTransaction"
-      | "category"
-      | "balanceSnapshot";
+    kind: MapKind;
     providerId: string;
     token: string;
     databaseId: string;
@@ -964,33 +1030,34 @@ async function upsertMapped(
     icon?: () => Promise<NotionIcon | undefined>;
   },
 ): Promise<string> {
-  const existing = await ctx.runQuery(internal.syncData.getMapEntries, {
+  const claimed = await claimAndCreatePage(ctx, {
     userId,
     kind: input.kind,
-    providerIds: [input.providerId],
+    providerId: input.providerId,
+    token: input.token,
+    databaseId: input.databaseId,
+    properties: input.properties,
   });
-  const pageId = existing[input.providerId];
-  if (pageId) {
-    await updatePage(input.token, pageId, input.properties);
+  if (!claimed) {
+    throw new Error(
+      `another sync holds the ${input.kind} claim for ${input.providerId}`,
+    );
+  }
+  if (!claimed.created) {
+    await updatePage(input.token, claimed.pageId, input.properties);
     await ctx.runMutation(internal.syncData.addRunStats, {
       runId: input.runId,
       added: 0,
       modified: 1,
       removed: 0,
     });
-    return pageId;
+    return claimed.pageId;
   }
-  const page = await createPage(input.token, input.databaseId, input.properties);
-  await ctx.runMutation(internal.syncData.putMapEntries, {
-    userId,
-    kind: input.kind,
-    entries: [{ providerId: input.providerId, notionPageId: page.id }],
-  });
   if (input.icon) {
     try {
       const icon = await input.icon();
       if (icon) {
-        await setPageIcon(input.token, page.id, icon);
+        await setPageIcon(input.token, claimed.pageId, icon);
       }
     } catch (error) {
       console.error("failed to set page icon", input.providerId, error);
@@ -1002,7 +1069,7 @@ async function upsertMapped(
     modified: 0,
     removed: 0,
   });
-  return page.id as string;
+  return claimed.pageId;
 }
 
 async function syncSecurities(
@@ -1022,7 +1089,7 @@ async function syncSecurities(
   if (!input.databaseId) {
     return pages;
   }
-  const newEntries: Array<{ providerId: string; notionPageId: string }> = [];
+  const databaseId = input.databaseId;
   for (const security of input.securities) {
     const properties = {
       Symbol: P.title(
@@ -1038,24 +1105,29 @@ async function syncSecurities(
       const existing = pages[security.security_id];
       if (existing) {
         await updatePage(input.token, existing, properties);
-      } else {
-        const page = await createPage(input.token, input.databaseId, properties);
-        pages[security.security_id] = page.id;
-        newEntries.push({
-          providerId: security.security_id,
-          notionPageId: page.id,
-        });
+        continue;
       }
+      // Securities are keyed on the user, not the connection, so two
+      // connections holding the same ETF can reach this at the same moment.
+      const claimed = await claimAndCreatePage(ctx, {
+        userId: input.userId,
+        kind: "security",
+        providerId: security.security_id,
+        token: input.token,
+        databaseId,
+        properties,
+      });
+      if (!claimed) {
+        console.error("security claim never resolved", security.security_id);
+        continue;
+      }
+      if (!claimed.created) {
+        await updatePage(input.token, claimed.pageId, properties);
+      }
+      pages[security.security_id] = claimed.pageId;
     } catch (error) {
       console.error("failed to sync security", security.security_id, error);
     }
-  }
-  if (newEntries.length > 0) {
-    await ctx.runMutation(internal.syncData.putMapEntries, {
-      userId: input.userId,
-      kind: "security",
-      entries: newEntries,
-    });
   }
   return pages;
 }
@@ -1103,7 +1175,6 @@ async function syncHoldings(
     kind: "holding",
   });
   const seen = new Set<string>();
-  const newEntries: Array<{ providerId: string; notionPageId: string }> = [];
   let stats = { added: 0, modified: 0, removed: 0 };
 
   for (const holding of holdingsData.data.holdings) {
@@ -1133,8 +1204,23 @@ async function syncHoldings(
         await updatePage(token, existing, properties);
         stats.modified++;
       } else {
-        const page = await createPage(token, databases.holdings, properties);
-        newEntries.push({ providerId, notionPageId: page.id });
+        // Holdings have no ID property to adopt by, so the claim is the only
+        // thing standing between a retry and a duplicate row.
+        const claimed = await claimAndCreatePage(ctx, {
+          userId,
+          kind: "holding",
+          providerId,
+          token,
+          databaseId: databases.holdings,
+          properties,
+        });
+        if (!claimed) {
+          console.error("holding claim never resolved", providerId);
+          continue;
+        }
+        if (!claimed.created) {
+          await updatePage(token, claimed.pageId, properties);
+        }
         stats.added++;
       }
     } catch (error) {
@@ -1160,13 +1246,6 @@ async function syncHoldings(
     }
   }
 
-  if (newEntries.length > 0) {
-    await ctx.runMutation(internal.syncData.putMapEntries, {
-      userId,
-      kind: "holding",
-      entries: newEntries,
-    });
-  }
   if (removedIds.length > 0) {
     await ctx.runMutation(internal.syncData.deleteMapEntries, {
       userId,
