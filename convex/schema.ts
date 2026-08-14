@@ -50,6 +50,15 @@ export default defineSchema({
     // Plaid transactions/sync cursor
     transactionsCursor: v.optional(v.string()),
     lastSyncedAt: v.optional(v.number()),
+    // Exclusive sync lease. Only one run may touch this connection at a
+    // time, or two runs race the shared Plaid cursor and duplicate Notion
+    // pages. The lease is heartbeated by each batch and released by
+    // finishRun; the expiry is what frees it when a run dies mid-chain.
+    syncLockExpiresAt: v.optional(v.number()),
+    activeRunId: v.optional(v.id("syncRuns")),
+    // When a webhook arrived while the lease was held, the time the retry
+    // it queued is due. Keeps a burst of webhooks to one pending follow-up.
+    syncFollowUpAt: v.optional(v.number()),
   })
     .index("by_user", ["userId"])
     .index("by_plaid_item", ["plaidItemId"]),

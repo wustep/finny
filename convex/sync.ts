@@ -16,6 +16,11 @@
 // Every Notion row is keyed through the notionPageMap table (providerId ->
 // Notion page id), which makes all steps idempotent: reruns update pages
 // in place instead of duplicating them.
+//
+// The whole chain runs under one exclusive lease per connection
+// (bankConnections.syncLockExpiresAt / activeRunId), taken by
+// syncData.beginRun, heartbeated by each hop, and released by
+// syncData.finishRun — which is therefore on every exit path.
 
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { v } from "convex/values";
@@ -180,23 +185,21 @@ export const runForConnection = internalAction({
       console.log("sync skipped: no Notion destination", args.connectionId);
       return;
     }
-    // Webhooks can arrive in bursts; don't stack runs.
-    if (args.trigger === "webhook" || args.trigger === "cron") {
-      const busy = await ctx.runQuery(internal.syncData.hasRecentRunningRun, {
-        connectionId: args.connectionId,
-      });
-      if (busy) {
-        console.log("sync skipped: run already in progress");
-        return;
-      }
-    }
-
     const { connection, notion, accounts } = context;
-    const runId = await ctx.runMutation(internal.syncData.createRun, {
+    // Exactly one run per connection at a time, whatever triggered it: the
+    // Plaid cursor and the Notion page map are both shared mutable state.
+    // A webhook that loses the race queues itself a retry from inside the
+    // same mutation rather than being dropped.
+    const lease = await ctx.runMutation(internal.syncData.beginRun, {
       userId: connection.userId,
       connectionId: connection._id,
       trigger: args.trigger,
     });
+    if (!lease.acquired) {
+      console.log("sync skipped: connection is already syncing", connection._id);
+      return;
+    }
+    const runId = lease.runId;
 
     try {
       const client = plaidClient(connection.plaidEnv ?? "production");
@@ -359,6 +362,9 @@ export const transactionsBatch = internalAction({
       return;
     }
     const { connection, notion, accounts } = context;
+    if (!(await heartbeat(ctx, args.connectionId, args.runId))) {
+      return;
+    }
     const databases = notion.databases!;
     const token = notion.accessToken;
     const userId = connection.userId;
@@ -602,6 +608,9 @@ export const investmentsBatch = internalAction({
       return;
     }
     const { connection, notion, accounts } = context;
+    if (!(await heartbeat(ctx, args.connectionId, args.runId))) {
+      return;
+    }
     const databases = notion.databases!;
     const token = notion.accessToken;
     const userId = connection.userId;
@@ -738,6 +747,29 @@ export const investmentsBatch = internalAction({
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Push the sync lease out by another window at the top of each batch hop, so
+// a long backfill keeps the connection to itself. A lost lease means this run
+// was superseded — stop writing rather than race the run that took over.
+async function heartbeat(
+  ctx: ActionCtx,
+  connectionId: Id<"bankConnections">,
+  runId: Id<"syncRuns">,
+): Promise<boolean> {
+  const held = await ctx.runMutation(internal.syncData.renewSyncLease, {
+    connectionId,
+    runId,
+  });
+  if (!held) {
+    console.error("sync lease lost, abandoning run", runId);
+    await ctx.runMutation(internal.syncData.finishRun, {
+      runId,
+      status: "error",
+      error: "Sync lease lost: another run took over this connection.",
+    });
+  }
+  return held;
 }
 
 // Categories belong to the user, not to one connection, so two connections

@@ -33,41 +33,91 @@ export const getContext = internalQuery({
   },
 });
 
-export const createRun = internalMutation({
+const triggerValidator = v.union(
+  v.literal("initial"),
+  v.literal("webhook"),
+  v.literal("manual"),
+  v.literal("cron"),
+);
+
+// How long a lease survives without a heartbeat. Long enough for the
+// slowest single hop — a full accounts + holdings pass against Notion's
+// ~3 rps — and short enough that a run killed mid-chain unblocks the Item
+// within one cron interval.
+const SYNC_LEASE_MS = 10 * 60 * 1000;
+
+// How long a webhook that lost the race waits before trying again.
+const SYNC_FOLLOW_UP_MS = 60 * 1000;
+
+// Take the connection's sync lease and open a run for it, or report that
+// someone else holds it. Both halves live in one mutation because mutations
+// are serializable: a check in one call and a set in another let two
+// webhooks 1ms apart each believe they were first.
+export const beginRun = internalMutation({
   args: {
     userId: v.id("users"),
     connectionId: v.id("bankConnections"),
-    trigger: v.union(
-      v.literal("initial"),
-      v.literal("webhook"),
-      v.literal("manual"),
-      v.literal("cron"),
-    ),
+    trigger: triggerValidator,
   },
   handler: async (ctx, args) => {
-    return await ctx.db.insert("syncRuns", {
+    const connection = await ctx.db.get(args.connectionId);
+    if (!connection) {
+      return { acquired: false as const };
+    }
+    const now = Date.now();
+    if ((connection.syncLockExpiresAt ?? 0) > now) {
+      // Dropping a webhook loses the update that prompted it, so queue one
+      // retry. Only one may be outstanding, or a burst of webhooks against
+      // a long backfill piles up a run per webhook.
+      if (
+        args.trigger === "webhook" &&
+        (connection.syncFollowUpAt ?? 0) <= now
+      ) {
+        await ctx.db.patch(args.connectionId, {
+          syncFollowUpAt: now + SYNC_FOLLOW_UP_MS,
+        });
+        await ctx.scheduler.runAfter(
+          SYNC_FOLLOW_UP_MS,
+          internal.sync.runForConnection,
+          { connectionId: args.connectionId, trigger: "webhook" },
+        );
+      }
+      return { acquired: false as const };
+    }
+    const runId = await ctx.db.insert("syncRuns", {
       userId: args.userId,
       connectionId: args.connectionId,
       trigger: args.trigger,
       status: "running",
-      startedAt: Date.now(),
+      startedAt: now,
       stats: { added: 0, modified: 0, removed: 0 },
     });
+    await ctx.db.patch(args.connectionId, {
+      syncLockExpiresAt: now + SYNC_LEASE_MS,
+      activeRunId: runId,
+      syncFollowUpAt: undefined,
+    });
+    return { acquired: true as const, runId };
   },
 });
 
-export const hasRecentRunningRun = internalQuery({
-  args: { connectionId: v.id("bankConnections") },
+// Push the lease expiry out from a batch hop. Returns false if the lease has
+// already been handed to someone else, which means this run has been
+// superseded and should stop rather than keep writing.
+export const renewSyncLease = internalMutation({
+  args: {
+    connectionId: v.id("bankConnections"),
+    runId: v.id("syncRuns"),
+  },
   handler: async (ctx, args) => {
-    const runs = await ctx.db
-      .query("syncRuns")
-      .withIndex("by_connection", (q) => q.eq("connectionId", args.connectionId))
-      .order("desc")
-      .take(3);
-    const cutoff = Date.now() - 5 * 60 * 1000;
-    return runs.some(
-      (run) => run.status === "running" && run.startedAt > cutoff,
-    );
+    const connection = await ctx.db.get(args.connectionId);
+    if (!connection || connection.activeRunId !== args.runId) {
+      return false;
+    }
+    await ctx.db.patch(args.connectionId, {
+      syncLockExpiresAt: Date.now() + SYNC_LEASE_MS,
+    });
+    return true;
   },
 });
 
@@ -110,7 +160,19 @@ export const finishRun = internalMutation({
       error: args.error,
       finishedAt: Date.now(),
     });
-    if (args.status === "success" && run.connectionId) {
+    if (!run.connectionId) {
+      return;
+    }
+    // Releasing the lease is the whole point of finishRun being on every
+    // exit path — including the error ones.
+    const connection = await ctx.db.get(run.connectionId);
+    if (connection?.activeRunId === args.runId) {
+      await ctx.db.patch(run.connectionId, {
+        syncLockExpiresAt: undefined,
+        activeRunId: undefined,
+      });
+    }
+    if (args.status === "success") {
       await ctx.db.patch(run.connectionId, {
         lastSyncedAt: Date.now(),
         status: "active",
