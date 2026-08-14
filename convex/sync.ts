@@ -19,6 +19,11 @@
 // Notion page id), which makes all steps idempotent: reruns update pages
 // in place instead of duplicating them.
 //
+// Transactions pass through the user's rules on the way out (rulesEngine.ts,
+// applied in upsertTransaction). Rules are evaluated here rather than against
+// stored data because Finny stores none: this pass is the only place a
+// transaction's merchant and amount exist to be matched.
+//
 // The whole chain runs under one exclusive lease per connection
 // (bankConnections.syncLockExpiresAt / activeRunId), taken by
 // syncData.beginRun, heartbeated by each hop, and released by
@@ -50,10 +55,12 @@ import {
   uploadDataUri,
 } from "./notionApi";
 import { plaidClient } from "./plaidClient";
+import { evaluate, pfcPrimary, type Rule } from "./rulesEngine";
 import {
   accountProperties,
   balanceForNotion,
   investmentTransactionProperties,
+  ruleTransaction,
   transactionIcon,
   transactionProperties,
 } from "./syncMappers";
@@ -536,6 +543,10 @@ export const accountBackfill = internalAction({
         databaseId: databases.categories,
         cache: categoryPages,
       });
+      // Once for the whole page, not once per transaction.
+      const rules = await ctx.runQuery(internal.rules.listEnabledInternal, {
+        userId,
+      });
       const txnPages = await ctx.runQuery(internal.syncData.getMapEntries, {
         userId,
         kind: "transaction",
@@ -547,7 +558,7 @@ export const accountBackfill = internalAction({
         ] as string[],
       });
 
-      const stats = { added: 0, modified: 0, removed: 0 };
+      const stats = { added: 0, modified: 0, removed: 0, hidden: 0 };
       let failures = args.failures ?? 0;
       for (const txn of transactions) {
         try {
@@ -557,7 +568,9 @@ export const accountBackfill = internalAction({
             databaseId: databases.transactions,
             txn,
             accountPage,
-            categoryPage: await ensureCategory(txn),
+            accountRowId: account._id,
+            rules,
+            ensureCategory,
             txnPages,
           });
           stats[result]++;
@@ -568,7 +581,9 @@ export const accountBackfill = internalAction({
       }
       await ctx.runMutation(internal.syncData.addRunStats, {
         runId: args.runId,
-        ...stats,
+        added: stats.added,
+        modified: stats.modified,
+        removed: stats.removed,
       });
 
       const walked = args.offset + transactions.length;
@@ -730,7 +745,7 @@ export const transactionsBatch = internalAction({
         providerIds: txnIds,
       });
 
-      let stats = { added: 0, modified: 0, removed: 0 };
+      let stats = { added: 0, modified: 0, removed: 0, hidden: 0 };
       // Plaid never re-sends a page once its cursor is consumed, so a row we
       // could not write is a row lost forever unless the cursor stays put.
       let failures = 0;
@@ -741,6 +756,14 @@ export const transactionsBatch = internalAction({
         databaseId: databases.categories,
         cache: categoryPages,
       });
+      // Read once for the whole page: rules are per user, and evaluating them
+      // is pure, so nothing here needs the database again per transaction.
+      const rules = await ctx.runQuery(internal.rules.listEnabledInternal, {
+        userId,
+      });
+      const accountRowIds = new Map(
+        accounts.map((account) => [account.plaidAccountId, account._id]),
+      );
 
       // A transaction whose account is switched off (or that predates the
       // start date) still gets its updates if it already has a Notion page:
@@ -777,7 +800,9 @@ export const transactionsBatch = internalAction({
             databaseId: databases.transactions,
             txn,
             accountPage,
-            categoryPage: await ensureCategory(txn),
+            accountRowId: accountRowIds.get(txn.account_id),
+            rules,
+            ensureCategory,
             txnPages,
           });
           stats[result]++;
@@ -821,7 +846,9 @@ export const transactionsBatch = internalAction({
       const abandonPage = failures > 0 && attempt >= MAX_CURSOR_ATTEMPTS;
       await ctx.runMutation(internal.syncData.addRunStats, {
         runId: args.runId,
-        ...stats,
+        added: stats.added,
+        modified: stats.modified,
+        removed: stats.removed,
         skipped: abandonPage ? failures : 0,
       });
 
@@ -1313,10 +1340,15 @@ async function claimAndCreatePage(
   return null;
 }
 
+// What one transaction did to Notion. "hidden" is a rule keeping a row out
+// and is deliberately not counted in a run's stats: nothing was written.
+type TransactionResult = "added" | "modified" | "removed" | "hidden";
+
 // Create or update the Notion row for one Plaid transaction and keep the
 // caller's providerId -> page map in step. Shared by the transactions/sync
-// stream and the per-account catch-up so the pending -> posted rule and the
-// claim-then-create rule have one implementation between them.
+// stream and the per-account catch-up so the pending -> posted rule, the
+// claim-then-create rule, and the user's rules have one implementation
+// between them.
 //
 // Callers decide whether a create is allowed: pass a txn with no mapping
 // only when it should be created.
@@ -1328,15 +1360,41 @@ async function upsertTransaction(
     databaseId: string;
     txn: Transaction;
     accountPage: string;
-    categoryPage: string | null;
+    // The Convex accounts row this transaction belongs to, which is what a
+    // rule's account condition is written against.
+    accountRowId?: string;
+    // Loaded once per batch, never per transaction.
+    rules: Rule[];
+    // Resolves (and creates on first sight) the category page, taking a rule's
+    // category override into account. Called after the rules run, so a hidden
+    // transaction never creates a category row for a category it never gets.
+    ensureCategory: (
+      txn: Transaction,
+      categoryOverride?: string,
+    ) => Promise<string | null>;
     txnPages: Record<string, string>;
   },
-): Promise<"added" | "modified"> {
+): Promise<TransactionResult> {
   const { txn, txnPages } = input;
+
+  const decision = evaluate(
+    input.rules,
+    ruleTransaction(txn, input.accountRowId),
+  );
+  if (decision?.hide) {
+    return await hideTransaction(ctx, {
+      userId: input.userId,
+      token: input.token,
+      txn,
+      txnPages,
+    });
+  }
+
   const properties = transactionProperties(
     txn,
     input.accountPage,
-    input.categoryPage,
+    await input.ensureCategory(txn, decision?.categoryId),
+    decision?.rename,
   );
   // Merchant logos ride along in the request we are already making, so
   // keeping them current costs no extra calls.
@@ -1389,8 +1447,53 @@ async function upsertTransaction(
   return "added";
 }
 
+// A rule says this transaction does not belong in Notion.
+//
+// Usually there is nothing to do — the row was never created. But a rule can
+// be written after the transaction already synced, or start applying when a
+// pending row posts and its amount changes, so a page that exists has to be
+// archived and its mapping dropped. Without dropping it, the next sync event
+// for the transaction would update a page the user asked to be gone.
+//
+// Throwing here is the caller's signal that this row failed, which leaves the
+// Plaid cursor where it is so the archive is retried — the same treatment any
+// other failed Notion write gets.
+async function hideTransaction(
+  ctx: ActionCtx,
+  input: {
+    userId: Id<"users">;
+    token: string;
+    txn: Transaction;
+    txnPages: Record<string, string>;
+  },
+): Promise<TransactionResult> {
+  const { txn, txnPages } = input;
+  const pendingId = txn.pending_transaction_id ?? undefined;
+  const mappedId = txnPages[txn.transaction_id]
+    ? txn.transaction_id
+    : pendingId && txnPages[pendingId]
+      ? pendingId
+      : undefined;
+  if (!mappedId) {
+    return "hidden";
+  }
+  await archivePage(input.token, txnPages[mappedId]);
+  await ctx.runMutation(internal.syncData.deleteMapEntries, {
+    userId: input.userId,
+    kind: "transaction",
+    providerIds: [mappedId],
+  });
+  delete txnPages[mappedId];
+  // A Notion row went away, which is what "removed" counts.
+  return "removed";
+}
+
 // Resolve a transaction's category page, creating it the first time it is
 // seen. The cache is the caller's, so one pass never asks twice.
+//
+// `categoryOverride` is a rule's category outcome: a Plaid category enum that
+// this transaction never came with, so its primary group has to be looked up
+// rather than read off the transaction.
 function categoryResolver(
   ctx: ActionCtx,
   input: {
@@ -1399,26 +1502,37 @@ function categoryResolver(
     databaseId: string | undefined;
     cache: Record<string, string>;
   },
-): (txn: Transaction) => Promise<string | null> {
-  return async (txn) => {
+): (txn: Transaction, categoryOverride?: string) => Promise<string | null> {
+  return async (txn, categoryOverride) => {
     const pfc = txn.personal_finance_category;
+    const detailed = categoryOverride ?? pfc?.detailed;
     const databaseId = input.databaseId;
-    if (!pfc?.detailed || !databaseId) {
+    if (!detailed || !databaseId) {
       return null;
     }
-    if (input.cache[pfc.detailed]) {
-      return input.cache[pfc.detailed];
+    if (input.cache[detailed]) {
+      return input.cache[detailed];
     }
     const pageId = await ensureCategoryPage(ctx, {
       userId: input.userId,
       token: input.token,
       databaseId,
-      detailed: pfc.detailed,
-      primary: pfc.primary,
-      iconUrl: txn.personal_finance_category_icon_url ?? undefined,
+      detailed,
+      // An override that is not in the taxonomy can only be a rule written
+      // against a category Plaid has since renamed; group it under itself
+      // rather than dropping the outcome the user asked for.
+      primary: categoryOverride
+        ? (pfcPrimary(categoryOverride) ?? categoryOverride)
+        : (pfc?.primary ?? detailed),
+      // Plaid's icon belongs to the category it chose. A rule moving the
+      // transaction somewhere else says nothing about that category's icon,
+      // so the row is created without one.
+      iconUrl: categoryOverride
+        ? undefined
+        : (txn.personal_finance_category_icon_url ?? undefined),
     });
     if (pageId) {
-      input.cache[pfc.detailed] = pageId;
+      input.cache[detailed] = pageId;
     }
     return pageId;
   };

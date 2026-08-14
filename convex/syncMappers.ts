@@ -14,6 +14,7 @@ import type {
   InvestmentTransaction,
   Transaction,
 } from "plaid";
+import type { RuleTransaction } from "./rulesEngine";
 
 // ---------- property value builders ----------
 
@@ -98,13 +99,41 @@ export function transactionIcon(txn: Transaction) {
   return url ? externalIcon(url) : undefined;
 }
 
+// The title a transaction row gets: Plaid's cleaned merchant name, falling
+// back to the raw description. A rule's rename outcome replaces it — and only
+// it, so Original Description still carries what the bank actually said.
+export function transactionTitle(txn: Transaction, rename?: string): string {
+  return rename || txn.merchant_name || txn.name || "Transaction";
+}
+
+// What a rule looks at, out of a Plaid transaction.
+//
+// `merchant` is the same string the Notion title uses, so a merchant rule
+// matches what the user sees rather than a field that is null for most ACH
+// transactions. `description` is the bank's own string, as synced to Original
+// Description. `amount` keeps Plaid's sign (positive = money out); Notion's
+// column has it flipped. `accountRowId` is the Convex accounts id, which is
+// what a rule's account condition stores.
+export function ruleTransaction(
+  txn: Transaction,
+  accountRowId?: string,
+): RuleTransaction {
+  return {
+    merchant: txn.merchant_name ?? txn.name,
+    description: txn.original_description ?? txn.name,
+    amount: txn.amount,
+    accountId: accountRowId,
+  };
+}
+
 export function transactionProperties(
   txn: Transaction,
   accountPageId: string,
   categoryPageId: string | null,
+  rename?: string,
 ) {
   return {
-    Name: P.title(txn.merchant_name || txn.name || "Transaction"),
+    Name: P.title(transactionTitle(txn, rename)),
     ID: P.text(txn.transaction_id),
     "Original Description": P.text(txn.original_description ?? txn.name),
     Account: P.relation(accountPageId),

@@ -11,10 +11,12 @@ file before changing behavior it owns.
 ## 1. What Convex may store
 
 `convex/schema.ts` is config and bookkeeping only: users, Plaid access
-tokens, Notion tokens, module/page config, `transactionsCursor`, and the
-`notionPageMap` (providerId → Notion page id). Amounts, merchants, balances,
-and transaction dates never live at rest outside Notion — every new field
-has to pass that test.
+tokens, Notion tokens, module/page config, `transactionsCursor`, the
+`notionPageMap` (providerId → Notion page id), and `rules`. Amounts,
+merchants, balances, and transaction dates never live at rest outside Notion
+— every new field has to pass that test. A rule stores what to look for
+("merchant contains amzn"), never what was found, which is what keeps it on
+the right side of that line.
 
 ## 2. Sync engine (`convex/sync.ts`, `convex/syncData.ts`)
 
@@ -63,7 +65,29 @@ has to pass that test.
   databases built by `convex/notionSchemas.ts`; renaming one renames a
   column users already have data in.
 
-## 4. Webhooks (`convex/http.ts` → `convex/plaid.ts`)
+## 4. Transaction rules (`convex/rulesEngine.ts`, `convex/rules.ts`)
+
+- Evaluation happens in the sync pass-through — `upsertTransaction` in
+  `convex/sync.ts`, so both the transactions/sync stream and the
+  `accountBackfill` catch-up go through it. There is no stored transaction
+  to re-run a rule against later; the next sync event for that transaction
+  is the only chance a changed rule gets.
+- Priority ascending, and the first enabled rule whose conditions all match
+  wins outright: its outcomes (category, rename, hide) apply together and no
+  later rule is consulted. A rule with no conditions matches nothing.
+- Amount conditions use Plaid's sign (positive = money out), the opposite of
+  the Notion column. Regexes are compiled defensively — an invalid one
+  matches nothing rather than throwing and failing the row.
+- `hide` = do not create the page; if one already exists, `archivePage` it
+  **and** delete its `notionPageMap` entry, or the next sync updates a row
+  the user asked to be gone. A failed archive throws, which counts as a row
+  failure and holds the cursor, like any other failed Notion write.
+- Rules are loaded once per batch (`internal.rules.listEnabledInternal`),
+  never per transaction, and capped (`MAX_RULES`) so that stays one query.
+- One-way sync still wins: a rename or category set in Notion is overwritten
+  by the next `updatePage`. Rules are the supported way to change either.
+
+## 5. Webhooks (`convex/http.ts` → `convex/plaid.ts`)
 
 `/plaid/webhook` acks 200 immediately and schedules
 `internal.plaid.handleWebhook`. That action reads `item_id` from the unverified
@@ -73,7 +97,7 @@ set connection status/error code, TRANSACTIONS codes schedule
 `sync.runForConnection` with trigger `webhook`. Nothing acts on an
 unverified body.
 
-## 5. Local dev
+## 6. Local dev
 
 `npm run dev` runs `convex dev` and Vite together. The port is pinned to
 3466 and `SITE_URL` on the deployment must match it. `TEST_LOGIN_SECRET`
@@ -84,7 +108,7 @@ from `localhost` go to the Sandbox when `PLAID_SANDBOX_SECRET` is set
 Items. Each connection stores its `plaidEnv` and every later call for it
 reuses that; access tokens do not work across environments.
 
-## 6. Docs
+## 7. Docs
 
 PLAN.md's Notion property tables are stale — `convex/notionSchemas.ts` is
 the live schema.
