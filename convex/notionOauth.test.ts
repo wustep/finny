@@ -41,6 +41,8 @@ function insertConnection(
     workspaceId: string;
     databases?: Record<string, string>;
     parentPageId?: string;
+    modules?: { balances: boolean; spending: boolean; investments: boolean };
+    startDate?: string;
   },
 ) {
   return t.run(async (ctx) =>
@@ -50,9 +52,44 @@ function insertConnection(
       workspaceId: fields.workspaceId,
       workspaceName: "Workspace",
       botId: "bot-1",
-      modules: { balances: true, spending: true, investments: true },
+      modules: fields.modules ?? {
+        balances: true,
+        spending: true,
+        investments: true,
+      },
       parentPageId: fields.parentPageId,
+      startDate: fields.startDate,
       databases: fields.databases,
+    }),
+  );
+}
+
+function notionConnection(
+  t: Awaited<ReturnType<typeof withUser>>["t"],
+  userId: Id<"users">,
+) {
+  return t.run(async (ctx) =>
+    ctx.db
+      .query("notionConnections")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .unique(),
+  );
+}
+
+function insertBank(
+  t: Awaited<ReturnType<typeof withUser>>["t"],
+  userId: Id<"users">,
+  plaidItemId: string,
+  cursor?: string,
+) {
+  return t.run(async (ctx) =>
+    ctx.db.insert("bankConnections", {
+      userId,
+      plaidItemId,
+      accessToken: "plaid-token",
+      institutionName: "Bank",
+      status: "active",
+      transactionsCursor: cursor,
     }),
   );
 }
@@ -229,6 +266,167 @@ test("checkHealth separates a healthy token from an unreachable Notion", async (
     state: "unknown",
     message: "Notion returned 503",
   });
+});
+
+const SPENDING_AND_BALANCES = {
+  bankConnections: "db-bc",
+  accounts: "db-acct",
+  balanceHistory: "db-bh",
+  categories: "db-cat",
+  transactions: "db-txn",
+};
+
+test("enabling a module creates only the databases it is missing", async () => {
+  const { t, userId, asUser } = await withAccess();
+  await insertConnection(t, userId, {
+    workspaceId: "ws-1",
+    parentPageId: "page-1",
+    startDate: "2024-01-01",
+    modules: { balances: true, spending: true, investments: false },
+    databases: SPENDING_AND_BALANCES,
+  });
+  await insertBank(t, userId, "item-1");
+  let created = 0;
+  const fetchMock = vi.fn(async () =>
+    Response.json({ id: `db-new-${++created}` }),
+  );
+  vi.stubGlobal("fetch", fetchMock);
+
+  const databases = await asUser.action(api.notion.setModules, {
+    modules: { balances: true, spending: true, investments: true },
+  });
+
+  // Securities, Holdings, Investment Transactions — and nothing that already
+  // existed, which is what stops a second set of databases appearing.
+  expect(fetchMock).toHaveBeenCalledTimes(3);
+  expect(databases).toMatchObject(SPENDING_AND_BALANCES);
+  expect(Object.keys(databases).sort()).toEqual([
+    "accounts",
+    "balanceHistory",
+    "bankConnections",
+    "categories",
+    "holdings",
+    "investmentTransactions",
+    "securities",
+    "transactions",
+  ]);
+  const connection = await notionConnection(t, userId);
+  expect(connection?.modules.investments).toBe(true);
+  // New databases are empty until something syncs into them.
+  const scheduled = await t.run(async (ctx) =>
+    ctx.db.system.query("_scheduled_functions").collect(),
+  );
+  expect(scheduled).toHaveLength(1);
+});
+
+test("disabling a module keeps its databases and syncs nothing", async () => {
+  const { t, userId, asUser } = await withAccess();
+  const databases = {
+    ...SPENDING_AND_BALANCES,
+    securities: "db-sec",
+    holdings: "db-hold",
+    investmentTransactions: "db-invtxn",
+  };
+  await insertConnection(t, userId, {
+    workspaceId: "ws-1",
+    parentPageId: "page-1",
+    databases,
+  });
+  await insertBank(t, userId, "item-1");
+  const fetchMock = vi.fn();
+  vi.stubGlobal("fetch", fetchMock);
+
+  await asUser.action(api.notion.setModules, {
+    modules: { balances: true, spending: true, investments: false },
+  });
+
+  expect(fetchMock).not.toHaveBeenCalled();
+  const connection = await notionConnection(t, userId);
+  expect(connection?.modules.investments).toBe(false);
+  // Turning a module off stops the writes; the user's history stays.
+  expect(connection?.databases).toEqual(databases);
+  const scheduled = await t.run(async (ctx) =>
+    ctx.db.system.query("_scheduled_functions").collect(),
+  );
+  expect(scheduled).toHaveLength(0);
+});
+
+test("saving a start date without a re-backfill leaves the cursors alone", async () => {
+  const { t, userId, asUser } = await withAccess();
+  await insertConnection(t, userId, {
+    workspaceId: "ws-1",
+    parentPageId: "page-1",
+    startDate: "2024-01-01",
+    databases: SPENDING_AND_BALANCES,
+  });
+  await insertBank(t, userId, "item-1", "cursor-1");
+
+  expect(
+    await asUser.mutation(api.notion.setStartDate, {
+      startDate: "2025-06-01",
+      rebackfill: false,
+    }),
+  ).toEqual({ connections: 0 });
+
+  const connection = await notionConnection(t, userId);
+  expect(connection?.startDate).toBe("2025-06-01");
+  // Plaid only re-sends history from a rewound cursor, so leaving it put is
+  // what makes "save only" mean "from the next sync onwards".
+  const bank = await t.run(async (ctx) =>
+    ctx.db
+      .query("bankConnections")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .unique(),
+  );
+  expect(bank?.transactionsCursor).toBe("cursor-1");
+});
+
+test("re-backfilling rewinds every cursor and syncs every bank", async () => {
+  const { t, userId, asUser } = await withAccess();
+  await insertConnection(t, userId, {
+    workspaceId: "ws-1",
+    parentPageId: "page-1",
+    startDate: "2024-01-01",
+    databases: SPENDING_AND_BALANCES,
+  });
+  await insertBank(t, userId, "item-1", "cursor-1");
+  await insertBank(t, userId, "item-2", "cursor-2");
+
+  expect(
+    await asUser.mutation(api.notion.setStartDate, {
+      startDate: "2020-01-01",
+      rebackfill: true,
+    }),
+  ).toEqual({ connections: 2 });
+
+  const connection = await notionConnection(t, userId);
+  expect(connection?.startDate).toBe("2020-01-01");
+  const banks = await t.run(async (ctx) =>
+    ctx.db
+      .query("bankConnections")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .collect(),
+  );
+  expect(banks.map((bank) => bank.transactionsCursor)).toEqual([
+    undefined,
+    undefined,
+  ]);
+  const scheduled = await t.run(async (ctx) =>
+    ctx.db.system.query("_scheduled_functions").collect(),
+  );
+  expect(scheduled).toHaveLength(2);
+});
+
+test("setStartDate rejects a date that is not an ISO day", async () => {
+  const { t, userId, asUser } = await withAccess();
+  await insertConnection(t, userId, { workspaceId: "ws-1" });
+
+  await expect(
+    asUser.mutation(api.notion.setStartDate, {
+      startDate: "01/06/2025",
+      rebackfill: false,
+    }),
+  ).rejects.toThrow("YYYY-MM-DD");
 });
 
 test("checkHealth says disconnected rather than pinging Notion", async () => {

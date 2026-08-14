@@ -1,6 +1,7 @@
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
+import type { Id } from "./_generated/dataModel";
 import {
   action,
   internalAction,
@@ -8,12 +9,23 @@ import {
   internalQuery,
   mutation,
   query,
+  type ActionCtx,
 } from "./_generated/server";
 import { DATABASE_SPECS, MODULE_DATABASES } from "./notionSchemas";
 import { allowedOrigins } from "./origins";
 
 const NOTION_VERSION = "2022-06-28";
 const OAUTH_STATE_TTL_MS = 15 * 60 * 1000;
+
+const modulesValidator = v.object({
+  balances: v.boolean(),
+  spending: v.boolean(),
+  investments: v.boolean(),
+});
+
+type Modules = { balances: boolean; spending: boolean; investments: boolean };
+
+const MODULE_KEYS = ["balances", "spending", "investments"] as const;
 
 function redirectUri() {
   return `${process.env.CONVEX_SITE_URL}/notion/oauth/callback`;
@@ -369,17 +381,95 @@ export const listPages = action({
   },
 });
 
+// Which logical databases the enabled modules need. Bank Connections and
+// Accounts are always in, whatever is on.
+function wantedDatabases(modules: Modules): Set<string> {
+  const wanted = new Set(MODULE_DATABASES.base);
+  for (const key of MODULE_KEYS) {
+    if (modules[key]) {
+      MODULE_DATABASES[key].forEach((database) => wanted.add(database));
+    }
+  }
+  return wanted;
+}
+
+// Create the databases the enabled modules need and the row does not already
+// have, and record the result. Reusing existing ids is what makes this safe
+// to call more than once — from a retried setup, or from switching a module
+// on months later.
+async function ensureDatabases(
+  ctx: ActionCtx,
+  input: {
+    userId: Id<"users">;
+    token: string;
+    parentPageId: string;
+    modules: Modules;
+    startDate?: string;
+    existing?: Record<string, string>;
+  },
+): Promise<Record<string, string>> {
+  const wanted = wantedDatabases(input.modules);
+  const created: Record<string, string> = { ...input.existing };
+  try {
+    for (const spec of DATABASE_SPECS) {
+      if (!wanted.has(spec.key) || created[spec.key]) {
+        continue;
+      }
+      const data = await notionFetch(input.token, "/databases", {
+        method: "POST",
+        body: {
+          parent: { type: "page_id", page_id: input.parentPageId },
+          icon: { type: "emoji", emoji: spec.emoji },
+          title: [{ type: "text", text: { content: spec.title } }],
+          // Relations point at ids created earlier in this same pass; every
+          // spec's dependencies come before it in DATABASE_SPECS.
+          properties: spec.properties(created),
+        },
+      });
+      created[spec.key] = data.id as string;
+    }
+  } finally {
+    // Persist progress even on failure so a retry doesn't duplicate DBs.
+    await ctx.runMutation(internal.notion.saveDatabases, {
+      userId: input.userId,
+      parentPageId: input.parentPageId,
+      modules: input.modules,
+      startDate: input.startDate,
+      databases: created,
+    });
+  }
+  return created;
+}
+
+// Sync every connected bank into the databases as they now stand. Spaced out
+// because a run is a long conversation with Plaid and Notion.
+async function scheduleSyncs(
+  ctx: ActionCtx,
+  userId: Id<"users">,
+  trigger: "initial" | "manual",
+): Promise<number> {
+  const connections = await ctx.runQuery(
+    internal.connections.listByUserInternal,
+    { userId },
+  );
+  let delay = 0;
+  for (const connection of connections) {
+    await ctx.scheduler.runAfter(delay, internal.sync.runForConnection, {
+      connectionId: connection._id,
+      trigger,
+    });
+    delay += 10 * 1000;
+  }
+  return connections.length;
+}
+
 export const createDatabases = action({
   args: {
     parentPageId: v.string(),
-    modules: v.object({
-      balances: v.boolean(),
-      spending: v.boolean(),
-      investments: v.boolean(),
-    }),
+    modules: modulesValidator,
     startDate: v.string(),
   },
-  handler: async (ctx, args) => {
+  handler: async (ctx, args): Promise<Record<string, string>> => {
     const userId = await getAuthUserId(ctx);
     if (userId === null) {
       throw new Error("Not signed in");
@@ -393,62 +483,105 @@ export const createDatabases = action({
       throw new Error("Notion not connected");
     }
 
-    const wanted = new Set(MODULE_DATABASES.base);
-    if (args.modules.balances) {
-      MODULE_DATABASES.balances.forEach((key) => wanted.add(key));
-    }
-    if (args.modules.spending) {
-      MODULE_DATABASES.spending.forEach((key) => wanted.add(key));
-    }
-    if (args.modules.investments) {
-      MODULE_DATABASES.investments.forEach((key) => wanted.add(key));
-    }
-
-    // Reuse databases from a previous run so re-running setup is idempotent.
-    const created: Record<string, string> = { ...connection.databases };
-    try {
-      for (const spec of DATABASE_SPECS) {
-        if (!wanted.has(spec.key) || created[spec.key]) {
-          continue;
-        }
-        const create = (properties: Record<string, unknown>) =>
-          notionFetch(connection.accessToken, "/databases", {
-            method: "POST",
-            body: {
-              parent: { type: "page_id", page_id: args.parentPageId },
-              icon: { type: "emoji", emoji: spec.emoji },
-              title: [{ type: "text", text: { content: spec.title } }],
-              properties,
-            },
-          });
-        const data = await create(spec.properties(created));
-        created[spec.key] = data.id as string;
-      }
-    } finally {
-      // Persist progress even on failure so a retry doesn't duplicate DBs.
-      await ctx.runMutation(internal.notion.saveDatabases, {
-        userId,
-        parentPageId: args.parentPageId,
-        modules: args.modules,
-        startDate: args.startDate,
-        databases: created,
-      });
-    }
-
+    const created = await ensureDatabases(ctx, {
+      userId,
+      token: connection.accessToken,
+      parentPageId: args.parentPageId,
+      modules: args.modules,
+      startDate: args.startDate,
+      existing: connection.databases,
+    });
     // Kick off the initial backfill for every connected bank.
-    const connections = await ctx.runQuery(
-      internal.connections.listByUserInternal,
+    await scheduleSyncs(ctx, userId, "initial");
+    return created;
+  },
+});
+
+// Turn a tracking module on or off after setup.
+//
+// Enabling creates only the databases that module needs and are missing, then
+// syncs every bank so they start out filled. Disabling only stops writing:
+// the databases and everything already in them stay in Notion, which is the
+// difference between a user changing their mind and losing their history.
+export const setModules = action({
+  args: { modules: modulesValidator },
+  handler: async (ctx, args): Promise<Record<string, string>> => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) {
+      throw new Error("Not signed in");
+    }
+    await requireAccess(ctx, userId);
+    const connection = await ctx.runQuery(
+      internal.notion.getConnectionInternal,
+      { userId },
+    );
+    if (!connection) {
+      throw new Error("Notion not connected");
+    }
+    if (!connection.parentPageId || !connection.databases) {
+      throw new Error("Set up the Notion destination first");
+    }
+    const enabled = MODULE_KEYS.some(
+      (key) => args.modules[key] && !connection.modules[key],
+    );
+    const databases = await ensureDatabases(ctx, {
+      userId,
+      token: connection.accessToken,
+      parentPageId: connection.parentPageId,
+      modules: args.modules,
+      startDate: connection.startDate,
+      existing: connection.databases,
+    });
+    if (enabled) {
+      // A database nothing has written to yet is an empty database.
+      await scheduleSyncs(ctx, userId, "manual");
+    }
+    return databases;
+  },
+});
+
+// Move how far back syncs reach.
+//
+// The date is only a filter on what a sync writes, so moving it earlier
+// reaches further back only once the Plaid cursor is rewound — that is what
+// `rebackfill` does, and the page map makes the replay update rows in place
+// instead of duplicating them. Moving it later deliberately leaves what is
+// already in Notion alone; later syncs simply stop adding older items.
+export const setStartDate = mutation({
+  args: { startDate: v.string(), rebackfill: v.boolean() },
+  handler: async (ctx, args): Promise<{ connections: number }> => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) {
+      throw new Error("Not signed in");
+    }
+    await requireAccess(ctx, userId);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(args.startDate)) {
+      throw new Error("Expected a date as YYYY-MM-DD");
+    }
+    const connection = await ctx.db
+      .query("notionConnections")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .unique();
+    if (!connection) {
+      throw new Error("Notion not connected");
+    }
+    await ctx.db.patch(connection._id, { startDate: args.startDate });
+    if (!args.rebackfill) {
+      return { connections: 0 };
+    }
+    const connectionIds = await ctx.runMutation(
+      internal.syncData.clearCursors,
       { userId },
     );
     let delay = 0;
-    for (const connection of connections) {
+    for (const connectionId of connectionIds) {
       await ctx.scheduler.runAfter(delay, internal.sync.runForConnection, {
-        connectionId: connection._id,
-        trigger: "initial",
+        connectionId,
+        trigger: "manual",
       });
       delay += 10 * 1000;
     }
-    return created;
+    return { connections: connectionIds.length };
   },
 });
 
@@ -456,12 +589,9 @@ export const saveDatabases = internalMutation({
   args: {
     userId: v.id("users"),
     parentPageId: v.string(),
-    modules: v.object({
-      balances: v.boolean(),
-      spending: v.boolean(),
-      investments: v.boolean(),
-    }),
-    startDate: v.string(),
+    modules: modulesValidator,
+    // Absent on a connection whose setup predates the start-date question.
+    startDate: v.optional(v.string()),
     databases: v.record(v.string(), v.string()),
   },
   handler: async (ctx, args) => {

@@ -1,9 +1,10 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useAction, useMutation, useQuery } from "convex/react";
 import { ExternalLink, RefreshCw, TriangleAlert, Unplug } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { api } from "../../convex/_generated/api";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -57,6 +58,30 @@ function defaultStartDate() {
 const RECONNECT_KEY = "finny.notion.reconnect";
 
 type PreviousWorkspace = { workspaceId: string; workspaceName?: string };
+
+type Modules = { balances: boolean; spending: boolean; investments: boolean };
+
+const MODULE_ROWS: Array<{
+  key: keyof Modules;
+  label: string;
+  detail: string;
+}> = [
+  {
+    key: "balances",
+    label: "Account balances",
+    detail: "Bank Connections, Accounts, Balance History",
+  },
+  {
+    key: "spending",
+    label: "Spending",
+    detail: "Transactions, Categories",
+  },
+  {
+    key: "investments",
+    label: "Investments",
+    detail: "Securities, Holdings, Investment Transactions",
+  },
+];
 
 // A first connect and a reconnect are the same OAuth flow. The difference is
 // that a reconnect leaves the existing row alone, so the workspace the user
@@ -303,11 +328,7 @@ function UnhealthyCard({
   );
 }
 
-function SetupCard({
-  modules: initialModules,
-}: {
-  modules: { balances: boolean; spending: boolean; investments: boolean };
-}) {
+function SetupCard({ modules: initialModules }: { modules: Modules }) {
   const listPages = useAction(api.notion.listPages);
   const createDatabases = useAction(api.notion.createDatabases);
 
@@ -330,32 +351,6 @@ function SetupCard({
       setPageId(pages[0].id);
     }
   }, [pages, pageId]);
-
-  const moduleRows = useMemo(
-    () =>
-      [
-        {
-          key: "balances" as const,
-          label: "Account balances",
-          detail: "Bank Connections, Accounts, Balance History",
-        },
-        {
-          key: "spending" as const,
-          label: "Spending",
-          detail: "Transactions, Categories",
-        },
-        {
-          key: "investments" as const,
-          label: "Investments",
-          detail: "Securities, Holdings, Investment Transactions",
-        },
-      ] satisfies Array<{
-        key: keyof typeof modules;
-        label: string;
-        detail: string;
-      }>,
-    [],
-  );
 
   const handleCreate = () => {
     if (!pageId) {
@@ -410,7 +405,7 @@ function SetupCard({
 
         <div className="flex flex-col gap-3">
           <Label>Tracking modules</Label>
-          {moduleRows.map((row) => (
+          {MODULE_ROWS.map((row) => (
             <div key={row.key} className="flex items-center gap-3">
               <div className="flex-1">
                 <div className="text-sm">{row.label}</div>
@@ -456,6 +451,8 @@ function DestinationCard({
 }: {
   status: {
     workspaceName?: string;
+    parentPageId?: string;
+    modules: Modules;
     startDate?: string;
     databases?: Record<string, string>;
   };
@@ -464,50 +461,281 @@ function DestinationCard({
   onReconnect: () => void;
   reconnecting: boolean;
 }) {
+  const connections = useQuery(api.connections.list);
+  const triggerSync = useAction(api.sync.triggerManual);
   const databases = status.databases ?? {};
+  const [syncing, setSyncing] = useState(false);
 
+  const lastSyncedAt = connections?.reduce<number | undefined>(
+    (latest, connection) =>
+      connection.lastSyncedAt && (!latest || connection.lastSyncedAt > latest)
+        ? connection.lastSyncedAt
+        : latest,
+    undefined,
+  );
+
+  // One run per connection, the same trigger the Accounts page uses.
+  const handleSyncAll = () => {
+    if (!connections?.length) {
+      return;
+    }
+    setSyncing(true);
+    Promise.allSettled(
+      connections.map((connection) =>
+        triggerSync({ connectionId: connection.id }),
+      ),
+    )
+      .then((results) => {
+        const failed = results.filter(
+          (result) => result.status === "rejected",
+        ).length;
+        if (failed === 0) {
+          toast.success(
+            `Syncing ${results.length} ${
+              results.length === 1 ? "bank" : "banks"
+            }`,
+          );
+        } else {
+          toast.error(`${failed} of ${results.length} banks failed to start`);
+        }
+      })
+      .finally(() => setSyncing(false));
+  };
+
+  return (
+    <>
+      <Card>
+        <CardHeader>
+          <CardTitle>{status.workspaceName ?? "Notion workspace"}</CardTitle>
+          <CardDescription>
+            {Object.keys(databases).length} databases are ready.{" "}
+            {connections === undefined
+              ? ""
+              : connections.length === 0
+                ? "No banks are connected yet — add one from Accounts and it will fill these in."
+                : lastSyncedAt
+                  ? `Last synced ${new Date(lastSyncedAt).toLocaleString()}.`
+                  : "Waiting on the first sync to fill them in."}
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-6">
+          <div className="flex flex-col gap-2">
+            <Label>Databases</Label>
+            {status.parentPageId ? (
+              <a
+                href={`https://notion.so/${status.parentPageId.replaceAll("-", "")}`}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex w-fit items-center gap-1.5 text-xs text-muted-foreground underline-offset-4 hover:underline"
+              >
+                Inside your chosen page
+                <ExternalLink className="size-3" />
+              </a>
+            ) : null}
+            <ul className="flex flex-col gap-2">
+              {Object.entries(databases).map(([key, id]) => (
+                <li key={key}>
+                  <a
+                    href={`https://notion.so/${id.replaceAll("-", "")}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1.5 text-sm underline-offset-4 hover:underline"
+                  >
+                    {DATABASE_LABELS[key] ?? key}
+                    <ExternalLink className="size-3.5 text-muted-foreground" />
+                  </a>
+                </li>
+              ))}
+            </ul>
+          </div>
+
+          <ModuleSection modules={status.modules} />
+          <StartDateSection startDate={status.startDate} />
+          <HealthLine health={health} onCheck={onCheckHealth} />
+
+          <div className="flex flex-wrap gap-2">
+            <Button
+              onClick={handleSyncAll}
+              disabled={syncing || !connections?.length}
+            >
+              <RefreshCw /> {syncing ? "Starting…" : "Sync now (all)"}
+            </Button>
+            <Button
+              variant="outline"
+              onClick={onReconnect}
+              disabled={reconnecting}
+            >
+              {reconnecting ? "Redirecting…" : "Reconnect Notion"}
+            </Button>
+            <DisconnectButton />
+          </div>
+        </CardContent>
+      </Card>
+
+      <RecentSyncs />
+    </>
+  );
+}
+
+// Modules are editable after setup: switching one on creates the databases it
+// needs that don't exist yet and backfills them, switching one off only stops
+// the writes.
+function ModuleSection({ modules }: { modules: Modules }) {
+  const setModules = useAction(api.notion.setModules);
+  const [pending, setPending] = useState<keyof Modules | null>(null);
+
+  const handleToggle = (row: (typeof MODULE_ROWS)[number], on: boolean) => {
+    setPending(row.key);
+    setModules({ modules: { ...modules, [row.key]: on } })
+      .then(() =>
+        toast.success(
+          on
+            ? `${row.label} on — its databases are being filled in now`
+            : `${row.label} off — its databases stay in Notion`,
+        ),
+      )
+      .catch((err: unknown) => {
+        console.error(err);
+        toast.error(`Could not turn ${row.label.toLowerCase()} ${on ? "on" : "off"}`);
+      })
+      .finally(() => setPending(null));
+  };
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex flex-col gap-1">
+        <Label>Tracking modules</Label>
+        <p className="text-xs text-muted-foreground">
+          Turning one on creates the databases it needs and syncs into them.
+          Turning one off stops syncing it — nothing is removed from Notion.
+        </p>
+      </div>
+      {MODULE_ROWS.map((row) => (
+        <div key={row.key} className="flex items-center gap-3">
+          <div className="flex-1">
+            <div className="text-sm">{row.label}</div>
+            <div className="text-xs text-muted-foreground">
+              {pending === row.key ? "Updating…" : row.detail}
+            </div>
+          </div>
+          <Switch
+            checked={modules[row.key]}
+            disabled={pending !== null}
+            onCheckedChange={(checked) => handleToggle(row, checked)}
+          />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// The start date is a filter on what syncs write, so saving it alone only
+// changes what happens next. Reaching further back also needs the Plaid
+// cursor rewound, which is the second button.
+function StartDateSection({ startDate }: { startDate?: string }) {
+  const setStartDate = useMutation(api.notion.setStartDate);
+  const [value, setValue] = useState(startDate ?? defaultStartDate);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    setValue(startDate ?? defaultStartDate());
+  }, [startDate]);
+
+  const dirty = value !== (startDate ?? "");
+  const earlier = Boolean(startDate) && value < (startDate ?? "");
+
+  const handleSave = (rebackfill: boolean) => {
+    setSaving(true);
+    setStartDate({ startDate: value, rebackfill })
+      .then((result) =>
+        toast.success(
+          rebackfill
+            ? `Syncing history from ${value} across ${result.connections} ${
+                result.connections === 1 ? "bank" : "banks"
+              }`
+            : `New syncs will cover ${value} onwards`,
+        ),
+      )
+      .catch((err: unknown) => {
+        console.error(err);
+        toast.error("Could not change the start date");
+      })
+      .finally(() => setSaving(false));
+  };
+
+  return (
+    <div className="flex flex-col gap-2">
+      <Label htmlFor="start-date">Sync history from</Label>
+      <div className="flex flex-wrap items-center gap-2">
+        <Input
+          id="start-date"
+          type="date"
+          className="w-fit"
+          value={value}
+          onChange={(event) => setValue(event.target.value)}
+        />
+        {dirty ? (
+          <>
+            <Button variant="outline" disabled={saving} onClick={() => handleSave(false)}>
+              Save
+            </Button>
+            <Button disabled={saving} onClick={() => handleSave(true)}>
+              {saving ? "Starting…" : "Save & re-backfill"}
+            </Button>
+          </>
+        ) : null}
+      </div>
+      <p className="text-xs text-muted-foreground">
+        {!dirty
+          ? "Save alone only changes what future syncs pick up. Re-backfill replays your Plaid history from this date; rows already in Notion are updated, not duplicated."
+          : !startDate
+            ? "No start date is set yet, so syncs cover everything Plaid returns. Saving one narrows what future syncs write."
+            : earlier
+              ? `Earlier than ${startDate}, which only reaches further back on a re-backfill: Plaid otherwise sends nothing but what changed since the last sync.`
+              : `Later than ${startDate}. Everything already in Notion stays — new syncs just stop adding items dated before ${value}.`}
+      </p>
+    </div>
+  );
+}
+
+function RecentSyncs() {
+  const runs = useQuery(api.connections.recentRuns);
+  if (!runs || runs.length === 0) {
+    return null;
+  }
   return (
     <Card>
       <CardHeader>
-        <CardTitle>{status.workspaceName ?? "Notion workspace"}</CardTitle>
+        <CardTitle>Recent syncs</CardTitle>
         <CardDescription>
-          Databases are ready. Syncing engine arrives in the next phase —
-          connected banks will start filling these in.
+          What Finny has written to these databases lately.
         </CardDescription>
       </CardHeader>
-      <CardContent className="flex flex-col gap-4">
+      <CardContent>
         <ul className="flex flex-col gap-2">
-          {Object.entries(databases).map(([key, id]) => (
-            <li key={key}>
-              <a
-                href={`https://notion.so/${id.replaceAll("-", "")}`}
-                target="_blank"
-                rel="noreferrer"
-                className="inline-flex items-center gap-1.5 text-sm underline-offset-4 hover:underline"
+          {runs.slice(0, 5).map((run) => (
+            <li key={run.id} className="flex items-center gap-3 text-sm">
+              <Badge
+                variant={
+                  run.status === "error"
+                    ? "destructive"
+                    : run.status === "running"
+                      ? "outline"
+                      : "secondary"
+                }
               >
-                {DATABASE_LABELS[key] ?? key}
-                <ExternalLink className="size-3.5 text-muted-foreground" />
-              </a>
+                {run.status}
+              </Badge>
+              <span className="flex-1">
+                {run.institutionName}
+                <span className="text-muted-foreground"> · {run.trigger}</span>
+              </span>
+              <span className="text-xs text-muted-foreground">
+                {new Date(run.startedAt).toLocaleString()}
+              </span>
             </li>
           ))}
         </ul>
-        {status.startDate ? (
-          <p className="text-sm text-muted-foreground">
-            Syncing history from {status.startDate}
-          </p>
-        ) : null}
-        <HealthLine health={health} onCheck={onCheckHealth} />
-        <div className="flex flex-wrap gap-2">
-          <Button
-            variant="outline"
-            className="w-fit"
-            onClick={onReconnect}
-            disabled={reconnecting}
-          >
-            <RefreshCw /> {reconnecting ? "Redirecting…" : "Reconnect Notion"}
-          </Button>
-          <DisconnectButton />
-        </div>
       </CardContent>
     </Card>
   );
