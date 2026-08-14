@@ -332,14 +332,27 @@ function ConnectionCard({ connection }: { connection: ConnectionData }) {
           {connection.accounts.map((account) => (
             <li key={account.id} className="flex items-center gap-3 text-sm">
               <div className="flex-1">
-                <div>
-                  {account.name}
-                  {account.mask ? (
-                    <span className="text-muted-foreground"> *{account.mask}</span>
+                <div className="flex items-center gap-2">
+                  <span>
+                    {account.name}
+                    {account.mask ? (
+                      <span className="text-muted-foreground">
+                        {" "}
+                        *{account.mask}
+                      </span>
+                    ) : null}
+                  </span>
+                  {account.isNew ? (
+                    <Badge variant="outline" className="text-xs font-normal">
+                      New
+                    </Badge>
                   ) : null}
                 </div>
                 <div className="text-xs text-muted-foreground">
                   {account.subtype ?? account.type}
+                  {account.isNew
+                    ? " · found after linking, turn on to sync it"
+                    : null}
                 </div>
               </div>
               <Button

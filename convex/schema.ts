@@ -81,6 +81,10 @@ export default defineSchema({
     // User-chosen display name; overrides the derived
     // "<Institution> <Product> *<mask>" title everywhere it's synced.
     customName: v.optional(v.string()),
+    // Set when a sync found this account at Plaid after the connection was
+    // first linked — the user has never been asked whether to sync it, so
+    // it starts disabled and the UI flags it. Cleared once they answer.
+    discoveredAt: v.optional(v.number()),
   })
     .index("by_user", ["userId"])
     .index("by_connection", ["connectionId"])

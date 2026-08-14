@@ -1,4 +1,4 @@
-import { useAction } from "convex/react";
+import { useAction, useMutation } from "convex/react";
 import { useCallback, useEffect, useState } from "react";
 import { usePlaidLink } from "react-plaid-link";
 import { toast } from "sonner";
@@ -36,6 +36,7 @@ export function usePlaidConnect(options?: {
   const createLinkToken = useAction(api.plaid.createLinkToken);
   const createUpdateLinkToken = useAction(api.plaid.createUpdateLinkToken);
   const exchangePublicToken = useAction(api.plaid.exchangePublicToken);
+  const markReconnected = useMutation(api.connections.markReconnected);
 
   const [token, setToken] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -47,9 +48,15 @@ export function usePlaidConnect(options?: {
       setToken(null);
       clearPlaidLinkSession();
       if (connectionId) {
-        // Update mode: credentials fixed at Plaid; nothing to exchange.
-        toast.success("Connection repaired");
-        setBusy(false);
+        // Update mode: credentials fixed at Plaid; nothing to exchange, so
+        // clearing the error and syncing is on us.
+        markReconnected({ connectionId })
+          .then(() => toast.success("Connection repaired — syncing now"))
+          .catch((error: unknown) => {
+            console.error(error);
+            toast.error("Reconnected, but the sync could not be started");
+          })
+          .finally(() => setBusy(false));
         return;
       }
       if (publicToken === null) {

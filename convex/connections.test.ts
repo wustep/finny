@@ -132,3 +132,113 @@ test("toggleAccountSync updates the owner's own account", async () => {
   const account = await t.run(async (ctx) => ctx.db.get(accountId));
   expect(account?.syncEnabled).toBe(false);
 });
+
+test("upsertPlaidAccounts adds unknown accounts disabled and refreshes known ones", async () => {
+  const { t, alice } = await twoUsers();
+  const connectionId = await t.mutation(internal.connections.saveConnection, {
+    userId: alice,
+    plaidItemId: "item_1",
+    accessToken: "access-alice",
+    institutionName: "Alice Bank",
+    accounts: [ACCOUNT],
+  });
+
+  const result = await t.mutation(internal.connections.upsertPlaidAccounts, {
+    connectionId,
+    accounts: [
+      { ...ACCOUNT, name: "Everyday Checking" },
+      {
+        plaidAccountId: "acct_2",
+        name: "Savings",
+        mask: "1111",
+        type: "depository",
+        subtype: "savings",
+      },
+    ],
+  });
+
+  expect(result.discovered).toBe(1);
+  const accounts = await t.run(async (ctx) =>
+    ctx.db.query("accounts").collect(),
+  );
+  const known = accounts.find((a) => a.plaidAccountId === "acct_1");
+  const discovered = accounts.find((a) => a.plaidAccountId === "acct_2");
+  expect(known?.name).toBe("Everyday Checking");
+  expect(known?.syncEnabled).toBe(true);
+  expect(known?.discoveredAt).toBeUndefined();
+  expect(discovered?.syncEnabled).toBe(false);
+  expect(discovered?.discoveredAt).toEqual(expect.any(Number));
+  expect(discovered?.userId).toBe(alice);
+
+  // The user answering either way retires the new badge.
+  await t
+    .withIdentity({ subject: `${alice}|session-alice` })
+    .mutation(api.connections.toggleAccountSync, {
+      accountId: discovered!._id,
+      enabled: true,
+    });
+  const opted = await t.run(async (ctx) => ctx.db.get(discovered!._id));
+  expect(opted?.discoveredAt).toBeUndefined();
+});
+
+test("markReconnected refuses another user's connection", async () => {
+  const { t, alice, bob } = await twoUsers();
+  await t.run(async (ctx) => {
+    await ctx.db.patch(bob, { accessGrantedAt: Date.now() });
+  });
+  const connectionId = await t.mutation(internal.connections.saveConnection, {
+    userId: alice,
+    plaidItemId: "item_1",
+    accessToken: "access-alice",
+    institutionName: "Alice Bank",
+    accounts: [ACCOUNT],
+  });
+  await t.mutation(internal.connections.setStatusByItem, {
+    plaidItemId: "item_1",
+    status: "error",
+    errorCode: "ITEM_LOGIN_REQUIRED",
+  });
+
+  await expect(
+    t
+      .withIdentity({ subject: `${bob}|session-bob` })
+      .mutation(api.connections.markReconnected, { connectionId }),
+  ).rejects.toThrow("Connection not found");
+
+  await expect(
+    t.mutation(api.connections.markReconnected, { connectionId }),
+  ).rejects.toThrow("Not signed in");
+
+  const connection = await t.run(async (ctx) => ctx.db.get(connectionId));
+  expect(connection?.status).toBe("error");
+});
+
+test("markReconnected needs the access password, then clears the error", async () => {
+  const { t, alice } = await twoUsers();
+  const connectionId = await t.mutation(internal.connections.saveConnection, {
+    userId: alice,
+    plaidItemId: "item_1",
+    accessToken: "access-alice",
+    institutionName: "Alice Bank",
+    accounts: [ACCOUNT],
+  });
+  await t.mutation(internal.connections.setStatusByItem, {
+    plaidItemId: "item_1",
+    status: "error",
+    errorCode: "ITEM_LOGIN_REQUIRED",
+  });
+  const asAlice = t.withIdentity({ subject: `${alice}|session-alice` });
+
+  await expect(
+    asAlice.mutation(api.connections.markReconnected, { connectionId }),
+  ).rejects.toThrow("Access password required");
+
+  await t.run(async (ctx) => {
+    await ctx.db.patch(alice, { accessGrantedAt: Date.now() });
+  });
+  await asAlice.mutation(api.connections.markReconnected, { connectionId });
+
+  const connection = await t.run(async (ctx) => ctx.db.get(connectionId));
+  expect(connection?.status).toBe("active");
+  expect(connection?.errorCode).toBeUndefined();
+});

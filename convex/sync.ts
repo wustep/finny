@@ -256,6 +256,20 @@ export const runForConnection = internalAction({
       const balances = await client.accountsGet({
         access_token: connection.accessToken,
       });
+      // Banks add accounts to an Item after it is linked. Record them now —
+      // disabled, so nothing syncs without being asked for — otherwise every
+      // later step silently skips an account the user can never see.
+      await ctx.runMutation(internal.connections.upsertPlaidAccounts, {
+        connectionId: connection._id,
+        accounts: balances.data.accounts.map((account) => ({
+          plaidAccountId: account.account_id,
+          name: account.name,
+          officialName: account.official_name ?? undefined,
+          mask: account.mask ?? undefined,
+          type: String(account.type),
+          subtype: account.subtype ?? undefined,
+        })),
+      });
       let credit: Record<string, CreditCardLiability> = {};
       if (balances.data.accounts.some((a) => a.type === "credit")) {
         try {

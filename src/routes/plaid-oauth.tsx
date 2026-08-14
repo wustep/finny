@@ -1,9 +1,10 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useAction } from "convex/react";
+import { useAction, useMutation } from "convex/react";
 import { useEffect, useMemo } from "react";
 import { usePlaidLink } from "react-plaid-link";
 import { toast } from "sonner";
 import { api } from "../../convex/_generated/api";
+import type { Id } from "../../convex/_generated/dataModel";
 import {
   clearPlaidLinkSession,
   readPlaidLinkSession,
@@ -19,6 +20,7 @@ export const Route = createFileRoute("/plaid-oauth")({
 function PlaidOAuthReturn() {
   const navigate = useNavigate();
   const exchangePublicToken = useAction(api.plaid.exchangePublicToken);
+  const markReconnected = useMutation(api.connections.markReconnected);
   const session = useMemo(readPlaidLinkSession, []);
 
   const finish = () => {
@@ -32,8 +34,15 @@ function PlaidOAuthReturn() {
     onSuccess: (publicToken) => {
       clearPlaidLinkSession();
       if (session?.connectionId) {
-        toast.success("Connection repaired");
-        void navigate({ to: "/" });
+        markReconnected({
+          connectionId: session.connectionId as Id<"bankConnections">,
+        })
+          .then(() => toast.success("Connection repaired — syncing now"))
+          .catch((error: unknown) => {
+            console.error(error);
+            toast.error("Reconnected, but the sync could not be started");
+          })
+          .finally(() => void navigate({ to: "/" }));
         return;
       }
       if (publicToken === null) {

@@ -47,6 +47,7 @@ export const list = query({
             type: account.type,
             subtype: account.subtype,
             syncEnabled: account.syncEnabled,
+            isNew: account.discoveredAt !== undefined,
           })),
         };
       }),
@@ -65,7 +66,98 @@ export const toggleAccountSync = mutation({
     if (!account || account.userId !== userId) {
       throw new Error("Account not found");
     }
-    await ctx.db.patch(args.accountId, { syncEnabled: args.enabled });
+    await ctx.db.patch(args.accountId, {
+      syncEnabled: args.enabled,
+      // Either answer to "do you want this one?" retires the new badge.
+      discoveredAt: undefined,
+    });
+  },
+});
+
+// Accounts a sync found at Plaid that this app has no row for yet. New ones
+// arrive disabled: the user picked what to sync when they linked the bank,
+// and an account added afterwards is not covered by that choice. Existing
+// rows keep their syncEnabled and only take fresh metadata.
+export const upsertPlaidAccounts = internalMutation({
+  args: {
+    connectionId: v.id("bankConnections"),
+    accounts: v.array(
+      v.object({
+        plaidAccountId: v.string(),
+        name: v.string(),
+        officialName: v.optional(v.string()),
+        mask: v.optional(v.string()),
+        type: v.string(),
+        subtype: v.optional(v.string()),
+      }),
+    ),
+  },
+  handler: async (ctx, args) => {
+    const connection = await ctx.db.get(args.connectionId);
+    if (!connection) {
+      return { discovered: 0 };
+    }
+    const existing = await ctx.db
+      .query("accounts")
+      .withIndex("by_connection", (q) => q.eq("connectionId", args.connectionId))
+      .collect();
+    const byPlaidId = new Map(
+      existing.map((account) => [account.plaidAccountId, account]),
+    );
+
+    let discovered = 0;
+    for (const account of args.accounts) {
+      const row = byPlaidId.get(account.plaidAccountId);
+      if (row) {
+        await ctx.db.patch(row._id, {
+          name: account.name,
+          officialName: account.officialName,
+          mask: account.mask,
+          type: account.type,
+          subtype: account.subtype,
+        });
+        continue;
+      }
+      await ctx.db.insert("accounts", {
+        userId: connection.userId,
+        connectionId: args.connectionId,
+        syncEnabled: false,
+        discoveredAt: Date.now(),
+        ...account,
+      });
+      discovered++;
+    }
+    return { discovered };
+  },
+});
+
+// Link update mode fixes the credentials at Plaid and hands nothing back to
+// exchange, so the app only learns the Item works again by being told. Clear
+// the error and sync, or the card keeps saying "needs attention" until the
+// next webhook happens to arrive.
+export const markReconnected = mutation({
+  args: { connectionId: v.id("bankConnections") },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) {
+      throw new Error("Not signed in");
+    }
+    const user = await ctx.db.get(userId);
+    if (user?.accessGrantedAt === undefined) {
+      throw new Error("Access password required");
+    }
+    const connection = await ctx.db.get(args.connectionId);
+    if (!connection || connection.userId !== userId) {
+      throw new Error("Connection not found");
+    }
+    await ctx.db.patch(args.connectionId, {
+      status: "active",
+      errorCode: undefined,
+    });
+    await ctx.scheduler.runAfter(0, internal.sync.runForConnection, {
+      connectionId: args.connectionId,
+      trigger: "manual",
+    });
   },
 });
 

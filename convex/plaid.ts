@@ -262,6 +262,13 @@ export const handleWebhook = internalAction({
           plaidItemId: itemId,
           status: "active",
         });
+      } else if (code === "NEW_ACCOUNTS_AVAILABLE") {
+        // The sync's accountsGet is what records new accounts, so this is
+        // just a nudge to run one.
+        await ctx.scheduler.runAfter(0, internal.sync.runForConnection, {
+          connectionId: connection._id,
+          trigger: "webhook",
+        });
       }
       return;
     }
