@@ -1,7 +1,7 @@
 import { useAuthActions } from "@convex-dev/auth/react";
 import { Link } from "@tanstack/react-router";
 import { useQuery } from "convex/react";
-import { Landmark, LogOut, Settings } from "lucide-react";
+import { Landmark, LogOut, Settings, Wand2 } from "lucide-react";
 import type { ReactNode } from "react";
 import { api } from "../../convex/_generated/api";
 import { AppIcon } from "@/components/app-icon";
@@ -19,6 +19,7 @@ import {
 const navItems = [
   { to: "/", label: "Accounts", icon: Landmark, exact: true },
   { to: "/notion", label: "Notion", icon: NotionGlyph, exact: false },
+  { to: "/rules", label: "Rules", icon: Wand2, exact: false },
   { to: "/settings", label: "Settings", icon: Settings, exact: false },
 ] as const;
 

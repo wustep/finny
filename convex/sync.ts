@@ -558,7 +558,7 @@ export const accountBackfill = internalAction({
         ] as string[],
       });
 
-      const stats = { added: 0, modified: 0, removed: 0, hidden: 0 };
+      const stats = { added: 0, modified: 0, removed: 0 };
       let failures = args.failures ?? 0;
       for (const txn of transactions) {
         try {
@@ -573,7 +573,10 @@ export const accountBackfill = internalAction({
             ensureCategory,
             txnPages,
           });
-          stats[result]++;
+          // A rule keeping a row out of Notion wrote nothing to report.
+          if (result !== "hidden") {
+            stats[result]++;
+          }
         } catch (error) {
           console.error("failed to catch up transaction", txn.transaction_id, error);
           failures++;
@@ -581,9 +584,7 @@ export const accountBackfill = internalAction({
       }
       await ctx.runMutation(internal.syncData.addRunStats, {
         runId: args.runId,
-        added: stats.added,
-        modified: stats.modified,
-        removed: stats.removed,
+        ...stats,
       });
 
       const walked = args.offset + transactions.length;
@@ -745,7 +746,7 @@ export const transactionsBatch = internalAction({
         providerIds: txnIds,
       });
 
-      let stats = { added: 0, modified: 0, removed: 0, hidden: 0 };
+      let stats = { added: 0, modified: 0, removed: 0 };
       // Plaid never re-sends a page once its cursor is consumed, so a row we
       // could not write is a row lost forever unless the cursor stays put.
       let failures = 0;
@@ -805,7 +806,10 @@ export const transactionsBatch = internalAction({
             ensureCategory,
             txnPages,
           });
-          stats[result]++;
+          // A rule keeping a row out of Notion wrote nothing to report.
+          if (result !== "hidden") {
+            stats[result]++;
+          }
         } catch (error) {
           console.error("failed to sync transaction", txn.transaction_id, error);
           failures++;
@@ -846,9 +850,7 @@ export const transactionsBatch = internalAction({
       const abandonPage = failures > 0 && attempt >= MAX_CURSOR_ATTEMPTS;
       await ctx.runMutation(internal.syncData.addRunStats, {
         runId: args.runId,
-        added: stats.added,
-        modified: stats.modified,
-        removed: stats.removed,
+        ...stats,
         skipped: abandonPage ? failures : 0,
       });
 
