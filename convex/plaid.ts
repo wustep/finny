@@ -6,7 +6,8 @@ import { v } from "convex/values";
 import { decodeProtectedHeader, importJWK, jwtVerify } from "jose";
 import { CountryCode, Products } from "plaid";
 import { internal } from "./_generated/api";
-import { action, internalAction } from "./_generated/server";
+import type { Doc } from "./_generated/dataModel";
+import { action, internalAction, type ActionCtx } from "./_generated/server";
 import { allowedOrigins } from "./origins";
 import {
   plaidClient,
@@ -183,6 +184,29 @@ export const exchangePublicToken = action({
   },
 });
 
+// Revoke one Item at Plaid, then drop this app's rows for it. Reports whether
+// Plaid accepted the revocation; the rows go either way, since an Item Plaid
+// has already forgotten — or a Plaid outage — must not leave an access token
+// sitting in the database.
+async function revokeAndForget(
+  ctx: ActionCtx,
+  connection: Doc<"bankConnections">,
+): Promise<boolean> {
+  let revoked = true;
+  try {
+    await plaidClient(connection.plaidEnv ?? "production").itemRemove({
+      access_token: connection.accessToken,
+    });
+  } catch (error) {
+    console.error("itemRemove failed", error);
+    revoked = false;
+  }
+  await ctx.runMutation(internal.connections.deleteCascade, {
+    connectionId: connection._id,
+  });
+  return revoked;
+}
+
 export const removeConnection = action({
   args: { connectionId: v.id("bankConnections") },
   handler: async (ctx, args) => {
@@ -196,17 +220,36 @@ export const removeConnection = action({
     if (!connection || connection.userId !== userId) {
       throw new Error("Connection not found");
     }
-    try {
-      await plaidClient(connection.plaidEnv ?? "production").itemRemove({
-        access_token: connection.accessToken,
-      });
-    } catch (error) {
-      // Still delete our records if Plaid already considers the item gone.
-      console.error("itemRemove failed", error);
+    await revokeAndForget(ctx, connection);
+  },
+});
+
+// Revoke every bank this user has linked. Deliberately not gated on the
+// access password: someone who cannot get past the gate must still be able to
+// hand their Plaid tokens back.
+//
+// One Item's failure at Plaid must not strand the rest, so each is attempted
+// on its own and the failures are named in the result rather than thrown.
+export const disconnectAllBanks = action({
+  args: {},
+  handler: async (
+    ctx,
+  ): Promise<{ removed: number; revokeFailures: string[] }> => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) {
+      throw new Error("Not signed in");
     }
-    await ctx.runMutation(internal.connections.deleteCascade, {
-      connectionId: args.connectionId,
-    });
+    const connections = await ctx.runQuery(
+      internal.connections.listByUserInternal,
+      { userId },
+    );
+    const revokeFailures: string[] = [];
+    for (const connection of connections) {
+      if (!(await revokeAndForget(ctx, connection))) {
+        revokeFailures.push(connection.institutionName);
+      }
+    }
+    return { removed: connections.length, revokeFailures };
   },
 });
 

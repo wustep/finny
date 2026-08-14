@@ -110,20 +110,29 @@ function PolicyPage() {
         <PolicyHeading>Disposal on your actions</PolicyHeading>
         <List
           items={[
-            "Removing a bank connection immediately deletes its Plaid access token and account metadata from Finny, and revokes the connection at Plaid (item removal), which instructs Plaid to stop data access.",
-            "Disconnecting Notion immediately deletes the stored Notion token. Data already synced to your Notion workspace is yours and remains there; Finny never deletes it.",
+            "Removing a bank connection immediately deletes its Plaid access token and account metadata from Finny, and revokes the connection at Plaid (item removal), which instructs Plaid to stop data access. Settings has a “Disconnect all banks” action that does this for every connection at once; if Plaid rejects one of the revocations, Finny still deletes its own copy of that token and tells you which connection to check.",
+            "Disconnecting Notion immediately deletes the stored Notion token and the record of which databases Finny created. Notion's API has no token-revocation endpoint, so this removes Finny's copy of the token; you can additionally remove the Finny integration from your Notion workspace's connection settings. Data already synced to your Notion workspace is yours and remains there; Finny never deletes it.",
             "Data synced to Notion can be deleted by you at any time in Notion; Finny will not recreate rows for records it no longer syncs.",
           ]}
         />
 
         <PolicyHeading>Account deletion</PolicyHeading>
         <P>
-          To delete your account and all associated records — user profile,
-          tokens, configuration, sync bookkeeping, and logs — email
-          wujstephen@gmail.com. Deletion is completed within 30 days.
-          Residual copies in encrypted infrastructure backups expire on the
-          backup provider's rotation schedule.
+          You can delete your account yourself, at any time, from Settings.
+          Deletion revokes every bank connection at Plaid and then erases all
+          associated records — user profile, Plaid and Notion tokens,
+          connection and destination configuration, the opaque record-ID map,
+          sync run logs, and sign-in sessions. It runs immediately and cannot
+          be undone. Email wujstephen@gmail.com if you would rather it be done
+          for you; that route is completed within 30 days.
         </P>
+        <List
+          items={[
+            "Data already synced to your Notion workspace is not deleted — it is yours, in your workspace. Because the record-ID map is erased with the account, a future account syncing to the same page creates every row again rather than updating it, so clear the old databases first if you want to avoid duplicates.",
+            "Access-attempt records are keyed by IP address rather than by account and are retained for abuse prevention, as described above.",
+            "Residual copies in encrypted infrastructure backups expire on the backup provider's rotation schedule.",
+          ]}
+        />
 
         <PolicyHeading>Disposal method</PolicyHeading>
         <P>
