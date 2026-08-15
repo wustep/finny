@@ -59,6 +59,12 @@ the right side of that line.
   id, `holding` / `balanceSnapshot` keys are prefixed with it. Transaction and
   investment-transaction ids carry nothing, so those stay unscoped until a sync
   mentions them again.
+- Investment transactions have no cursor — the only way to read them is a date
+  range, so a run rewrites every row in whatever range it is given. Routine
+  runs take the last 30 days; a full pass from the start date runs weekly, is
+  recorded by `syncData.recordInvestmentsFullSync`, and is the only walk
+  allowed to archive. `full` is decided on the first page and carried through
+  the continuation so every page of one walk agrees on the range.
 - Vanished investment transactions: Plaid drops a canceled one out of the
   window instead of listing it as removed, so after a complete failure-free
   walk each of the Item's accounts is paged for rows this run never marked

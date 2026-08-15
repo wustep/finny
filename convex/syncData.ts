@@ -262,6 +262,19 @@ export const recordCursorFailure = internalMutation({
   },
 });
 
+// Note that a run walked the whole investments window and reached the end of
+// it cleanly. Investment transactions have no cursor, so this is the only
+// record of when the history was last seen in full — which is both what
+// schedules the next full pass and what licenses archiving.
+export const recordInvestmentsFullSync = internalMutation({
+  args: { connectionId: v.id("bankConnections") },
+  handler: async (ctx, args) => {
+    await ctx.db.patch(args.connectionId, {
+      lastInvestmentsFullSyncAt: Date.now(),
+    });
+  },
+});
+
 export const getUserIdByEmail = internalQuery({
   args: { email: v.string() },
   handler: async (ctx, args) => {
