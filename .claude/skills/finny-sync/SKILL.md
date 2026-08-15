@@ -34,6 +34,15 @@ the right side of that line.
   is gone from the stream; the catch-up reads the same window through
   `transactions/get`, which consumes no cursor, and clears `needsBackfill`
   once a walk finishes without failures.
+- A run that fails for a passing reason schedules its own next attempt:
+  callers pass `retryable` to `syncData.finishRun`, which backs off 5m / 20m /
+  1h through `syncRetryCount` and then gives up to the daily sweep. `failRun`
+  passes `!itemBroken`, since a bank that needs reconnecting is exactly what a
+  retry cannot fix; the direct `finishRun` calls pass `false` for anything a
+  human has to resolve — a destination that went away, a page deliberately
+  abandoned, a lost lease. Scheduling lives in `finishRun` because that is
+  where the lease is released, so a retry can never arrive to find the
+  connection still locked by the run that scheduled it.
 - A run that dies without reaching `finishRun` keeps its row on "running"
   forever. The daily sweep (`syncData.sweepStuckRuns`) closes those out as
   "timed out" — but only when the lease is not held by that run, since the

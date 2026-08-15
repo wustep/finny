@@ -168,6 +168,10 @@ async function failRun(
     error: info.code
       ? `${input.stage}: ${info.message}`
       : `${input.stage}: ${String(input.error)}`,
+    // A broken Item is precisely the failure another attempt cannot get past.
+    // Everything else here — a Notion 5xx, a rate limit, a page that would not
+    // write — is worth trying again before tomorrow's sweep.
+    retryable: !info.itemBroken,
   });
 }
 
@@ -507,6 +511,7 @@ export const runForConnection = internalAction({
       v.literal("webhook"),
       v.literal("manual"),
       v.literal("cron"),
+      v.literal("retry"),
     ),
   },
   handler: async (ctx, args) => {
@@ -734,6 +739,8 @@ export const accountBackfill = internalAction({
       await ctx.runMutation(internal.syncData.finishRun, {
         runId: args.runId,
         status: "error",
+        // Nothing to come back to: retrying finds the same nothing.
+        retryable: false,
         error: "The connection or its Notion destination went away mid-sync.",
       });
       return;
@@ -979,6 +986,8 @@ export const transactionsBatch = internalAction({
       await ctx.runMutation(internal.syncData.finishRun, {
         runId: args.runId,
         status: "error",
+        // Nothing to come back to: retrying finds the same nothing.
+        retryable: false,
         error: "The connection or its Notion destination went away mid-sync.",
       });
       return;
@@ -1145,6 +1154,8 @@ export const transactionsBatch = internalAction({
         await ctx.runMutation(internal.syncData.finishRun, {
           runId: args.runId,
           status: "error",
+          // The whole point of holding the cursor was to try this page again.
+          retryable: true,
           error:
             `${failures} transaction(s) failed to reach Notion (attempt ` +
             `${attempt} of ${MAX_CURSOR_ATTEMPTS}). Leaving the Plaid cursor ` +
@@ -1165,6 +1176,8 @@ export const transactionsBatch = internalAction({
         await ctx.runMutation(internal.syncData.finishRun, {
           runId: args.runId,
           status: "error",
+          // Just decided not to try these again.
+          retryable: false,
           error:
             `Gave up on ${failures} transaction(s) after ${attempt} attempts ` +
             `and advanced the Plaid cursor past them. They will not be ` +
@@ -1248,6 +1261,8 @@ export const investmentsBatch = internalAction({
       await ctx.runMutation(internal.syncData.finishRun, {
         runId: args.runId,
         status: "error",
+        // Nothing to come back to: retrying finds the same nothing.
+        retryable: false,
         error: "The connection or its Notion destination went away mid-sync.",
       });
       return;
@@ -1422,6 +1437,8 @@ export const investmentsBatch = internalAction({
           await ctx.runMutation(internal.syncData.finishRun, {
             runId: args.runId,
             status: "error",
+            // Structural: the same offset would return the same nothing.
+            retryable: false,
             error:
               `Plaid returned an empty investments page at offset ` +
               `${args.offset} of ${total_investment_transactions}.`,
@@ -1483,6 +1500,7 @@ export const investmentsBatch = internalAction({
       await ctx.runMutation(internal.syncData.finishRun, {
         runId: args.runId,
         status: "error",
+        retryable: true,
         error:
           `${pageErrors} investment transaction(s) failed to reach Notion` +
           (full
@@ -1621,6 +1639,9 @@ async function heartbeat(
     await ctx.runMutation(internal.syncData.finishRun, {
       runId,
       status: "error",
+      // Someone else has the connection; a retry would only lose the race
+      // again.
+      retryable: false,
       error: "Sync lease lost: another run took over this connection.",
     });
   }

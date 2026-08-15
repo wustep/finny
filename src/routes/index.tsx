@@ -508,6 +508,7 @@ const triggerLabels = {
   webhook: "Bank update",
   manual: "Manual sync",
   cron: "Scheduled sync",
+  retry: "Retry",
 } as const;
 
 // Only for the elapsed clock. Everything else on this card comes from
