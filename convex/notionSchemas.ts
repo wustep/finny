@@ -62,6 +62,19 @@ export const CATEGORY_GROUP_OPTIONS: Array<[name: string, color: string]> =
     GROUP_COLORS[primary] ?? "default",
   ]);
 
+// Bumped whenever a property is added to any spec above.
+//
+// Databases are only ever *created* by ensureDatabases, so a property added
+// to a spec never reaches the databases people already have — and the sync
+// then writes a column that is not there, which Notion answers with a 400 for
+// the whole row. Recording the version a destination was last brought up to
+// is what lets a sync notice and fix that once, rather than checking eight
+// databases every run or never checking at all.
+//
+//   1  the original eight databases
+//   2  Accounts.Currency, Transactions.Tags, the Recurring database
+export const NOTION_SCHEMA_VERSION = 2;
+
 export interface DatabaseSpec {
   key: string;
   title: string;

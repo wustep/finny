@@ -60,6 +60,7 @@ import {
   updatePage,
   uploadDataUri,
 } from "./notionApi";
+import { NOTION_SCHEMA_VERSION } from "./notionSchemas";
 import { plaidClient, plaidErrorInfo } from "./plaidClient";
 import { evaluate, pfcPrimary, type Rule } from "./rulesEngine";
 import {
@@ -531,6 +532,16 @@ export const runForConnection = internalAction({
     const runId = lease.runId;
 
     try {
+      // Before writing anything: a property added to a spec since this
+      // destination was built is not on it, and writing a column that is not
+      // there is a 400 for the whole row. Costs one integer comparison once
+      // the destination is current.
+      if (notion.schemaVersion !== NOTION_SCHEMA_VERSION) {
+        await ctx.runAction(internal.notion.ensureDatabaseColumns, {
+          userId: connection.userId,
+        });
+      }
+
       const client = plaidClient(connection.plaidEnv ?? "production");
       const databases = notion.databases!;
       const token = notion.accessToken;

@@ -458,7 +458,7 @@ async function ensureTagColumn(
   if (!actions.some((action) => action.kind === "addTags")) {
     return;
   }
-  await ctx.scheduler.runAfter(0, internal.notion.ensureTransactionColumns, {
+  await ctx.scheduler.runAfter(0, internal.notion.ensureDatabaseColumns, {
     userId,
   });
 }

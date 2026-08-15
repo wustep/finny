@@ -4,6 +4,7 @@ import { titleCase } from "./syncMappers";
 import {
   CATEGORY_GROUP_OPTIONS,
   DATABASE_SPECS,
+  NOTION_SCHEMA_VERSION,
   MAP_KINDS_BY_DATABASE,
   SPEC_BY_KEY,
   propertyTypes,
@@ -90,4 +91,19 @@ test("category group options carry no commas", () => {
 
 test("accounts carry a currency", () => {
   expect(propertyTypes(SPEC_BY_KEY.accounts).Currency).toBe("select");
+});
+
+test("the schema version is bumped when a property is added", () => {
+  // Not a real invariant so much as a tripwire: this count changes whenever a
+  // spec gains or loses a property, and the version beside it has to move
+  // with it — otherwise destinations already built never get the new column
+  // and every sync 400s on the row that writes it.
+  const properties = DATABASE_SPECS.reduce(
+    (total, spec) => total + Object.keys(propertyTypes(spec)).length,
+    0,
+  );
+  expect({ properties, version: NOTION_SCHEMA_VERSION }).toEqual({
+    properties: 69,
+    version: 2,
+  });
 });
