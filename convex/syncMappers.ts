@@ -114,7 +114,9 @@ export function transactionTitle(txn: Transaction, rename?: string): string {
 // transactions. `description` is the bank's own string, as synced to Original
 // Description. `amount` keeps Plaid's sign (positive = money out); Notion's
 // column has it flipped. `accountRowId` is the Convex accounts id, which is
-// what a rule's account condition stores.
+// what a rule's account condition stores. `category` is what Plaid decided
+// before any rule had a say — a rule that overrides the category still
+// matches on the original, which is the only stable thing to match on.
 export function ruleTransaction(
   txn: Transaction,
   accountRowId?: string,
@@ -124,6 +126,8 @@ export function ruleTransaction(
     description: txn.original_description ?? txn.name,
     amount: txn.amount,
     accountId: accountRowId,
+    category: txn.personal_finance_category?.detailed,
+    pending: txn.pending,
   };
 }
 

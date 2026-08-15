@@ -9,7 +9,14 @@ const modules = import.meta.glob("./**/*.ts");
 
 const COFFEE = {
   name: "Coffee",
-  conditions: { merchant: { op: "contains" as const, value: "blue bottle" } },
+  conditions: [
+    {
+      kind: "text" as const,
+      field: "merchant" as const,
+      op: "contains" as const,
+      values: ["blue bottle"],
+    },
+  ],
   outcomes: { categoryId: "FOOD_AND_DRINK_COFFEE" },
 };
 
@@ -87,17 +94,26 @@ test("a rule cannot point at another user's account", async () => {
   await expect(
     asAlice.mutation(api.rules.create, {
       ...COFFEE,
-      conditions: { ...COFFEE.conditions, accountId: bobsAccount },
+      conditions: [
+        ...COFFEE.conditions,
+        { kind: "account" as const, accountIds: [bobsAccount] },
+      ],
     }),
   ).rejects.toThrow("Account not found");
 
   // Bob's own account is fine.
   await asBob.mutation(api.rules.create, {
     ...COFFEE,
-    conditions: { ...COFFEE.conditions, accountId: bobsAccount },
+    conditions: [
+      ...COFFEE.conditions,
+      { kind: "account" as const, accountIds: [bobsAccount] },
+    ],
   });
   const rules = await asBob.query(api.rules.list);
-  expect(rules[0].conditions.accountId).toBe(bobsAccount);
+  expect(rules[0].conditions).toContainEqual({
+    kind: "account",
+    accountIds: [bobsAccount],
+  });
 });
 
 test("new rules go to the end of the priority order", async () => {
@@ -136,23 +152,30 @@ test("update replaces conditions and outcomes wholesale", async () => {
   const { asAlice } = await twoUsers();
   const ruleId = await asAlice.mutation(api.rules.create, {
     name: "Amazon",
-    conditions: {
-      merchant: { op: "contains", value: "amzn" },
-      amount: { op: "gt", value: 50 },
-    },
+    conditions: [
+      { kind: "text", field: "merchant", op: "contains", values: ["amzn"] },
+      { kind: "amount", op: "gt", value: 50 },
+    ],
     outcomes: { rename: "Amazon", categoryId: "GENERAL_MERCHANDISE_ELECTRONICS" },
   });
 
   await asAlice.mutation(api.rules.update, {
     ruleId,
-    conditions: { merchant: { op: "equals", value: "AMZN Mktp US" } },
+    conditions: [
+      {
+        kind: "text",
+        field: "merchant",
+        op: "equals",
+        values: ["AMZN Mktp US"],
+      },
+    ],
     outcomes: { hide: true },
   });
 
   const [rule] = await asAlice.query(api.rules.list);
-  expect(rule.conditions).toEqual({
-    merchant: { op: "equals", value: "AMZN Mktp US" },
-  });
+  expect(rule.conditions).toEqual([
+    { kind: "text", field: "merchant", op: "equals", values: ["AMZN Mktp US"] },
+  ]);
   expect(rule.outcomes).toEqual({ hide: true });
   expect(rule.name).toBe("Amazon");
 });
@@ -180,7 +203,7 @@ test("a rule that cannot mean anything is refused", async () => {
 
   // No conditions: it would match every transaction the user has.
   await expect(
-    asAlice.mutation(api.rules.create, { ...COFFEE, conditions: {} }),
+    asAlice.mutation(api.rules.create, { ...COFFEE, conditions: [] }),
   ).rejects.toThrow("at least one condition");
 
   // A blank value is the UI's way of leaving a condition out, so this is the
@@ -188,7 +211,9 @@ test("a rule that cannot mean anything is refused", async () => {
   await expect(
     asAlice.mutation(api.rules.create, {
       ...COFFEE,
-      conditions: { merchant: { op: "contains", value: "  " } },
+      conditions: [
+        { kind: "text", field: "merchant", op: "contains", values: ["  "] },
+      ],
     }),
   ).rejects.toThrow("at least one condition");
 
@@ -206,7 +231,9 @@ test("a rule that cannot mean anything is refused", async () => {
   await expect(
     asAlice.mutation(api.rules.create, {
       ...COFFEE,
-      conditions: { description: { op: "regex", value: "coffee(" } },
+      conditions: [
+        { kind: "text", field: "description", op: "regex", values: ["coffee("] },
+      ],
     }),
   ).rejects.toThrow("not a valid regular expression");
 
@@ -239,4 +266,151 @@ test("the sync reads only the caller's enabled rules, in priority order", async 
     userId: bob,
   });
   expect(bobs).toHaveLength(1);
+});
+
+test("a rule stored in the old shape is read, evaluated, and edited as a list", async () => {
+  const { asAlice, t, alice } = await twoUsers();
+  const accountId = await accountFor(t, alice);
+  // Written straight to the table, the way a rule saved before conditions
+  // became a list still sits there today.
+  const ruleId = await t.run(async (ctx) =>
+    ctx.db.insert("rules", {
+      userId: alice,
+      name: "Legacy coffee",
+      priority: 1,
+      enabled: true,
+      conditions: {
+        merchant: { op: "contains", value: "blue bottle" },
+        amount: { op: "gt", value: 5 },
+        accountId,
+      },
+      outcomes: { categoryId: "FOOD_AND_DRINK_COFFEE" },
+    }),
+  );
+
+  // The client sees a list; nothing on the page knows the old shape existed.
+  const [listed] = await asAlice.query(api.rules.list);
+  expect(listed.conditions).toEqual([
+    { kind: "text", field: "merchant", op: "contains", values: ["blue bottle"] },
+    { kind: "amount", op: "gt", value: 5 },
+    { kind: "account", accountIds: [accountId] },
+  ]);
+
+  // So does the sync.
+  const [forSync] = await t.query(internal.rules.listEnabledInternal, {
+    userId: alice,
+  });
+  expect(forSync.conditions).toHaveLength(3);
+
+  // And editing something else about it rewrites the conditions on the way
+  // past, which is the cheapest migration there is.
+  await asAlice.mutation(api.rules.update, { ruleId, name: "Renamed" });
+  const stored = await t.run(async (ctx) => ctx.db.get(ruleId));
+  expect(Array.isArray(stored?.conditions)).toBe(true);
+});
+
+test("migrateConditions rewrites old rules and leaves new ones alone", async () => {
+  const { asAlice, t, alice } = await twoUsers();
+  const untouched = await asAlice.mutation(api.rules.create, COFFEE);
+  const legacy = await t.run(async (ctx) =>
+    ctx.db.insert("rules", {
+      userId: alice,
+      name: "Legacy",
+      priority: 2,
+      enabled: true,
+      conditions: { merchant: { op: "contains", value: "amzn" } },
+      outcomes: { hide: true },
+    }),
+  );
+
+  expect(await t.mutation(internal.rules.migrateConditions, {})).toMatchObject({
+    done: true,
+    migrated: 1,
+  });
+
+  const rows = await t.run(async (ctx) => ({
+    legacy: await ctx.db.get(legacy),
+    untouched: await ctx.db.get(untouched),
+  }));
+  expect(rows.legacy?.conditions).toEqual([
+    { kind: "text", field: "merchant", op: "contains", values: ["amzn"] },
+  ]);
+  expect(rows.untouched?.conditions).toEqual(COFFEE.conditions);
+
+  // Idempotent: running it again finds nothing left to do.
+  expect(await t.mutation(internal.rules.migrateConditions, {})).toMatchObject({
+    migrated: 0,
+  });
+});
+
+test("a condition emptied by the UI is dropped rather than saved", async () => {
+  const { asAlice } = await twoUsers();
+  const ruleId = await asAlice.mutation(api.rules.create, {
+    ...COFFEE,
+    conditions: [
+      ...COFFEE.conditions,
+      // Every value blank is how the builder says "I removed this row".
+      { kind: "text", field: "description", op: "contains", values: ["", "  "] },
+      { kind: "category", categoryIds: [] },
+    ],
+  });
+  const [rule] = await asAlice.query(api.rules.list);
+  expect(rule.conditions).toEqual(COFFEE.conditions);
+  expect(ruleId).toBeDefined();
+});
+
+test("duplicate values in one condition are kept once", async () => {
+  const { asAlice } = await twoUsers();
+  await asAlice.mutation(api.rules.create, {
+    ...COFFEE,
+    conditions: [
+      {
+        kind: "text",
+        field: "merchant",
+        op: "contains",
+        values: ["amzn", "AMZN", " amzn ", "amazon"],
+      },
+    ],
+  });
+  const [rule] = await asAlice.query(api.rules.list);
+  // Trimmed and de-duplicated, but case is left alone: matching ignores it,
+  // and rewriting what someone typed is not this function's job.
+  expect(rule.conditions[0]).toMatchObject({
+    values: ["amzn", "AMZN", "amazon"],
+  });
+});
+
+test("a category condition accepts a group or a category, and nothing else", async () => {
+  const { asAlice } = await twoUsers();
+  await asAlice.mutation(api.rules.create, {
+    ...COFFEE,
+    conditions: [
+      { kind: "category", categoryIds: ["FOOD_AND_DRINK", "TRAVEL_FLIGHTS"] },
+    ],
+  });
+  expect((await asAlice.query(api.rules.list))[0].conditions).toEqual([
+    { kind: "category", categoryIds: ["FOOD_AND_DRINK", "TRAVEL_FLIGHTS"] },
+  ]);
+
+  await expect(
+    asAlice.mutation(api.rules.create, {
+      ...COFFEE,
+      name: "Bogus",
+      conditions: [{ kind: "category", categoryIds: ["NOT_A_CATEGORY"] }],
+    }),
+  ).rejects.toThrow("Unknown category");
+});
+
+test("a rule is capped at ten conditions", async () => {
+  const { asAlice } = await twoUsers();
+  await expect(
+    asAlice.mutation(api.rules.create, {
+      ...COFFEE,
+      conditions: Array.from({ length: 11 }, (_, index) => ({
+        kind: "amount" as const,
+        op: "gt" as const,
+        value: index,
+      })),
+    }),
+  ).rejects.toThrow("limited to 10 conditions");
 });
