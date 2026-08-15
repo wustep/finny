@@ -20,6 +20,22 @@ the right side of that line.
 
 ## 2. Sync engine (`convex/sync.ts`, `convex/syncData.ts`)
 
+`sync.ts` is the chain of stages and nothing else. What it leans on lives
+beside it, in modules that export **no Convex functions** — deliberately,
+because moving an `internalAction` between modules changes its api path and a
+backfill scheduled before the deploy would land on a function that is no
+longer there:
+
+- `syncRun.ts` — `loadContext`, `failRun`, `heartbeat`, the lease, the status
+  comment, the institution icon.
+- `syncPages.ts` — the claim-then-create layer: `claimAndCreatePage`,
+  `upsertMapped`, `MapKind`, `ID_PROPERTY`.
+- `syncTransactionWriter.ts` — `upsertTransaction`, hiding, the category
+  resolver.
+- `syncInvestments.ts` — securities, holdings, recurring, reconciliation.
+
+Add a stage action to `sync.ts`; add anything a stage *uses* to one of these.
+
 - One run per connection, held by a lease on the connection
   (`syncLockExpiresAt` / `activeRunId`): `syncData.beginRun` takes it, every
   hop heartbeats it, `syncData.finishRun` releases it — which is why it sits

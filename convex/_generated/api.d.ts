@@ -24,7 +24,11 @@ import type * as rulesEngine from "../rulesEngine.js";
 import type * as secureCompare from "../secureCompare.js";
 import type * as sync from "../sync.js";
 import type * as syncData from "../syncData.js";
+import type * as syncInvestments from "../syncInvestments.js";
 import type * as syncMappers from "../syncMappers.js";
+import type * as syncPages from "../syncPages.js";
+import type * as syncRun from "../syncRun.js";
+import type * as syncTransactionWriter from "../syncTransactionWriter.js";
 import type * as users from "../users.js";
 
 import type {
@@ -50,7 +54,11 @@ declare const fullApi: ApiFromModules<{
   secureCompare: typeof secureCompare;
   sync: typeof sync;
   syncData: typeof syncData;
+  syncInvestments: typeof syncInvestments;
   syncMappers: typeof syncMappers;
+  syncPages: typeof syncPages;
+  syncRun: typeof syncRun;
+  syncTransactionWriter: typeof syncTransactionWriter;
   users: typeof users;
 }>;
 
