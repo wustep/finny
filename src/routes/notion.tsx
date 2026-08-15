@@ -2,6 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useAction, useMutation, useQuery } from "convex/react";
 import {
   ExternalLink,
+  MoreHorizontal,
   RefreshCw,
   RotateCcw,
   TriangleAlert,
@@ -28,6 +29,12 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -139,7 +146,12 @@ function NotionPage() {
   const status = useQuery(api.notion.getStatus);
   const checkHealth = useAction(api.notion.checkHealth);
   const { start: startOAuth, busy: connecting } = useNotionOAuth();
+  const checkDatabases = useAction(api.notion.checkDatabases);
   const [health, setHealth] = useState<Health | null>(null);
+  const [databaseStates, setDatabaseStates] = useState<DatabaseState[] | null>(
+    null,
+  );
+  const [checking, setChecking] = useState(false);
   const [changedFrom, setChangedFrom] = useState<PreviousWorkspace | null>(null);
   const healthChecked = useRef(false);
 
@@ -151,14 +163,49 @@ function NotionPage() {
     }
   }, [error]);
 
-  // Every call is a request to Notion, so this runs once per page load and
-  // whenever the user asks for it again.
-  const runHealthCheck = useCallback(
-    () =>
-      checkHealth()
-        .then(setHealth)
-        .catch((err: unknown) => console.error(err)),
-    [checkHealth],
+  // "Is my destination all right" is one question with two halves — does the
+  // token still work, and are the databases still the ones Finny built — so
+  // it is one check rather than two buttons that each answer half of it.
+  // Every call is a handful of requests to Notion, so it runs once per page
+  // load and whenever the user asks for it again.
+  const runCheck = useCallback(
+    (announce = false) => {
+      setChecking(true);
+      return Promise.all([
+        checkHealth(),
+        // Only worth asking once there are databases to ask about.
+        status?.connected && status.databases
+          ? checkDatabases()
+          : Promise.resolve<DatabaseState[]>([]),
+      ])
+        .then(([nextHealth, nextStates]) => {
+          setHealth(nextHealth);
+          setDatabaseStates(nextStates);
+          if (!announce) {
+            return;
+          }
+          const broken = nextStates.filter(
+            (state) => state.state !== "ok",
+          ).length;
+          if (nextHealth.state !== "ok") {
+            toast.error("Notion rejected the stored token");
+          } else if (broken > 0) {
+            toast.warning(
+              `${broken} ${broken === 1 ? "database needs" : "databases need"} attention`,
+            );
+          } else {
+            toast.success("Everything looks right");
+          }
+        })
+        .catch((err: unknown) => {
+          console.error(err);
+          if (announce) {
+            toast.error("Could not reach Notion");
+          }
+        })
+        .finally(() => setChecking(false));
+    },
+    [checkHealth, checkDatabases, status],
   );
 
   useEffect(() => {
@@ -166,8 +213,8 @@ function NotionPage() {
       return;
     }
     healthChecked.current = true;
-    void runHealthCheck();
-  }, [status, runHealthCheck]);
+    void runCheck();
+  }, [status, runCheck]);
 
   // Coming back from a reconnect: same workspace keeps the databases, a
   // different one has just emptied the map.
@@ -249,7 +296,9 @@ function NotionPage() {
             <DestinationCard
               status={status}
               health={health}
-              onCheckHealth={runHealthCheck}
+              databaseStates={databaseStates}
+              checking={checking}
+              onCheck={() => runCheck(true)}
               onReconnect={() =>
                 startOAuth({
                   workspaceId: status.workspaceId,
@@ -505,7 +554,9 @@ function SetupCard({ modules: initialModules }: { modules: Modules }) {
 function DestinationCard({
   status,
   health,
-  onCheckHealth,
+  databaseStates,
+  checking,
+  onCheck,
   onReconnect,
   reconnecting,
 }: {
@@ -517,7 +568,9 @@ function DestinationCard({
     databases?: Record<string, string>;
   };
   health: Health | null;
-  onCheckHealth: () => void;
+  databaseStates: DatabaseState[] | null;
+  checking: boolean;
+  onCheck: () => void;
   onReconnect: () => void;
   reconnecting: boolean;
 }) {
@@ -525,6 +578,10 @@ function DestinationCard({
   const triggerSync = useAction(api.sync.triggerManual);
   const databases = status.databases ?? {};
   const [syncing, setSyncing] = useState(false);
+  // The two destructive dialogs are opened from the ⋯ menu, so their state
+  // lives out here rather than inside a trigger button of their own.
+  const [resetting, setResetting] = useState(false);
+  const [disconnecting, setDisconnecting] = useState(false);
 
   const lastSyncedAt = connections?.reduce<number | undefined>(
     (latest, connection) =>
@@ -582,31 +639,59 @@ function DestinationCard({
           <DatabaseSection
             databases={databases}
             parentPageId={status.parentPageId}
+            states={databaseStates}
+            onRechecked={onCheck}
           />
 
           <ModuleSection modules={status.modules} />
           <StartDateSection startDate={status.startDate} />
-          <HealthLine health={health} onCheck={onCheckHealth} />
 
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <Button
               onClick={handleSyncAll}
               disabled={syncing || !connections?.length}
             >
-              <RefreshCw /> {syncing ? "Starting…" : "Sync now (all)"}
+              <RefreshCw /> {syncing ? "Starting…" : "Sync now"}
             </Button>
-            <Button
-              variant="outline"
-              onClick={onReconnect}
-              disabled={reconnecting}
-            >
-              {reconnecting ? "Redirecting…" : "Reconnect Notion"}
-            </Button>
-            <ResetResyncButton />
-            <DisconnectButton />
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="icon" aria-label="More">
+                  <MoreHorizontal />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start">
+                <DropdownMenuItem
+                  disabled={reconnecting}
+                  onClick={onReconnect}
+                >
+                  <Wrench /> Reconnect Notion
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => setResetting(true)}>
+                  <RotateCcw /> Reset mappings & resync…
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  variant="destructive"
+                  onClick={() => setDisconnecting(true)}
+                >
+                  <Unplug /> Disconnect…
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+            <StatusLine
+              health={health}
+              states={databaseStates}
+              checking={checking}
+              onCheck={onCheck}
+            />
           </div>
         </CardContent>
       </Card>
+
+      <ResetResyncDialog open={resetting} onOpenChange={setResetting} />
+      <DisconnectDialog
+        open={disconnecting}
+        onOpenChange={setDisconnecting}
+      />
 
       <RecentSyncs />
     </>
@@ -649,14 +734,16 @@ function describe(state: DatabaseState): string | null {
 function DatabaseSection({
   databases,
   parentPageId,
+  states,
+  onRechecked,
 }: {
   databases: Record<string, string>;
   parentPageId?: string;
+  // Checked by the page, so the status line and this list can never disagree.
+  states: DatabaseState[] | null;
+  onRechecked: () => void;
 }) {
-  const checkDatabases = useAction(api.notion.checkDatabases);
   const repairDatabases = useAction(api.notion.repairDatabases);
-  const [states, setStates] = useState<DatabaseState[] | null>(null);
-  const [checking, setChecking] = useState(false);
   const [repairing, setRepairing] = useState(false);
   const [confirmRebuild, setConfirmRebuild] = useState(false);
 
@@ -667,20 +754,6 @@ function DatabaseSection({
   const fixableProperties = (states ?? []).filter(
     (state) => state.state === "damaged" && state.missingProperties.length > 0,
   );
-
-  const runCheck = () => {
-    setChecking(true);
-    checkDatabases()
-      .then((result) => {
-        setStates(result);
-        const broken = result.filter((state) => state.state !== "ok").length;
-        toast[broken ? "warning" : "success"](
-          broken ? `${broken} need attention` : "All databases look right",
-        );
-      })
-      .catch(() => toast.error("Could not check your databases"))
-      .finally(() => setChecking(false));
-  };
 
   const runRepair = () => {
     setRepairing(true);
@@ -696,7 +769,7 @@ function DatabaseSection({
               }`,
         );
         setConfirmRebuild(false);
-        return checkDatabases().then(setStates);
+        onRechecked();
       })
       .catch((error: unknown) => {
         console.error(error);
@@ -707,17 +780,7 @@ function DatabaseSection({
 
   return (
     <div className="flex flex-col gap-2">
-      <div className="flex items-center justify-between">
-        <Label>Databases</Label>
-        <button
-          type="button"
-          className="text-xs text-muted-foreground underline underline-offset-4 disabled:opacity-50"
-          onClick={runCheck}
-          disabled={checking}
-        >
-          {checking ? "Checking…" : "Check"}
-        </button>
-      </div>
+      <Label>Databases</Label>
       {parentPageId ? (
         <a
           href={`https://notion.so/${parentPageId.replaceAll("-", "")}`}
@@ -966,40 +1029,49 @@ function RecentSyncs() {
   );
 }
 
-function HealthLine({
+// One line, one question: is this destination all right? The token working
+// and the databases still being the ones Finny built are two halves of that,
+// and they used to be two separate "check" affordances on the same page.
+function StatusLine({
   health,
+  states,
+  checking,
   onCheck,
 }: {
   health: Health | null;
+  states: DatabaseState[] | null;
+  checking: boolean;
   onCheck: () => void;
 }) {
-  const [checking, setChecking] = useState(false);
-  const handleCheck = () => {
-    setChecking(true);
-    Promise.resolve(onCheck()).finally(() => setChecking(false));
-  };
+  const broken = (states ?? []).filter((state) => state.state !== "ok").length;
   const label =
     health === null
-      ? "Checking the Notion connection…"
-      : health.state === "ok"
-        ? "Notion connection is healthy."
-        : health.state === "unauthorized"
-          ? "Notion rejected the stored token — reconnect above."
-          : health.state === "disconnected"
-            ? "Notion is not connected."
-            : `Could not reach Notion to check the connection (${health.message}).`;
+      ? "Checking…"
+      : health.state === "unauthorized"
+        ? "Notion rejected the stored token"
+        : health.state === "disconnected"
+          ? "Not connected"
+          : health.state === "unknown"
+            ? "Could not reach Notion"
+            : broken > 0
+              ? `${broken} ${broken === 1 ? "database needs" : "databases need"} attention`
+              : "Everything looks right";
+  const bad = health !== null && (health.state !== "ok" || broken > 0);
+
   return (
-    <p className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-      {label}
-      <button
-        type="button"
-        className="underline underline-offset-4 disabled:opacity-50"
-        onClick={handleCheck}
+    <span className="ml-auto flex items-center gap-1.5 text-sm text-muted-foreground">
+      <span className={bad ? "text-destructive" : undefined}>{label}</span>
+      <Button
+        variant="ghost"
+        size="icon"
+        className="size-8"
+        aria-label="Check the Notion connection and databases"
         disabled={checking}
+        onClick={onCheck}
       >
-        {checking ? "Checking…" : "Check again"}
-      </button>
-    </p>
+        <RefreshCw className={checking ? "animate-spin" : undefined} />
+      </Button>
+    </span>
   );
 }
 
@@ -1028,9 +1100,14 @@ const ROW_CHOICES: Array<{
   },
 ];
 
-function ResetResyncButton() {
+function ResetResyncDialog({
+  open,
+  onOpenChange,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
   const resetAndResync = useAction(api.sync.resetAndResync);
-  const [open, setOpen] = useState(false);
   const [working, setWorking] = useState(false);
   const [existingRows, setExistingRows] = useState<ExistingRows>("archive");
 
@@ -1046,7 +1123,7 @@ function ResetResyncButton() {
             ? `Clearing the old rows, then rebuilding across ${banks}`
             : `Rebuilding from scratch across ${banks}`,
         );
-        setOpen(false);
+        onOpenChange(false);
       })
       .catch((err: unknown) => {
         console.error(err);
@@ -1056,11 +1133,7 @@ function ResetResyncButton() {
   };
 
   return (
-    <>
-      <Button variant="outline" className="w-fit" onClick={() => setOpen(true)}>
-        <RotateCcw /> Reset mappings & resync
-      </Button>
-      <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog open={open} onOpenChange={onOpenChange}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Reset mappings and resync?</DialogTitle>
@@ -1102,7 +1175,7 @@ function ResetResyncButton() {
           <DialogFooter>
             <Button
               variant="outline"
-              onClick={() => setOpen(false)}
+              onClick={() => onOpenChange(false)}
               disabled={working}
             >
               Cancel
@@ -1114,19 +1187,23 @@ function ResetResyncButton() {
             >
               {working ? "Starting…" : "Reset & resync"}
             </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </>
+      </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
 // Disconnecting forgets which databases Finny made, which is what makes the
 // next connect build a second set — so say that before doing it, and point at
 // Reconnect for the case the user actually wants.
-function DisconnectButton() {
+function DisconnectDialog({
+  open,
+  onOpenChange,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
   const disconnect = useMutation(api.notion.disconnect);
-  const [open, setOpen] = useState(false);
   const [working, setWorking] = useState(false);
 
   const handleDisconnect = () => {
@@ -1134,18 +1211,14 @@ function DisconnectButton() {
     disconnect()
       .then(() => {
         toast.success("Notion disconnected");
-        setOpen(false);
+        onOpenChange(false);
       })
       .catch(() => toast.error("Failed to disconnect Notion"))
       .finally(() => setWorking(false));
   };
 
   return (
-    <>
-      <Button variant="outline" className="w-fit" onClick={() => setOpen(true)}>
-        <Unplug /> Disconnect
-      </Button>
-      <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog open={open} onOpenChange={onOpenChange}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Disconnect Notion?</DialogTitle>
@@ -1161,7 +1234,7 @@ function DisconnectButton() {
           <DialogFooter>
             <Button
               variant="outline"
-              onClick={() => setOpen(false)}
+              onClick={() => onOpenChange(false)}
               disabled={working}
             >
               Cancel
@@ -1173,9 +1246,8 @@ function DisconnectButton() {
             >
               {working ? "Disconnecting…" : "Disconnect"}
             </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
