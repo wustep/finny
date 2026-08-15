@@ -342,19 +342,36 @@ function SetupCard({ modules: initialModules }: { modules: Modules }) {
   const [pages, setPages] = useState<
     Array<{ id: string; title: string; icon: string | null }> | undefined
   >();
+  const [truncated, setTruncated] = useState(false);
+  const [search, setSearch] = useState("");
+  const [searching, setSearching] = useState(false);
   const [pageId, setPageId] = useState("");
   const [modules, setModules] = useState(initialModules);
   const [startDate, setStartDate] = useState(defaultStartDate);
   const [creating, setCreating] = useState(false);
 
-  useEffect(() => {
-    listPages()
-      .then(setPages)
-      .catch(() => toast.error("Could not load your Notion pages"));
-  }, [listPages]);
+  // Each call is a walk through Notion's search, so it runs on load and when
+  // the user asks — never on every keystroke.
+  const load = useCallback(
+    (query?: string) => {
+      setSearching(true);
+      listPages(query ? { query } : {})
+        .then((result) => {
+          setPages(result.pages);
+          setTruncated(result.truncated);
+        })
+        .catch(() => toast.error("Could not load your Notion pages"))
+        .finally(() => setSearching(false));
+    },
+    [listPages],
+  );
 
   useEffect(() => {
-    if (pages?.length && !pageId) {
+    load();
+  }, [load]);
+
+  useEffect(() => {
+    if (pages?.length && !pages.some((page) => page.id === pageId)) {
       setPageId(pages[0].id);
     }
   }, [pages, pageId]);
@@ -388,25 +405,54 @@ function SetupCard({ modules: initialModules }: { modules: Modules }) {
           <Label htmlFor="parent-page">Page</Label>
           {pages === undefined ? (
             <Skeleton className="h-9 w-full" />
-          ) : pages.length === 0 ? (
-            <p className="text-sm text-muted-foreground">
-              No pages were shared. Reconnect Notion and select at least one
-              page.
-            </p>
           ) : (
-            <select
-              id="parent-page"
-              className="h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs"
-              value={pageId}
-              onChange={(event) => setPageId(event.target.value)}
-            >
-              {pages.map((page) => (
-                <option key={page.id} value={page.id}>
-                  {page.icon ? `${page.icon} ` : ""}
-                  {page.title}
-                </option>
-              ))}
-            </select>
+            <>
+              <select
+                id="parent-page"
+                className="h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs"
+                value={pageId}
+                disabled={pages.length === 0}
+                onChange={(event) => setPageId(event.target.value)}
+              >
+                {pages.length === 0 ? (
+                  <option value="">No pages found</option>
+                ) : null}
+                {pages.map((page) => (
+                  <option key={page.id} value={page.id}>
+                    {page.icon ? `${page.icon} ` : ""}
+                    {page.title}
+                  </option>
+                ))}
+              </select>
+              <form
+                className="flex gap-2"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  load(search);
+                }}
+              >
+                <Input
+                  aria-label="Search your Notion pages"
+                  placeholder="Search by title…"
+                  value={search}
+                  onChange={(event) => setSearch(event.target.value)}
+                />
+                <Button type="submit" variant="outline" disabled={searching}>
+                  {searching ? "Searching…" : "Search"}
+                </Button>
+              </form>
+              {pages.length === 0 ? (
+                <p className="text-xs text-muted-foreground">
+                  {search
+                    ? "Nothing matched. Clear the search to see everything shared with Finny."
+                    : "No pages were shared. Reconnect Notion and select at least one page."}
+                </p>
+              ) : truncated ? (
+                <p className="text-xs text-muted-foreground">
+                  Showing the first {pages.length}. Search to reach the rest.
+                </p>
+              ) : null}
+            </>
           )}
         </div>
 

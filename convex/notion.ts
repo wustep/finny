@@ -328,11 +328,26 @@ export const getConnectionInternal = internalQuery({
 
 // ---------- setup: page picker + database creation ----------
 
+// Pages one call walks before giving up. Notion pages its search at 100, and
+// a workspace can share far more than that with an integration; the cap keeps
+// a pathological workspace from turning the picker into a minute of requests.
+const PAGE_SEARCH_LIMIT = 500;
+
 export const listPages = action({
-  args: {},
+  args: {
+    // Narrows the search at Notion rather than in the browser, which is the
+    // only way to reach a page past the cap in a large workspace.
+    query: v.optional(v.string()),
+  },
   handler: async (
     ctx,
-  ): Promise<Array<{ id: string; title: string; icon: string | null }>> => {
+    args,
+  ): Promise<{
+    pages: Array<{ id: string; title: string; icon: string | null }>;
+    // True when Notion still had more to give. The picker says so rather than
+    // quietly showing a subset.
+    truncated: boolean;
+  }> => {
     const userId = await getAuthUserId(ctx);
     if (userId === null) {
       throw new Error("Not signed in");
@@ -345,28 +360,46 @@ export const listPages = action({
     if (!connection) {
       throw new Error("Notion not connected");
     }
-    const data = await notionFetch(connection.accessToken, "/search", {
-      method: "POST",
-      body: {
-        filter: { value: "page", property: "object" },
-        page_size: 100,
-      },
-    });
-    return (data.results as any[])
-      .filter((page) => !page.archived)
-      .map((page) => {
+
+    const pages: Array<{ id: string; title: string; icon: string | null }> = [];
+    const search = args.query?.trim();
+    let cursor: string | undefined;
+    let truncated = false;
+
+    do {
+      const data = await notionFetch(connection.accessToken, "/search", {
+        method: "POST",
+        body: {
+          ...(search ? { query: search } : {}),
+          filter: { value: "page", property: "object" },
+          page_size: 100,
+          ...(cursor ? { start_cursor: cursor } : {}),
+        },
+      });
+      for (const page of data.results as any[]) {
+        if (page.archived || page.in_trash) {
+          continue;
+        }
         const titleProp = Object.values(page.properties ?? {}).find(
           (prop: any) => prop.type === "title",
         ) as any;
         const title =
-          titleProp?.title?.map((t: any) => t.plain_text).join("") ??
-          "Untitled";
-        return {
+          titleProp?.title?.map((t: any) => t.plain_text).join("") ?? "Untitled";
+        pages.push({
           id: page.id as string,
           title: title || "Untitled",
-          icon: page.icon?.type === "emoji" ? (page.icon.emoji as string) : null,
-        };
-      });
+          icon:
+            page.icon?.type === "emoji" ? (page.icon.emoji as string) : null,
+        });
+      }
+      cursor = data.has_more ? (data.next_cursor as string) : undefined;
+      if (cursor && pages.length >= PAGE_SEARCH_LIMIT) {
+        truncated = true;
+        break;
+      }
+    } while (cursor);
+
+    return { pages, truncated };
   },
 });
 

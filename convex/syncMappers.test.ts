@@ -219,3 +219,61 @@ describe("balanceForNotion", () => {
     ).toBeNull();
   });
 });
+
+describe("currency", () => {
+  it("an account carries the currency its balances are in", () => {
+    const account = {
+      account_id: "acct-1",
+      name: "Chequing",
+      type: "depository",
+      subtype: "checking",
+      balances: {
+        current: 100,
+        available: 100,
+        limit: null,
+        iso_currency_code: "CAD",
+        unofficial_currency_code: null,
+      },
+    } as any;
+    expect(accountProperties("Bank", account, undefined, "page-1")).toMatchObject(
+      { Currency: { select: { name: "CAD" } } },
+    );
+  });
+
+  it("a currency Plaid has no ISO code for still gets recorded", () => {
+    const account = {
+      account_id: "acct-2",
+      name: "Wallet",
+      type: "depository",
+      balances: {
+        current: 1,
+        available: null,
+        limit: null,
+        iso_currency_code: null,
+        unofficial_currency_code: "BTC",
+      },
+    } as any;
+    expect(accountProperties("Bank", account, undefined, "page-1")).toMatchObject(
+      { Currency: { select: { name: "BTC" } } },
+    );
+  });
+
+  it("no currency at all leaves the column empty rather than guessing USD", () => {
+    const account = {
+      account_id: "acct-3",
+      name: "Mystery",
+      type: "depository",
+      balances: {
+        current: null,
+        available: null,
+        limit: null,
+        iso_currency_code: null,
+        unofficial_currency_code: null,
+      },
+    } as any;
+    expect(accountProperties("Bank", account, undefined, "page-1")).toMatchObject(
+      { Currency: { select: null } },
+    );
+  });
+
+});

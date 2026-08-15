@@ -1,6 +1,9 @@
 // Notion database property schemas (API version 2022-06-28).
 // The baseline schema with the deviations approved in PLAN.md.
 
+import { PFC_TAXONOMY } from "./rulesEngine";
+import { titleCase } from "./syncMappers";
+
 type Props = Record<string, unknown>;
 
 const dollar = { number: { format: "dollar" } };
@@ -22,6 +25,42 @@ function relation(databaseId: string) {
     },
   };
 }
+
+// The Category Group options, derived from the taxonomy rather than listed
+// again beside it. The hand-written list had drifted: it was missing Transfer
+// In, Transfer Out, Loan Disbursements and Other outright, and called two
+// others by names titleCase does not produce ("Merchandise" for General
+// Merchandise, "Government and Non-Profit" for Government and Non Profit).
+// Every one of those made Notion auto-create the option with a random colour
+// the first time a category landed in it.
+const GROUP_COLORS: Record<string, string> = {
+  INCOME: "green",
+  TRANSFER_IN: "yellow",
+  TRANSFER_OUT: "yellow",
+  LOAN_DISBURSEMENTS: "red",
+  LOAN_PAYMENTS: "red",
+  BANK_FEES: "orange",
+  ENTERTAINMENT: "pink",
+  FOOD_AND_DRINK: "blue",
+  GENERAL_MERCHANDISE: "orange",
+  HOME_IMPROVEMENT: "purple",
+  MEDICAL: "green",
+  PERSONAL_CARE: "gray",
+  GENERAL_SERVICES: "red",
+  GOVERNMENT_AND_NON_PROFIT: "gray",
+  TRANSPORTATION: "brown",
+  TRAVEL: "default",
+  RENT_AND_UTILITIES: "orange",
+  OTHER: "default",
+};
+
+export const CATEGORY_GROUP_OPTIONS: Array<[name: string, color: string]> =
+  Object.keys(PFC_TAXONOMY).map((primary) => [
+    // The same name categoryName gives the row, so the option always exists
+    // before a row needs it.
+    titleCase(primary),
+    GROUP_COLORS[primary] ?? "default",
+  ]);
 
 export interface DatabaseSpec {
   key: string;
@@ -76,6 +115,13 @@ export const DATABASE_SPECS: DatabaseSpec[] = [
       "Current Balance": dollar,
       "Available Balance": dollar,
       "Account Limit": dollar,
+      // Plaid Link is configured for the US and Canada, and every money
+      // column here is dollar-formatted. Without this a CAD account's numbers
+      // sit in a $ column with nothing saying which dollar.
+      Currency: select([
+        ["USD", "green"],
+        ["CAD", "red"],
+      ]),
       "Next Payment Due": date,
       "Minimum Payment": dollar,
       "Last Statement Balance": dollar,
@@ -101,23 +147,7 @@ export const DATABASE_SPECS: DatabaseSpec[] = [
     properties: () => ({
       Name: { title: {} },
       ID: text,
-      "Category Group": select([
-        ["Income", "default"],
-        ["Transfer", "yellow"],
-        ["Loan Payment", "red"],
-        ["Bank Fees", "orange"],
-        ["Entertainment", "pink"],
-        ["Food and Drink", "blue"],
-        ["Merchandise", "orange"],
-        ["Home Improvement", "purple"],
-        ["Medical", "green"],
-        ["Personal Care", "gray"],
-        ["General Services", "red"],
-        ["Government and Non-Profit", "gray"],
-        ["Transportation", "brown"],
-        ["Travel", "default"],
-        ["Rent and Utilities", "orange"],
-      ]),
+      "Category Group": select(CATEGORY_GROUP_OPTIONS),
     }),
   },
   {

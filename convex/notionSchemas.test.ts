@@ -1,5 +1,8 @@
 import { expect, test } from "vitest";
+import { PFC_TAXONOMY } from "./rulesEngine";
+import { titleCase } from "./syncMappers";
 import {
+  CATEGORY_GROUP_OPTIONS,
   DATABASE_SPECS,
   MAP_KINDS_BY_DATABASE,
   SPEC_BY_KEY,
@@ -62,4 +65,27 @@ test("every database says which page ids live in it", () => {
   for (const spec of DATABASE_SPECS) {
     expect(MAP_KINDS_BY_DATABASE[spec.key]).toBeDefined();
   }
+});
+
+test("every category group the taxonomy produces has a declared option", () => {
+  // The names have to be exactly what categoryName writes into the row, or
+  // Notion invents the option — with a random colour — the first time a
+  // category lands in it.
+  const declared = new Set(CATEGORY_GROUP_OPTIONS.map(([name]) => name));
+  for (const primary of Object.keys(PFC_TAXONOMY)) {
+    expect(declared.has(titleCase(primary))).toBe(true);
+  }
+  expect(declared.size).toBe(Object.keys(PFC_TAXONOMY).length);
+});
+
+test("category group options carry no commas", () => {
+  // P.select strips them, so an option name with one would never match the
+  // option the database was built with.
+  for (const [name] of CATEGORY_GROUP_OPTIONS) {
+    expect(name).not.toContain(",");
+  }
+});
+
+test("accounts carry a currency", () => {
+  expect(propertyTypes(SPEC_BY_KEY.accounts).Currency).toBe("select");
 });
