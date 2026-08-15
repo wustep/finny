@@ -954,24 +954,48 @@ function HealthLine({
   );
 }
 
-// Forgetting the page map is only half a reset: nothing here touches Notion,
-// so whatever the last sync wrote is still sitting in those databases and the
-// rebuild writes a second copy alongside it. Say that plainly — deleting the
-// rows first is the user's job, and it has to happen before the button, not
-// after.
+// A reset used to be half a job: Finny forgot its page ids, and the rows those
+// ids pointed at were left for the user to go and delete by hand before
+// clicking the button — or else the rebuild wrote a second copy of everything.
+// It has the ids, so it can do that itself. Which it does is the one thing
+// worth asking, because the answer depends on whether those rows have been
+// made into something of the user's own.
+type ExistingRows = "archive" | "leave";
+
+const ROW_CHOICES: Array<{
+  value: ExistingRows;
+  label: string;
+  detail: string;
+}> = [
+  {
+    value: "archive",
+    label: "Delete the old rows first",
+    detail: "Finny sends every row it made to your Notion trash.",
+  },
+  {
+    value: "leave",
+    label: "Leave them",
+    detail: "The rebuild writes fresh rows alongside the old ones.",
+  },
+];
+
 function ResetResyncButton() {
   const resetAndResync = useAction(api.sync.resetAndResync);
   const [open, setOpen] = useState(false);
   const [working, setWorking] = useState(false);
+  const [existingRows, setExistingRows] = useState<ExistingRows>("archive");
 
   const handleReset = () => {
     setWorking(true);
-    resetAndResync()
+    resetAndResync({ existingRows })
       .then((result) => {
+        const banks = `${result.connections} ${
+          result.connections === 1 ? "bank" : "banks"
+        }`;
         toast.success(
-          `Rebuilding from scratch across ${result.connections} ${
-            result.connections === 1 ? "bank" : "banks"
-          }`,
+          existingRows === "archive"
+            ? `Clearing the old rows, then rebuilding across ${banks}`
+            : `Rebuilding from scratch across ${banks}`,
         );
         setOpen(false);
       })
@@ -992,19 +1016,40 @@ function ResetResyncButton() {
           <DialogHeader>
             <DialogTitle>Reset mappings and resync?</DialogTitle>
             <DialogDescription>
-              Finny forgets which Notion page belongs to which transaction,
-              account, and holding, rewinds its Plaid cursors, and syncs every
-              bank again from your start date.
-              <br />
-              <br />
-              Delete the rows Finny created in Notion <em>before</em> doing
-              this. Nothing here touches Notion, so rows left behind stay
-              behind and the rebuild writes fresh ones next to them.
-              Categories are the exception — those are matched back up by
-              their ID property, so they are re-adopted rather than
-              duplicated.
+              Finny forgets which Notion page is which, rewinds its Plaid
+              cursors, and syncs every bank again from your start date.
             </DialogDescription>
           </DialogHeader>
+
+          <fieldset className="flex flex-col gap-2 py-1">
+            <legend className="sr-only">What to do with the old rows</legend>
+            {ROW_CHOICES.map((choice) => (
+              <label
+                key={choice.value}
+                className="flex cursor-pointer items-start gap-3 rounded-md border p-3 text-sm has-checked:border-primary has-checked:bg-primary/5"
+              >
+                <input
+                  type="radio"
+                  name="existing-rows"
+                  className="mt-0.5 accent-primary"
+                  checked={existingRows === choice.value}
+                  onChange={() => setExistingRows(choice.value)}
+                  disabled={working}
+                />
+                <span className="flex flex-col gap-0.5">
+                  <span className="font-medium">{choice.label}</span>
+                  <span className="text-xs text-muted-foreground">
+                    {choice.detail}
+                  </span>
+                </span>
+              </label>
+            ))}
+            <p className="text-xs text-muted-foreground">
+              Deleting a page in Notion moves it to the trash, where it stays
+              for 30 days. Categories are re-adopted by their ID either way.
+            </p>
+          </fieldset>
+
           <DialogFooter>
             <Button
               variant="outline"

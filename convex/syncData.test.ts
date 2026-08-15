@@ -614,3 +614,72 @@ test("clearMapEntriesOfKind empties one kind and leaves the rest", async () => {
   );
   expect(left.map((row) => row.kind)).toEqual(["account"]);
 });
+
+test("the teardown reads the map a bounded page at a time and drains it", async () => {
+  const t = convexTest(schema, modules);
+  const seeded = await seed(t);
+  const TOTAL = 25;
+  await t.run(async (ctx) => {
+    for (let index = 0; index < TOTAL; index++) {
+      await ctx.db.insert("notionPageMap", {
+        userId: seeded.userId,
+        kind: index % 2 ? "transaction" : "holding",
+        providerId: `p-${index}`,
+        notionPageId: `page-${index}`,
+      });
+    }
+  });
+
+  // "The first N", repeatedly, with the caller deleting each page — the map is
+  // its own queue, so this terminates without a cursor.
+  let drained = 0;
+  for (;;) {
+    const rows = await t.query(internal.syncData.getMapPage, {
+      userId: seeded.userId,
+      limit: 10,
+    });
+    if (rows.length === 0) {
+      break;
+    }
+    drained += rows.length;
+    await t.mutation(internal.syncData.deleteMapRows, {
+      ids: rows.map((row) => row.id),
+    });
+  }
+  expect(drained).toBe(TOTAL);
+
+  const left = await t.run(async (ctx) =>
+    ctx.db
+      .query("notionPageMap")
+      .withIndex("by_user_kind_provider", (q) => q.eq("userId", seeded.userId))
+      .collect(),
+  );
+  expect(left).toEqual([]);
+});
+
+test("the teardown page spans kinds, including the unbounded ones", async () => {
+  const t = convexTest(schema, modules);
+  const seeded = await seed(t);
+  await t.run(async (ctx) => {
+    for (const kind of ["transaction", "balanceSnapshot", "category"] as const) {
+      await ctx.db.insert("notionPageMap", {
+        userId: seeded.userId,
+        kind,
+        providerId: `${kind}-1`,
+        notionPageId: `page-${kind}`,
+      });
+    }
+  });
+
+  const rows = await t.query(internal.syncData.getMapPage, {
+    userId: seeded.userId,
+    limit: 50,
+  });
+  // getAllMapEntries refuses the unbounded kinds because it reads a whole
+  // range; this one is bounded by the take, so every kind is fair game.
+  expect(rows.map((row) => row.notionPageId).sort()).toEqual([
+    "page-balanceSnapshot",
+    "page-category",
+    "page-transaction",
+  ]);
+});

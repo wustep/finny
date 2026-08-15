@@ -194,17 +194,32 @@ export const triggerManual = action({
   },
 });
 
+// What to do with the rows the last build left in Notion.
+//
+// Finny holds the page id of every row it ever created, so "go and delete them
+// yourself first" was always a chore the app could have done. It can now:
+// `archive` walks the map and sends each page to the Notion trash on the way
+// out. `leave` is the old behaviour, kept because a user who has since made
+// those rows their own — relations, extra properties, a view built on them —
+// may well prefer duplicates to losing them.
+const existingRowsValidator = v.union(
+  v.literal("archive"),
+  v.literal("leave"),
+);
+
+type ExistingRows = "archive" | "leave";
+
 // Rebuild everything from scratch: forget every Notion page id this app has
 // recorded, rewind the transactions cursors, and start a fresh sync for each
 // connection.
 //
-// Delete the rows in Notion *before* running this. Nothing here touches
-// Notion, so any rows left behind stay behind, and the rebuild writes new
-// ones alongside them. Categories are the exception — those are matched back
-// up by their ID property (see ensureCategoryPage).
+// With `leave`, nothing here touches Notion, so rows from the last build stay
+// where they are and the rebuild writes new ones alongside them. Categories
+// are the exception either way — those are matched back up by their ID
+// property (see ensureCategoryPage).
 export const resetAndResync = action({
-  args: {},
-  handler: async (ctx): Promise<{ connections: number }> => {
+  args: { existingRows: existingRowsValidator },
+  handler: async (ctx, args): Promise<{ connections: number }> => {
     const userId = await getAuthUserId(ctx);
     if (userId === null) {
       throw new Error("Not signed in");
@@ -215,13 +230,13 @@ export const resetAndResync = action({
     if (!hasAccess) {
       throw new Error("Access password required");
     }
-    return await resetUser(ctx, userId);
+    return await resetUser(ctx, userId, args.existingRows);
   },
 });
 
 // Same thing for `npx convex run`, which has no signed-in user to read.
 export const resetAndResyncByEmail = internalAction({
-  args: { email: v.string() },
+  args: { email: v.string(), existingRows: existingRowsValidator },
   handler: async (ctx, args): Promise<{ connections: number }> => {
     const userId = await ctx.runQuery(internal.syncData.getUserIdByEmail, {
       email: args.email,
@@ -229,17 +244,42 @@ export const resetAndResyncByEmail = internalAction({
     if (!userId) {
       throw new Error(`No user with email ${args.email}`);
     }
-    return await resetUser(ctx, userId);
+    return await resetUser(ctx, userId, args.existingRows);
   },
 });
 
 async function resetUser(
   ctx: ActionCtx,
   userId: Id<"users">,
+  existingRows: ExistingRows,
 ): Promise<{ connections: number }> {
+  const connections = await ctx.runQuery(
+    internal.connections.listByUserInternal,
+    { userId },
+  );
+  if (existingRows === "archive") {
+    // Handed to a chain rather than done here: archiving a long history is
+    // thousands of Notion writes at ~3 rps, which is hours, and the map is
+    // what the chain reads to know what is left. Cursors are rewound and the
+    // syncs start at the end of it, so a rebuild never races the teardown.
+    await ctx.scheduler.runAfter(0, internal.sync.archiveMappedPages, {
+      userId,
+    });
+    return { connections: connections.length };
+  }
   while (await ctx.runMutation(internal.syncData.clearMapEntries, { userId })) {
     // Batched; keep going until the table is empty for this user.
   }
+  await startRebuild(ctx, userId);
+  return { connections: connections.length };
+}
+
+// Rewind every cursor and sync every bank. The end of a reset, whichever way
+// the old rows were dealt with.
+async function startRebuild(
+  ctx: ActionCtx,
+  userId: Id<"users">,
+): Promise<void> {
   const connectionIds = await ctx.runMutation(internal.syncData.clearCursors, {
     userId,
   });
@@ -249,8 +289,92 @@ async function resetUser(
       trigger: "manual",
     });
   }
-  return { connections: connectionIds.length };
 }
+
+// Notion pages one hop of the teardown archives. At ~340ms a write this is
+// about twenty seconds of work, which leaves room in an action for the reads
+// around it.
+const ARCHIVE_HOP = 50;
+
+// Send this user's mapped Notion rows to the trash, a page at a time, then
+// start the rebuild.
+//
+// Each hop reads the first rows still in the map, archives them, and deletes
+// those rows — so "the first rows" always makes progress and the map itself is
+// the queue. A row whose page has already gone from Notion is unmapped
+// anyway: the aim is that nothing points at it, and 404 means that is true.
+export const archiveMappedPages = internalAction({
+  args: {
+    userId: v.id("users"),
+    archived: v.optional(v.number()),
+    failed: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const notion = await ctx.runQuery(internal.notion.getConnectionInternal, {
+      userId: args.userId,
+    });
+    let archived = args.archived ?? 0;
+    let failed = args.failed ?? 0;
+
+    if (!notion) {
+      // Disconnected mid-teardown. Nothing can be archived, so finish the
+      // reset rather than stranding it half done.
+      console.error("reset: Notion went away mid-teardown; forgetting the map");
+      while (
+        await ctx.runMutation(internal.syncData.clearMapEntries, {
+          userId: args.userId,
+        })
+      ) {
+        // Batched.
+      }
+      await startRebuild(ctx, args.userId);
+      return;
+    }
+
+    const rows = await ctx.runQuery(internal.syncData.getMapPage, {
+      userId: args.userId,
+      limit: ARCHIVE_HOP,
+    });
+    if (rows.length === 0) {
+      console.log(
+        `reset: archived ${archived} Notion row(s)` +
+          (failed ? `, ${failed} could not be archived and were left` : ""),
+      );
+      await startRebuild(ctx, args.userId);
+      return;
+    }
+
+    for (const row of rows) {
+      // An empty page id is an in-flight claim, not a page.
+      if (!row.notionPageId) {
+        continue;
+      }
+      try {
+        await archivePage(notion.accessToken, row.notionPageId);
+        archived++;
+      } catch (error) {
+        // Already gone is the outcome we wanted. Anything else is left in
+        // Notion — which is the "leave" outcome for that one row, and better
+        // than a teardown that cannot finish.
+        if (!String(error).includes("(404)")) {
+          console.error("reset: could not archive", row.notionPageId, error);
+          failed++;
+        }
+      }
+    }
+    // Dropped whether or not the archive worked: a map row that survives a
+    // failed archive would be read again on the next hop, forever.
+    await ctx.runMutation(internal.syncData.deleteMapRows, {
+      ids: rows.map((row) => row.id),
+    });
+
+    await ctx.scheduler.runAfter(0, internal.sync.archiveMappedPages, {
+      userId: args.userId,
+      archived,
+      failed,
+    });
+  },
+});
 
 // ---------- connection status ----------
 

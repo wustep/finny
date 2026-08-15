@@ -166,6 +166,18 @@ from `DATABASE_SPECS` by probing it, so it cannot drift from the specs. A
 retyped column is reported and never repaired: changing a Notion property's
 type discards what was in it.
 
+## 6c. Reset & resync (`convex/sync.ts`)
+
+`resetAndResync` takes `existingRows`. `leave` is the old behaviour — forget
+the map, rebuild alongside whatever is still in Notion. `archive` hands the
+teardown to `sync.archiveMappedPages`, a self-rescheduling chain that reads the
+first `ARCHIVE_HOP` rows still in the map, archives those Notion pages, and
+deletes the rows — so the map is its own queue and no cursor is needed. Rows
+are dropped whether or not the archive worked, or a failed one would be read
+again forever; a 404 is the outcome we wanted. Cursors are only rewound and
+syncs only scheduled at the end of the chain (`startRebuild`), so a rebuild
+never races the teardown.
+
 ## 7. Docs
 
 PLAN.md's Notion property tables are stale — `convex/notionSchemas.ts` is
