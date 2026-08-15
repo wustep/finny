@@ -6,6 +6,7 @@ import type { ReactNode } from "react";
 import { api } from "../../convex/_generated/api";
 import { AppIcon } from "@/components/app-icon";
 import { UNLOCKED_FLAG } from "@/components/access-gate";
+import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -55,11 +56,14 @@ export function PublicShell({ children }: { children: ReactNode }) {
             <AppIcon className="size-6 rounded-md" />
             Finny
           </Link>
-          {viewer === null && unlockedBefore ? (
-            <Button asChild size="sm" variant="outline" className="ml-auto">
-              <Link to="/">Log in</Link>
-            </Button>
-          ) : null}
+          <div className="ml-auto flex items-center gap-2">
+            {viewer === null && unlockedBefore ? (
+              <Button asChild size="sm" variant="outline">
+                <Link to="/">Log in</Link>
+              </Button>
+            ) : null}
+            <ThemeToggle />
+          </div>
         </div>
       </header>
       <main className="mx-auto w-full max-w-5xl flex-1 px-4 py-8">
@@ -109,7 +113,8 @@ export function AppShell({ children }: { children: ReactNode }) {
               </Link>
             ))}
           </nav>
-          <div className="ml-auto">
+          <div className="ml-auto flex items-center gap-1">
+            <ThemeToggle />
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button variant="ghost" size="icon" className="rounded-full">
