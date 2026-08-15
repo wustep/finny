@@ -8,11 +8,15 @@
 // dates, so there is nothing to re-run a rule against afterwards — only the
 // next sync event for that transaction.
 //
-// Semantics: rules are ordered by priority ascending and the
-// FIRST enabled rule whose conditions all match wins outright. Its outcomes
-// are applied together and no later rule is consulted, so one rule can
-// recategorise and rename at once, and a rule cannot be half-overridden by
-// the one below it.
+// Shape: a rule is a list of conditions and a list of actions — if all of
+// these, then do all of these. Both sides are lists so that adding a way to
+// match or a thing to do is an entry in a union, not a change to the shape of
+// every rule.
+//
+// Semantics: rules are ordered by priority ascending and the FIRST enabled
+// rule whose conditions all match wins outright. Its actions all apply and no
+// later rule is consulted, so one rule can recategorise, retitle and tag at
+// once, and a rule cannot be half-overridden by the one below it.
 //
 // That one-rule-per-row semantics is not a simplification, it is the only
 // auditable option here: Finny stores no transactions, so the app can never
@@ -77,13 +81,27 @@ export type Condition =
     }
   | { kind: "pending"; value: boolean };
 
-export interface RuleOutcomes {
+// One thing a rule does to the transaction it matched.
+//
+// A list, for the same reason the conditions are: the fixed record could only
+// ever hold the three effects someone thought of first, and every new one was
+// a schema change. It also lets a rule say the same kind of thing twice —
+// two addTags actions are two sets of tags — without the shape having to
+// anticipate it.
+//
+// Order matters only where two actions collide: the last setCategory or
+// rename wins, tags accumulate, and hide is a latch. Which means a rule reads
+// top to bottom exactly as written.
+export type Action =
   // A Plaid personal finance category, e.g. GENERAL_MERCHANDISE_ELECTRONICS.
-  categoryId?: string;
+  | { kind: "setCategory"; categoryId: string }
   // Replaces the Notion title. Original Description keeps the bank's string.
-  rename?: string;
-  hide?: boolean;
-}
+  | { kind: "rename"; value: string }
+  // Adds to the Tags multi-select. Never removes: two rules cannot both be
+  // the winner, so the only thing a rule can be sure of is what it adds.
+  | { kind: "addTags"; tags: string[] }
+  // No Notion row at all. Anything after it still applies to nothing.
+  | { kind: "hide" };
 
 export interface Rule {
   id: string;
@@ -91,7 +109,8 @@ export interface Rule {
   enabled: boolean;
   // ANDed. An empty list matches nothing — see `matches`.
   conditions: Condition[];
-  outcomes: RuleOutcomes;
+  // Applied in order. An empty list is refused on write.
+  actions: Action[];
 }
 
 // What the engine needs to know about a transaction. Built from a Plaid
@@ -107,8 +126,40 @@ export interface RuleTransaction {
   pending?: boolean;
 }
 
-export interface RuleMatch extends RuleOutcomes {
+// What the winning rule adds up to, once its actions have been applied in
+// order. The sync reads this rather than the action list, so adding an action
+// kind never changes the shape the sync deals with.
+export interface RuleMatch {
   ruleId: string;
+  categoryId?: string;
+  rename?: string;
+  tags: string[];
+  hide: boolean;
+}
+
+export function applyActions(ruleId: string, actions: Action[]): RuleMatch {
+  const match: RuleMatch = { ruleId, tags: [], hide: false };
+  for (const action of actions) {
+    switch (action.kind) {
+      case "setCategory":
+        match.categoryId = action.categoryId;
+        break;
+      case "rename":
+        match.rename = action.value;
+        break;
+      case "addTags":
+        for (const tag of action.tags) {
+          if (!match.tags.includes(tag)) {
+            match.tags.push(tag);
+          }
+        }
+        break;
+      case "hide":
+        match.hide = true;
+        break;
+    }
+  }
+  return match;
 }
 
 // How rules were stored before conditions became a list: one optional slot
@@ -163,6 +214,35 @@ export function normalizeConditions(
   return conditions;
 }
 
+// How a rule's effects were stored before they became a list: one optional
+// field per effect, which is why there was no way to add a fourth without a
+// schema change. Read through `normalizeActions` rather than migrated first,
+// exactly like the conditions.
+export interface LegacyRuleOutcomes {
+  categoryId?: string;
+  rename?: string;
+  hide?: boolean;
+}
+
+export function normalizeActions(
+  stored: LegacyRuleOutcomes | Action[] | undefined,
+): Action[] {
+  if (Array.isArray(stored)) {
+    return stored;
+  }
+  const actions: Action[] = [];
+  if (stored?.categoryId) {
+    actions.push({ kind: "setCategory", categoryId: stored.categoryId });
+  }
+  if (stored?.rename) {
+    actions.push({ kind: "rename", value: stored.rename });
+  }
+  if (stored?.hide) {
+    actions.push({ kind: "hide" });
+  }
+  return actions;
+}
+
 // Longest pattern a rule may carry. The regex runs inside a sync action
 // against strings from the user's own bank, so a pathological pattern can
 // only slow that user's own sync down — but a bound is still cheaper than
@@ -182,7 +262,7 @@ export function evaluate(
       continue;
     }
     if (matches(rule.conditions, txn)) {
-      return { ruleId: rule.id, ...rule.outcomes };
+      return applyActions(rule.id, rule.actions);
     }
   }
   return null;

@@ -40,6 +40,13 @@ export const P = {
   relation: (pageId: string | null | undefined) => ({
     relation: pageId ? [{ id: pageId }] : [],
   }),
+  // Notion creates the options as they are used, so anything here is valid —
+  // except a comma, which it refuses inside an option name.
+  multiSelect: (names: string[]) => ({
+    multi_select: names.map((name) => ({
+      name: clip(name).replaceAll(",", " "),
+    })),
+  }),
   checkbox: (b: boolean) => ({ checkbox: b }),
 };
 
@@ -136,6 +143,10 @@ export function transactionProperties(
   accountPageId: string,
   categoryPageId: string | null,
   rename?: string,
+  // From a rule's addTags action. Written only when there are some: a
+  // Transactions database built before Tags existed has no such column, and
+  // writing a property a database does not have fails the whole row.
+  tags: string[] = [],
 ) {
   return {
     Name: P.title(transactionTitle(txn, rename)),
@@ -146,6 +157,7 @@ export function transactionProperties(
     Amount: P.number(-txn.amount),
     Date: P.date(txn.datetime ?? txn.authorized_datetime ?? txn.date),
     Pending: P.checkbox(txn.pending),
+    ...(tags.length > 0 ? { Tags: P.multiSelect(tags) } : {}),
   };
 }
 

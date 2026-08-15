@@ -17,7 +17,9 @@ const COFFEE = {
       values: ["blue bottle"],
     },
   ],
-  outcomes: { categoryId: "FOOD_AND_DRINK_COFFEE" },
+  actions: [
+    { kind: "setCategory" as const, categoryId: "FOOD_AND_DRINK_COFFEE" },
+  ],
 };
 
 async function twoUsers() {
@@ -156,7 +158,10 @@ test("update replaces conditions and outcomes wholesale", async () => {
       { kind: "text", field: "merchant", op: "contains", values: ["amzn"] },
       { kind: "amount", op: "gt", value: 50 },
     ],
-    outcomes: { rename: "Amazon", categoryId: "GENERAL_MERCHANDISE_ELECTRONICS" },
+    actions: [
+      { kind: "rename", value: "Amazon" },
+      { kind: "setCategory", categoryId: "GENERAL_MERCHANDISE_ELECTRONICS" },
+    ],
   });
 
   await asAlice.mutation(api.rules.update, {
@@ -169,14 +174,14 @@ test("update replaces conditions and outcomes wholesale", async () => {
         values: ["AMZN Mktp US"],
       },
     ],
-    outcomes: { hide: true },
+    actions: [{ kind: "hide" }],
   });
 
   const [rule] = await asAlice.query(api.rules.list);
   expect(rule.conditions).toEqual([
     { kind: "text", field: "merchant", op: "equals", values: ["AMZN Mktp US"] },
   ]);
-  expect(rule.outcomes).toEqual({ hide: true });
+  expect(rule.actions).toEqual([{ kind: "hide" }]);
   expect(rule.name).toBe("Amazon");
 });
 
@@ -187,7 +192,7 @@ test("enable and disable go through update without touching the rest", async () 
   await asAlice.mutation(api.rules.update, { ruleId, enabled: false });
   expect((await asAlice.query(api.rules.list))[0]).toMatchObject({
     enabled: false,
-    outcomes: { categoryId: "FOOD_AND_DRINK_COFFEE" },
+    actions: [{ kind: "setCategory", categoryId: "FOOD_AND_DRINK_COFFEE" }],
   });
 
   await asAlice.mutation(api.rules.update, { ruleId, enabled: true });
@@ -218,13 +223,13 @@ test("a rule that cannot mean anything is refused", async () => {
   ).rejects.toThrow("at least one condition");
 
   await expect(
-    asAlice.mutation(api.rules.create, { ...COFFEE, outcomes: {} }),
-  ).rejects.toThrow("at least one outcome");
+    asAlice.mutation(api.rules.create, { ...COFFEE, actions: [] }),
+  ).rejects.toThrow("at least one thing to do");
 
   await expect(
     asAlice.mutation(api.rules.create, {
       ...COFFEE,
-      outcomes: { categoryId: "NOT_A_CATEGORY" },
+      actions: [{ kind: "setCategory", categoryId: "NOT_A_CATEGORY" }],
     }),
   ).rejects.toThrow("Unknown category");
 
@@ -284,7 +289,7 @@ test("a rule stored in the old shape is read, evaluated, and edited as a list", 
         amount: { op: "gt", value: 5 },
         accountId,
       },
-      outcomes: { categoryId: "FOOD_AND_DRINK_COFFEE" },
+      actions: [{ kind: "setCategory", categoryId: "FOOD_AND_DRINK_COFFEE" }],
     }),
   );
 
@@ -319,7 +324,7 @@ test("migrateConditions rewrites old rules and leaves new ones alone", async () 
       priority: 2,
       enabled: true,
       conditions: { merchant: { op: "contains", value: "amzn" } },
-      outcomes: { hide: true },
+      actions: [{ kind: "hide" }],
     }),
   );
 
@@ -413,4 +418,138 @@ test("a rule is capped at ten conditions", async () => {
       })),
     }),
   ).rejects.toThrow("limited to 10 conditions");
+});
+
+test("a rule stored with the old outcomes reads as actions", async () => {
+  const { asAlice, t, alice } = await twoUsers();
+  const ruleId = await t.run(async (ctx) =>
+    ctx.db.insert("rules", {
+      userId: alice,
+      name: "Legacy",
+      priority: 1,
+      enabled: true,
+      conditions: { merchant: { op: "contains", value: "amzn" } },
+      outcomes: { categoryId: "GENERAL_MERCHANDISE_ELECTRONICS", hide: true },
+    }),
+  );
+
+  const [listed] = await asAlice.query(api.rules.list);
+  expect(listed.actions).toEqual([
+    { kind: "setCategory", categoryId: "GENERAL_MERCHANDISE_ELECTRONICS" },
+    { kind: "hide" },
+  ]);
+
+  const [forSync] = await t.query(internal.rules.listEnabledInternal, {
+    userId: alice,
+  });
+  expect(forSync.actions).toHaveLength(2);
+
+  // Saving it moves it to the new field and takes the old one away, or every
+  // later read would have to guess which is authoritative.
+  await asAlice.mutation(api.rules.update, { ruleId, name: "Renamed" });
+  const stored = await t.run(async (ctx) => ctx.db.get(ruleId));
+  expect(stored?.actions).toHaveLength(2);
+  expect(stored?.outcomes).toBeUndefined();
+});
+
+test("tags are cleaned, de-duplicated, and stripped of commas", async () => {
+  const { asAlice } = await twoUsers();
+  await asAlice.mutation(api.rules.create, {
+    ...COFFEE,
+    actions: [
+      { kind: "addTags", tags: ["  Treat ", "Treat", "", "a,b"] },
+    ],
+  });
+  const [rule] = await asAlice.query(api.rules.list);
+  // Notion refuses a comma inside a multi-select option, so it is turned into
+  // a space here rather than mangled on the way out.
+  expect(rule.actions).toEqual([{ kind: "addTags", tags: ["Treat", "a b"] }]);
+});
+
+test("an action emptied by the UI is dropped rather than saved", async () => {
+  const { asAlice } = await twoUsers();
+  await asAlice.mutation(api.rules.create, {
+    ...COFFEE,
+    actions: [
+      { kind: "setCategory", categoryId: "FOOD_AND_DRINK_COFFEE" },
+      { kind: "rename", value: "   " },
+      { kind: "addTags", tags: [] },
+    ],
+  });
+  const [rule] = await asAlice.query(api.rules.list);
+  expect(rule.actions).toEqual([
+    { kind: "setCategory", categoryId: "FOOD_AND_DRINK_COFFEE" },
+  ]);
+});
+
+test("a category group can be matched on but not set", async () => {
+  const { asAlice } = await twoUsers();
+  // A Notion row lands in one category, not in a group of them.
+  await expect(
+    asAlice.mutation(api.rules.create, {
+      ...COFFEE,
+      actions: [{ kind: "setCategory", categoryId: "FOOD_AND_DRINK" }],
+    }),
+  ).rejects.toThrow("Unknown category");
+});
+
+test("saving a rule that tags asks for the Tags column", async () => {
+  const { asAlice, t } = await twoUsers();
+  await asAlice.mutation(api.rules.create, {
+    ...COFFEE,
+    actions: [{ kind: "addTags", tags: ["Reimbursable"] }],
+  });
+
+  const scheduled = await t.run(async (ctx) =>
+    ctx.db.system.query("_scheduled_functions").collect(),
+  );
+  expect(
+    scheduled.filter((job) => job.name.includes("ensureTransactionColumns")),
+  ).toHaveLength(1);
+});
+
+test("a rule that does not tag asks for nothing", async () => {
+  const { asAlice, t } = await twoUsers();
+  await asAlice.mutation(api.rules.create, COFFEE);
+
+  const scheduled = await t.run(async (ctx) =>
+    ctx.db.system.query("_scheduled_functions").collect(),
+  );
+  expect(scheduled).toHaveLength(0);
+});
+
+test("applyToHistory rewinds every cursor and replays", async () => {
+  const { asAlice, t, alice } = await twoUsers();
+  await t.run(async (ctx) => {
+    await ctx.db.patch(alice, { accessGrantedAt: Date.now() });
+    await ctx.db.insert("bankConnections", {
+      userId: alice,
+      plaidItemId: "item_replay",
+      accessToken: "access",
+      institutionName: "Bank",
+      status: "active",
+      transactionsCursor: "cursor-so-far",
+    });
+  });
+
+  expect(await asAlice.mutation(api.rules.applyToHistory, {})).toEqual({
+    connections: 1,
+  });
+
+  const connection = await t.run(async (ctx) =>
+    ctx.db
+      .query("bankConnections")
+      .withIndex("by_plaid_item", (q) => q.eq("plaidItemId", "item_replay"))
+      .unique(),
+  );
+  // There is nothing stored to re-run rules against, so rewinding the cursor
+  // and replaying through the sync is the only thing that can work.
+  expect(connection?.transactionsCursor).toBeUndefined();
+
+  const scheduled = await t.run(async (ctx) =>
+    ctx.db.system.query("_scheduled_functions").collect(),
+  );
+  expect(
+    scheduled.filter((job) => job.name.includes("runForConnection")),
+  ).toHaveLength(1);
 });

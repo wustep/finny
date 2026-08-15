@@ -6,10 +6,12 @@ import {
   ChevronUp,
   Copy,
   EyeOff,
+  History,
   Info,
   MoreHorizontal,
   Pencil,
   Plus,
+  Tag,
   Trash2,
   Wand2,
   X,
@@ -23,8 +25,10 @@ import {
   evaluate,
   pfcLabel,
   isPfcPrimary,
+  type Action,
   type AmountOp,
   type Condition,
+  type RuleMatch,
   type TextField,
   type TextOp,
 } from "../../convex/rulesEngine";
@@ -124,14 +128,22 @@ function asStored(conditions: Condition[]): RuleArgs["conditions"] {
 
 // A question mark that holds the paragraph a control does not have room for.
 // The prose is worth keeping; it is only ever worth reading once.
-function Hint({ label, children }: { label: string; children: ReactNode }) {
+function Hint({
+  label,
+  className,
+  children,
+}: {
+  label: string;
+  className?: string;
+  children: ReactNode;
+}) {
   return (
     <Popover>
       <PopoverTrigger asChild>
         <button
           type="button"
           aria-label={label}
-          className="text-muted-foreground transition-colors hover:text-foreground"
+          className={`inline-flex text-muted-foreground transition-colors hover:text-foreground ${className ?? ""}`}
         >
           <Info className="size-3.5" />
         </button>
@@ -162,10 +174,10 @@ function RulesPage() {
       <div className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Rules</h1>
-          <p className="flex items-center gap-1.5 text-sm text-muted-foreground">
+          <p className="text-sm text-muted-foreground">
             Applied as each transaction syncs, top to bottom — the first match
-            wins.
-            <Hint label="How rules work">
+            wins.{" "}
+            <Hint label="How rules work" className="ml-0.5 align-middle">
               <p className="mb-2">
                 Everything the winning rule sets is applied together, and no
                 rule below it is considered.
@@ -180,9 +192,12 @@ function RulesPage() {
             </Hint>
           </p>
         </div>
-        <Button onClick={() => setEditing("new")}>
-          <Plus /> New rule
-        </Button>
+        <div className="flex shrink-0 items-center gap-2">
+          {rules && rules.length > 0 ? <ApplyToHistory /> : null}
+          <Button onClick={() => setEditing("new")}>
+            <Plus /> New rule
+          </Button>
+        </div>
       </div>
 
       {rules === undefined ? (
@@ -205,6 +220,72 @@ function RulesPage() {
         />
       ) : null}
     </div>
+  );
+}
+
+// A rule only ever met transactions that synced after it was written, which
+// is the first thing anyone notices and the least obvious thing about the
+// whole feature. There is nothing stored to re-run rules against — so the
+// only honest offer is to replay the history through the sync, which is
+// exactly what the destination page's re-backfill does.
+function ApplyToHistory() {
+  const applyToHistory = useMutation(api.rules.applyToHistory);
+  const [open, setOpen] = useState(false);
+  const [working, setWorking] = useState(false);
+
+  const handleApply = () => {
+    setWorking(true);
+    applyToHistory({})
+      .then((result) => {
+        toast.success(
+          `Replaying ${result.connections} ${
+            result.connections === 1 ? "bank" : "banks"
+          } — this runs in the background`,
+        );
+        setOpen(false);
+      })
+      .catch((err: unknown) => {
+        console.error(err);
+        toast.error("Could not start the replay");
+      })
+      .finally(() => setWorking(false));
+  };
+
+  return (
+    <>
+      <Button variant="outline" onClick={() => setOpen(true)}>
+        <History /> Apply to history
+      </Button>
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Apply these rules to everything?</DialogTitle>
+            <DialogDescription>
+              Finny replays your Plaid history from the start date, running
+              every transaction past these rules on the way. Rows already in
+              Notion are updated in place, not duplicated.
+              <br />
+              <br />
+              A couple of years of transactions at Notion's three writes a
+              second takes hours. It keeps going whether or not this page is
+              open.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setOpen(false)}
+              disabled={working}
+            >
+              Cancel
+            </Button>
+            <Button onClick={handleApply} disabled={working}>
+              {working ? "Starting…" : "Apply to history"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
 
@@ -296,7 +377,7 @@ function RuleItem({
     create({
       name: `${rule.name} (copy)`,
       conditions: asStored(rule.conditions),
-      outcomes: rule.outcomes,
+      actions: rule.actions as RuleArgs["actions"],
     })
       .then(() => toast.success("Duplicated — it goes last in the order"))
       .catch((err: unknown) => {
@@ -331,19 +412,9 @@ function RuleItem({
           {conditionSummary(rule.conditions, accounts)}
         </p>
         <div className="flex flex-wrap gap-1.5">
-          {rule.outcomes.categoryId ? (
-            <Badge variant="secondary">
-              Category: {pfcLabel(rule.outcomes.categoryId)}
-            </Badge>
-          ) : null}
-          {rule.outcomes.rename ? (
-            <Badge variant="secondary">Title: {rule.outcomes.rename}</Badge>
-          ) : null}
-          {rule.outcomes.hide ? (
-            <Badge variant="outline" className="text-destructive">
-              <EyeOff /> Kept out of Notion
-            </Badge>
-          ) : null}
+          {rule.actions.map((action, index) => (
+            <ActionBadge key={index} action={action} />
+          ))}
         </div>
       </div>
 
@@ -440,6 +511,31 @@ function conditionPhrase(
   }
 }
 
+function ActionBadge({ action }: { action: Action }) {
+  switch (action.kind) {
+    case "setCategory":
+      return (
+        <Badge variant="secondary">
+          Category: {pfcLabel(action.categoryId)}
+        </Badge>
+      );
+    case "rename":
+      return <Badge variant="secondary">Title: {action.value}</Badge>;
+    case "addTags":
+      return (
+        <Badge variant="secondary">
+          <Tag /> {action.tags.join(", ")}
+        </Badge>
+      );
+    case "hide":
+      return (
+        <Badge variant="outline" className="text-destructive">
+          <EyeOff /> Kept out of Notion
+        </Badge>
+      );
+  }
+}
+
 function conditionSummary(
   conditions: Condition[],
   accounts: AccountOption[],
@@ -486,7 +582,9 @@ function DeleteDialog({
           <DialogDescription>
             Rows it already wrote keep what it gave them until those
             transactions next sync
-            {rule.outcomes.hide ? ", and rows it hid stay hidden until then" : ""}
+            {rule.actions.some((action) => action.kind === "hide")
+              ? ", and rows it hid stay hidden until then"
+              : ""}
             .
           </DialogDescription>
         </DialogHeader>
@@ -523,12 +621,12 @@ type DraftCondition =
   | { kind: "category"; categoryIds: string[]; negate?: boolean }
   | { kind: "pending"; value: boolean };
 
+// Actions are held exactly as they are stored; unlike an amount there is no
+// half-typed state to keep out of the union.
 type Draft = {
   name: string;
   conditions: DraftCondition[];
-  categoryId: string;
-  rename: string;
-  hide: boolean;
+  actions: Action[];
 };
 
 function draftFrom(rule: RuleRow | null): Draft {
@@ -543,9 +641,7 @@ function draftFrom(rule: RuleRow | null): Draft {
         ? { ...condition, value: String(condition.value) }
         : condition,
     ),
-    categoryId: rule?.outcomes.categoryId ?? "",
-    rename: rule?.outcomes.rename ?? "",
-    hide: rule?.outcomes.hide ?? false,
+    actions: rule?.actions ?? [{ kind: "setCategory", categoryId: "" }],
   };
 }
 
@@ -570,6 +666,18 @@ const CONDITION_KINDS: Array<{ label: string; make: () => DraftCondition }> = [
   { label: "Account", make: () => ({ kind: "account", accountIds: [] }) },
   { label: "Category", make: () => ({ kind: "category", categoryIds: [] }) },
   { label: "Status", make: () => ({ kind: "pending", value: true }) },
+];
+
+// What the picker offers as a new action. Nothing stops two of a kind: two
+// addTags rows are two sets of tags, and a second rename simply wins.
+const ACTION_KINDS: Array<{ label: string; make: () => Action }> = [
+  {
+    label: "Set the category",
+    make: () => ({ kind: "setCategory", categoryId: "" }),
+  },
+  { label: "Rename it", make: () => ({ kind: "rename", value: "" }) },
+  { label: "Add tags", make: () => ({ kind: "addTags", tags: [] }) },
+  { label: "Keep it out of Notion", make: () => ({ kind: "hide" }) },
 ];
 
 function RuleDialog({
@@ -598,6 +706,20 @@ function RuleDialog({
     setDraft((current) => ({
       ...current,
       conditions: current.conditions.filter((_, position) => position !== index),
+    }));
+
+  const setAction = (index: number, action: Action) =>
+    setDraft((current) => ({
+      ...current,
+      actions: current.actions.map((existing, position) =>
+        position === index ? action : existing,
+      ),
+    }));
+
+  const removeAction = (index: number) =>
+    setDraft((current) => ({
+      ...current,
+      actions: current.actions.filter((_, position) => position !== index),
     }));
 
   const handleSave = () => {
@@ -667,66 +789,24 @@ function RuleDialog({
 
           <div className="flex flex-col gap-2">
             <Label>Then</Label>
-
-            <select
-              aria-label="Category"
-              className={`${selectClass} w-full`}
-              value={draft.categoryId}
-              onChange={(event) =>
+            <div className="flex flex-col gap-2">
+              {draft.actions.map((action, index) => (
+                <ActionRow
+                  key={index}
+                  action={action}
+                  onChange={(next) => setAction(index, next)}
+                  onRemove={() => removeAction(index)}
+                />
+              ))}
+            </div>
+            <AddAction
+              onAdd={(action) =>
                 setDraft((current) => ({
                   ...current,
-                  categoryId: event.target.value,
+                  actions: [...current.actions, action],
                 }))
               }
-            >
-              <option value="">Keep the category Plaid chose</option>
-              {PFC_GROUPS.map((group) => (
-                <optgroup key={group.primary} label={group.label}>
-                  {group.categories.map((category) => (
-                    <option key={category.id} value={category.id}>
-                      {category.label}
-                    </option>
-                  ))}
-                </optgroup>
-              ))}
-            </select>
-
-            <div className="flex items-center gap-2">
-              <Input
-                aria-label="Title in Notion"
-                placeholder="Keep the merchant name as the title"
-                value={draft.rename}
-                onChange={(event) =>
-                  setDraft((current) => ({
-                    ...current,
-                    rename: event.target.value,
-                  }))
-                }
-              />
-              <Hint label="About renaming">
-                Renaming changes the Notion title only. Original Description
-                keeps whatever your bank sent.
-              </Hint>
-            </div>
-
-            <div className="flex items-center gap-3 rounded-md border px-3 py-2.5">
-              <div className="flex flex-1 items-center gap-1.5">
-                <span className="text-sm">Keep out of Notion</span>
-                <Hint label="About keeping transactions out of Notion">
-                  No row is created, and a row that already exists is archived
-                  on its next sync. Finny then forgets it, so turning this back
-                  off only brings the row back when the transaction next
-                  changes at your bank.
-                </Hint>
-              </div>
-              <Switch
-                checked={draft.hide}
-                aria-label="Keep out of Notion"
-                onCheckedChange={(checked) =>
-                  setDraft((current) => ({ ...current, hide: checked }))
-                }
-              />
-            </div>
+            />
           </div>
 
           <RuleTester draft={draft} accounts={accounts} />
@@ -761,6 +841,192 @@ function AddCondition({ onAdd }: { onAdd: (condition: DraftCondition) => void })
         ))}
       </DropdownMenuContent>
     </DropdownMenu>
+  );
+}
+
+function AddAction({ onAdd }: { onAdd: (action: Action) => void }) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button variant="outline" size="sm" className="w-fit">
+          <Plus /> Add action
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start">
+        {ACTION_KINDS.map((kind) => (
+          <DropdownMenuItem key={kind.label} onClick={() => onAdd(kind.make())}>
+            {kind.label}
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+function ActionRow({
+  action,
+  onChange,
+  onRemove,
+}: {
+  action: Action;
+  onChange: (action: Action) => void;
+  onRemove: () => void;
+}) {
+  return (
+    <div className="flex items-start gap-2 rounded-md border p-2">
+      <div className="flex flex-1 flex-wrap items-center gap-2">
+        <ActionFields action={action} onChange={onChange} />
+      </div>
+      <Button
+        variant="ghost"
+        size="icon"
+        className="size-8 shrink-0 text-muted-foreground"
+        aria-label="Remove action"
+        onClick={onRemove}
+      >
+        <X className="size-3.5" />
+      </Button>
+    </div>
+  );
+}
+
+function ActionFields({
+  action,
+  onChange,
+}: {
+  action: Action;
+  onChange: (action: Action) => void;
+}) {
+  switch (action.kind) {
+    case "setCategory":
+      return (
+        <>
+          <span className="text-sm">Category</span>
+          <select
+            aria-label="Category to set"
+            className={`${selectClass} flex-1`}
+            value={action.categoryId}
+            onChange={(event) =>
+              onChange({ kind: "setCategory", categoryId: event.target.value })
+            }
+          >
+            <option value="">Pick a category…</option>
+            {PFC_GROUPS.map((group) => (
+              <optgroup key={group.primary} label={group.label}>
+                {/* No "any Travel" here, unlike the condition: a row lands in
+                    one category, not in a group of them. */}
+                {group.categories.map((category) => (
+                  <option key={category.id} value={category.id}>
+                    {category.label}
+                  </option>
+                ))}
+              </optgroup>
+            ))}
+          </select>
+        </>
+      );
+    case "rename":
+      return (
+        <>
+          <span className="text-sm">Title</span>
+          <Input
+            aria-label="Title in Notion"
+            placeholder="Coffee"
+            className="flex-1"
+            value={action.value}
+            onChange={(event) =>
+              onChange({ kind: "rename", value: event.target.value })
+            }
+          />
+          <Hint label="About renaming">
+            Renaming changes the Notion title only. Original Description keeps
+            whatever your bank sent.
+          </Hint>
+        </>
+      );
+    case "addTags":
+      return (
+        <>
+          <span className="text-sm">Tags</span>
+          <Hint label="About tags">
+            Added to the Tags column on Transactions, never removed — only one
+            rule wins per transaction, so what it took away would be anyone's
+            guess. Finny adds the column the first time you save a rule that
+            needs it.
+          </Hint>
+          <TagInput
+            tags={action.tags}
+            onChange={(tags) => onChange({ kind: "addTags", tags })}
+          />
+        </>
+      );
+    case "hide":
+      return (
+        <>
+          <EyeOff className="size-4 text-muted-foreground" />
+          <span className="text-sm">Keep it out of Notion</span>
+          <Hint label="About keeping transactions out of Notion">
+            No row is created, and a row that already exists is archived on its
+            next sync. Finny then forgets it, so removing this action only
+            brings the row back when the transaction next changes at your bank.
+          </Hint>
+        </>
+      );
+  }
+}
+
+// Tags are typed one at a time and shown as chips. Enter and comma both
+// commit — comma because it is the habit, even though Notion refuses a comma
+// inside an option name, which is why it is a separator here rather than
+// something that could end up in a tag.
+function TagInput({
+  tags,
+  onChange,
+}: {
+  tags: string[];
+  onChange: (tags: string[]) => void;
+}) {
+  const [draft, setDraft] = useState("");
+
+  const commit = (value: string) => {
+    const tag = value.trim();
+    if (tag && !tags.includes(tag)) {
+      onChange([...tags, tag]);
+    }
+    setDraft("");
+  };
+
+  return (
+    <div className="flex w-full flex-col gap-1.5">
+      <Chips
+        values={tags}
+        label={(tag) => tag}
+        onRemove={(tag) => onChange(tags.filter((existing) => existing !== tag))}
+      />
+      <Input
+        aria-label="Add a tag"
+        placeholder="Type a tag, then Enter"
+        value={draft}
+        onChange={(event) => {
+          const value = event.target.value;
+          if (value.includes(",")) {
+            commit(value.replace(",", ""));
+            return;
+          }
+          setDraft(value);
+        }}
+        onBlur={() => commit(draft)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            commit(draft);
+          }
+          if (event.key === "Backspace" && !draft && tags.length) {
+            onChange(tags.slice(0, -1));
+          }
+        }}
+      />
+    </div>
   );
 }
 
@@ -1128,7 +1394,7 @@ function RuleTester({
           priority: 0,
           enabled: true,
           conditions: built.value.conditions,
-          outcomes: built.value.outcomes,
+          actions: built.value.actions,
         },
       ],
       {
@@ -1203,20 +1469,19 @@ function RuleTester({
   );
 }
 
-function outcomeSummary(outcomes: {
-  categoryId?: string;
-  rename?: string;
-  hide?: boolean;
-}): string {
-  if (outcomes.hide) {
+function outcomeSummary(match: RuleMatch): string {
+  if (match.hide) {
     return "kept out of Notion";
   }
   const parts: string[] = [];
-  if (outcomes.categoryId) {
-    parts.push(`category becomes ${pfcLabel(outcomes.categoryId)}`);
+  if (match.categoryId) {
+    parts.push(`category becomes ${pfcLabel(match.categoryId)}`);
   }
-  if (outcomes.rename) {
-    parts.push(`title becomes “${outcomes.rename}”`);
+  if (match.rename) {
+    parts.push(`title becomes “${match.rename}”`);
+  }
+  if (match.tags.length) {
+    parts.push(`tagged ${match.tags.join(", ")}`);
   }
   return parts.join(", ") || "nothing changes";
 }
@@ -1300,22 +1565,37 @@ function buildRule(
     };
   }
 
-  const outcomes: RuleArgs["outcomes"] = {};
-  if (draft.categoryId) {
-    outcomes.categoryId = draft.categoryId;
+  const actions: RuleArgs["actions"] = [];
+  for (const action of draft.actions) {
+    switch (action.kind) {
+      case "setCategory":
+        if (!action.categoryId) {
+          return { error: "Pick a category to set, or remove that action" };
+        }
+        actions.push(action);
+        break;
+      case "rename": {
+        const value = action.value.trim();
+        if (!value) {
+          return { error: "Fill in the new title, or remove that action" };
+        }
+        actions.push({ kind: "rename", value });
+        break;
+      }
+      case "addTags":
+        if (action.tags.length === 0) {
+          return { error: "Add a tag, or remove that action" };
+        }
+        actions.push(action);
+        break;
+      case "hide":
+        actions.push(action);
+        break;
+    }
   }
-  const rename = draft.rename.trim();
-  if (rename) {
-    outcomes.rename = rename;
-  }
-  if (draft.hide) {
-    outcomes.hide = true;
-  }
-  if (Object.keys(outcomes).length === 0) {
-    return {
-      error: "Choose what the rule should do: a category, a title, or hide it",
-    };
+  if (actions.length === 0) {
+    return { error: "Add at least one thing for the rule to do" };
   }
 
-  return { value: { name, conditions, outcomes } };
+  return { value: { name, conditions, actions } };
 }

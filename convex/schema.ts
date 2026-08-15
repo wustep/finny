@@ -71,8 +71,36 @@ export const ruleConditionsValidator = v.union(
   legacyRuleConditionsValidator,
 );
 
-// What a matching rule changes about the Notion row. At least one is
-// required; all of them apply together.
+// One thing a rule does to a transaction it matched. A list of these, for the
+// same reason the conditions are one: a fixed record could only hold the
+// effects someone thought of first.
+export const ruleActionValidator = v.union(
+  v.object({
+    kind: v.literal("setCategory"),
+    // A Plaid personal finance category, e.g.
+    // GENERAL_MERCHANDISE_ELECTRONICS. Validated against the taxonomy in
+    // rulesEngine.ts on write.
+    categoryId: v.string(),
+  }),
+  v.object({
+    kind: v.literal("rename"),
+    // Replaces the Notion title; Original Description is left alone.
+    value: v.string(),
+  }),
+  v.object({
+    kind: v.literal("addTags"),
+    // Written to the Tags multi-select on Transactions. Only ever added:
+    // one rule wins per row, so what it removed would be unknowable.
+    tags: v.array(v.string()),
+  }),
+  // No Notion row: skip the create, and archive + unmap a row that already
+  // exists (see upsertTransaction in sync.ts).
+  v.object({ kind: v.literal("hide") }),
+);
+
+// The shape effects were stored in before they became a list. Still accepted
+// on read so no deploy ordering has to be got right — rules.ts normalises it,
+// and rules.migrateConditions rewrites rows at rest. Remove once none remain.
 export const ruleOutcomesValidator = v.object({
   // A Plaid personal finance category, e.g. GENERAL_MERCHANDISE_ELECTRONICS,
   // replacing the one Plaid assigned. Validated against the taxonomy in
@@ -299,7 +327,11 @@ export default defineSchema({
     priority: v.number(),
     enabled: v.boolean(),
     conditions: ruleConditionsValidator,
-    outcomes: ruleOutcomesValidator,
+    // Exactly one of these is set on any row: `actions` on everything written
+    // from now on, `outcomes` on rules that predate the list. Reads normalise
+    // (see rules.ts), so nothing downstream knows the old shape existed.
+    actions: v.optional(v.array(ruleActionValidator)),
+    outcomes: v.optional(ruleOutcomesValidator),
   }).index("by_user_priority", ["userId", "priority"]),
 
   syncRuns: defineTable({

@@ -625,6 +625,59 @@ export const setStartDate = mutation({
   },
 });
 
+// Make sure the Transactions database has the columns the current build
+// writes — today that means Tags, which every database created before rules
+// could add them is missing.
+//
+// Scheduled when a rule that adds tags is saved, which is the moment the
+// column is first needed and the moment a failure is explainable. Idempotent
+// and quiet: a database that already has it costs one GET.
+export const ensureTransactionColumns = internalAction({
+  args: { userId: v.id("users") },
+  handler: async (ctx, args) => {
+    try {
+      const connection = await ctx.runQuery(
+        internal.notion.getConnectionInternal,
+        { userId: args.userId },
+      );
+      const databaseId = connection?.databases?.transactions;
+      if (!connection || !databaseId) {
+        return;
+      }
+      const state = await inspectDatabase(
+        connection.accessToken,
+        "transactions",
+        databaseId,
+      );
+      if (state.state !== "damaged" || state.missingProperties.length === 0) {
+        return;
+      }
+      const definitions = SPEC_BY_KEY.transactions.properties(
+        connection.databases ?? {},
+      );
+      const patch = Object.fromEntries(
+        state.missingProperties
+          .filter((name) => definitions[name])
+          .map((name) => [name, definitions[name]]),
+      );
+      if (Object.keys(patch).length === 0) {
+        return;
+      }
+      await notionFetch(connection.accessToken, `/databases/${databaseId}`, {
+        method: "PATCH",
+        body: { properties: patch },
+      });
+      console.log(
+        `added ${Object.keys(patch).join(", ")} to the Transactions database`,
+      );
+    } catch (error) {
+      // The destination page's Check button is the fallback; a rule saving is
+      // not the place to fail over a column.
+      console.error("could not add missing Transactions columns", error);
+    }
+  },
+});
+
 // ---------- destination integrity ----------
 
 // What one of Finny's databases looks like from the outside right now.
