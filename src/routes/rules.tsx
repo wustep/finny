@@ -1,24 +1,31 @@
 import { createFileRoute } from "@tanstack/react-router";
-import type { FunctionReturnType } from "convex/server";
+import type { FunctionArgs, FunctionReturnType } from "convex/server";
 import { useMutation, useQuery } from "convex/react";
 import {
   ChevronDown,
   ChevronUp,
+  Copy,
   EyeOff,
+  Info,
   MoreHorizontal,
   Pencil,
   Plus,
   Trash2,
   Wand2,
+  X,
 } from "lucide-react";
-import { useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 import {
   PFC_GROUPS,
+  evaluate,
   pfcLabel,
+  isPfcPrimary,
   type AmountOp,
+  type Condition,
+  type TextField,
   type TextOp,
 } from "../../convex/rulesEngine";
 import { Badge } from "@/components/ui/badge";
@@ -46,6 +53,11 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 
@@ -56,10 +68,10 @@ export const Route = createFileRoute("/rules")({
 type RuleRow = FunctionReturnType<typeof api.rules.list>[number];
 type AccountOption = { id: Id<"accounts">; label: string };
 
-const TEXT_OPS: Array<{ value: TextOp; label: string }> = [
-  { value: "contains", label: "contains" },
-  { value: "equals", label: "is exactly" },
-  { value: "regex", label: "matches regex" },
+const TEXT_OPS: Array<{ value: TextOp; label: string; not: string }> = [
+  { value: "contains", label: "contains", not: "doesn't contain" },
+  { value: "equals", label: "is exactly", not: "is not" },
+  { value: "regex", label: "matches regex", not: "doesn't match regex" },
 ];
 
 const AMOUNT_OPS: Array<{ value: AmountOp; label: string }> = [
@@ -70,8 +82,21 @@ const AMOUNT_OPS: Array<{ value: AmountOp; label: string }> = [
   { value: "eq", label: "is exactly" },
 ];
 
-const textOpLabel = (op: TextOp) =>
-  TEXT_OPS.find((entry) => entry.value === op)?.label ?? op;
+const FIELD_LABELS: Record<Condition["kind"] | TextField, string> = {
+  merchant: "Merchant",
+  description: "Description",
+  text: "Merchant",
+  amount: "Amount",
+  account: "Account",
+  category: "Category",
+  pending: "Status",
+};
+
+function textOpLabel(op: TextOp, negate?: boolean) {
+  const entry = TEXT_OPS.find((candidate) => candidate.value === op);
+  return (negate ? entry?.not : entry?.label) ?? op;
+}
+
 const amountOpLabel = (op: AmountOp) =>
   AMOUNT_OPS.find((entry) => entry.value === op)?.label ?? op;
 
@@ -86,11 +111,37 @@ function dollars(value: number) {
   return `${value < 0 ? "-" : ""}$${text}`;
 }
 
-// The same select styling the Notion page's page picker uses.
 const selectClass =
   "h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs";
 
-const styledSelect = `${selectClass} w-full`;
+// The engine keeps account ids as plain strings, on purpose — it is pure and
+// knows nothing about the data model. Everything on this page is talking to
+// Convex, where they are branded ids. One named cast at that seam beats one
+// at every use of it.
+function asStored(conditions: Condition[]): RuleArgs["conditions"] {
+  return conditions as RuleArgs["conditions"];
+}
+
+// A question mark that holds the paragraph a control does not have room for.
+// The prose is worth keeping; it is only ever worth reading once.
+function Hint({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          aria-label={label}
+          className="text-muted-foreground transition-colors hover:text-foreground"
+        >
+          <Info className="size-3.5" />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent className="text-xs text-muted-foreground">
+        {children}
+      </PopoverContent>
+    </Popover>
+  );
+}
 
 function RulesPage() {
   const rules = useQuery(api.rules.list);
@@ -108,19 +159,31 @@ function RulesPage() {
 
   return (
     <div className="mx-auto flex w-full max-w-3xl flex-col gap-6">
-      <div className="flex items-center justify-between">
+      <div className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Rules</h1>
-          <p className="text-sm text-muted-foreground">
-            Change what a transaction looks like in Notion
+          <p className="flex items-center gap-1.5 text-sm text-muted-foreground">
+            Applied as each transaction syncs, top to bottom — the first match
+            wins.
+            <Hint label="How rules work">
+              <p className="mb-2">
+                Everything the winning rule sets is applied together, and no
+                rule below it is considered.
+              </p>
+              <p>
+                Rows already in Notion take a new rule the next time that
+                transaction syncs — when your bank changes it, or when you
+                re-backfill from the Notion page. Editing a Finny-owned
+                property in Notion does not stick; properties you add yourself
+                are never touched.
+              </p>
+            </Hint>
           </p>
         </div>
         <Button onClick={() => setEditing("new")}>
           <Plus /> New rule
         </Button>
       </div>
-
-      <HowRulesWork />
 
       {rules === undefined ? (
         <Skeleton className="h-40 w-full" />
@@ -145,30 +208,6 @@ function RulesPage() {
   );
 }
 
-function HowRulesWork() {
-  return (
-    <Card className="bg-muted/40">
-      <CardContent className="flex flex-col gap-2 py-4 text-sm text-muted-foreground">
-        <p>
-          Rules are applied as transactions sync. They run top to bottom and{" "}
-          <strong className="font-medium text-foreground">
-            the first rule that matches wins
-          </strong>{" "}
-          — everything it sets is applied together, and no rule below it is
-          considered.
-        </p>
-        <p>
-          Rows already in Notion take a new rule the next time that transaction
-          syncs, which happens when your bank changes it or you re-backfill
-          from the Notion page. Editing a Finny-owned property in Notion (the
-          title, category, amount, date) does not stick: the next sync writes
-          over it. Properties you add yourself are never touched.
-        </p>
-      </CardContent>
-    </Card>
-  );
-}
-
 function EmptyState({ onCreate }: { onCreate: () => void }) {
   return (
     <Card>
@@ -178,9 +217,8 @@ function EmptyState({ onCreate }: { onCreate: () => void }) {
         </div>
         <CardTitle>No rules yet</CardTitle>
         <CardDescription>
-          A rule can put a transaction in a different category, retitle it, or
-          keep it out of Notion — every time it syncs, without touching the
-          row by hand.
+          A rule can recategorise a transaction, retitle it, or keep it out of
+          Notion — every time it syncs.
         </CardDescription>
         <Button className="mx-auto mt-2 w-fit" onClick={onCreate}>
           <Plus /> New rule
@@ -234,6 +272,7 @@ function RuleItem({
   onEdit: () => void;
 }) {
   const update = useMutation(api.rules.update);
+  const create = useMutation(api.rules.create);
   const move = useMutation(api.rules.move);
   const [confirmDelete, setConfirmDelete] = useState(false);
 
@@ -251,6 +290,21 @@ function RuleItem({
     });
   };
 
+  // The way to say "OR across different fields", which the condition list
+  // deliberately cannot: two rules, same outcomes.
+  const handleDuplicate = () => {
+    create({
+      name: `${rule.name} (copy)`,
+      conditions: asStored(rule.conditions),
+      outcomes: rule.outcomes,
+    })
+      .then(() => toast.success("Duplicated — it goes last in the order"))
+      .catch((err: unknown) => {
+        console.error(err);
+        toast.error("Could not duplicate the rule");
+      });
+  };
+
   return (
     <div className="flex items-start gap-3 border-b p-4 last:border-b-0">
       <span className="w-4 pt-0.5 text-sm tabular-nums text-muted-foreground">
@@ -260,7 +314,9 @@ function RuleItem({
         <div className="flex items-center gap-2">
           <span
             className={
-              rule.enabled ? "text-sm font-medium" : "text-sm font-medium text-muted-foreground"
+              rule.enabled
+                ? "text-sm font-medium"
+                : "text-sm font-medium text-muted-foreground"
             }
           >
             {rule.name}
@@ -272,7 +328,7 @@ function RuleItem({
           )}
         </div>
         <p className="text-xs text-muted-foreground">
-          {conditionSummary(rule, accounts)}
+          {conditionSummary(rule.conditions, accounts)}
         </p>
         <div className="flex flex-wrap gap-1.5">
           {rule.outcomes.categoryId ? (
@@ -317,13 +373,20 @@ function RuleItem({
         />
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="icon" aria-label={`More for "${rule.name}"`}>
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label={`More for "${rule.name}"`}
+            >
               <MoreHorizontal />
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
             <DropdownMenuItem onClick={onEdit}>
               <Pencil /> Edit
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={handleDuplicate}>
+              <Copy /> Duplicate
             </DropdownMenuItem>
             <DropdownMenuItem
               variant="destructive"
@@ -344,34 +407,49 @@ function RuleItem({
   );
 }
 
-function conditionSummary(rule: RuleRow, accounts: AccountOption[]): string {
-  const parts: string[] = [];
-  if (rule.conditions.merchant) {
-    parts.push(
-      `merchant ${textOpLabel(rule.conditions.merchant.op)} “${rule.conditions.merchant.value}”`,
-    );
+// One condition as a phrase. Several values inside a condition read as a
+// list, because that is what they are: any one of them matches.
+function conditionPhrase(
+  condition: Condition,
+  accounts: AccountOption[],
+): string {
+  switch (condition.kind) {
+    case "text":
+      return `${FIELD_LABELS[condition.field].toLowerCase()} ${textOpLabel(
+        condition.op,
+        condition.negate,
+      )} ${condition.values.map((value) => `“${value}”`).join(" or ")}`;
+    case "amount":
+      return `amount ${amountOpLabel(condition.op)} ${dollars(condition.value)}`;
+    case "account":
+      return `in ${condition.accountIds
+        .map(
+          (id) =>
+            // A rule outlives the account it named if that bank is removed;
+            // it then matches nothing rather than matching everything.
+            accounts.find((account) => account.id === id)?.label ??
+            "an account that is gone",
+        )
+        .join(" or ")}`;
+    case "category":
+      return `category ${condition.negate ? "is not" : "is"} ${condition.categoryIds
+        .map((id) => (isPfcPrimary(id) ? `any ${pfcLabel(id)}` : pfcLabel(id)))
+        .join(" or ")}`;
+    case "pending":
+      return condition.value ? "still pending" : "already posted";
   }
-  if (rule.conditions.description) {
-    parts.push(
-      `description ${textOpLabel(rule.conditions.description.op)} “${rule.conditions.description.value}”`,
-    );
+}
+
+function conditionSummary(
+  conditions: Condition[],
+  accounts: AccountOption[],
+): string {
+  if (conditions.length === 0) {
+    return "When nothing";
   }
-  if (rule.conditions.amount) {
-    parts.push(
-      `amount ${amountOpLabel(rule.conditions.amount.op)} ${dollars(rule.conditions.amount.value)}`,
-    );
-  }
-  if (rule.conditions.accountId) {
-    const account = accounts.find(
-      (option) => option.id === rule.conditions.accountId,
-    );
-    // A rule outlives the account it named if that bank is removed; it then
-    // matches nothing rather than matching everything.
-    parts.push(account ? `in ${account.label}` : "in an account that is gone");
-  }
-  return parts.length > 1
-    ? `When ${parts.join(" and ")}`
-    : `When ${parts[0] ?? "nothing"}`;
+  return `When ${conditions
+    .map((condition) => conditionPhrase(condition, accounts))
+    .join(" and ")}`;
 }
 
 function DeleteDialog({
@@ -406,12 +484,10 @@ function DeleteDialog({
         <DialogHeader>
           <DialogTitle>Delete "{rule.name}"?</DialogTitle>
           <DialogDescription>
-            Transactions stop being changed by this rule from the next sync
-            onwards. Rows it already wrote keep the category and title it gave
-            them until something makes those transactions sync again
-            {rule.outcomes.hide
-              ? " — and rows it hid stay out of Notion until then too."
-              : "."}
+            Rows it already wrote keep what it gave them until those
+            transactions next sync
+            {rule.outcomes.hide ? ", and rows it hid stay hidden until then" : ""}
+            .
           </DialogDescription>
         </DialogHeader>
         <DialogFooter>
@@ -435,15 +511,21 @@ function DeleteDialog({
   );
 }
 
+// ---------- the builder ----------
+
+// The editing shape. Identical to Condition except that an amount is held as
+// the string the user is typing — "-" and "" are both states a number input
+// passes through on the way to a valid number.
+type DraftCondition =
+  | { kind: "text"; field: TextField; op: TextOp; values: string[]; negate?: boolean }
+  | { kind: "amount"; op: AmountOp; value: string }
+  | { kind: "account"; accountIds: Id<"accounts">[] }
+  | { kind: "category"; categoryIds: string[]; negate?: boolean }
+  | { kind: "pending"; value: boolean };
+
 type Draft = {
   name: string;
-  merchantOp: TextOp | "";
-  merchantValue: string;
-  descriptionOp: TextOp | "";
-  descriptionValue: string;
-  amountOp: AmountOp | "";
-  amountValue: string;
-  accountId: string;
+  conditions: DraftCondition[];
   categoryId: string;
   rename: string;
   hide: boolean;
@@ -452,21 +534,43 @@ type Draft = {
 function draftFrom(rule: RuleRow | null): Draft {
   return {
     name: rule?.name ?? "",
-    merchantOp: rule?.conditions.merchant?.op ?? "",
-    merchantValue: rule?.conditions.merchant?.value ?? "",
-    descriptionOp: rule?.conditions.description?.op ?? "",
-    descriptionValue: rule?.conditions.description?.value ?? "",
-    amountOp: rule?.conditions.amount?.op ?? "",
-    amountValue:
-      rule?.conditions.amount === undefined
-        ? ""
-        : String(rule.conditions.amount.value),
-    accountId: rule?.conditions.accountId ?? "",
+    conditions: asStored(
+      rule?.conditions ?? [
+        { kind: "text", field: "merchant", op: "contains", values: [""] },
+      ],
+    ).map((condition) =>
+      condition.kind === "amount"
+        ? { ...condition, value: String(condition.value) }
+        : condition,
+    ),
     categoryId: rule?.outcomes.categoryId ?? "",
     rename: rule?.outcomes.rename ?? "",
     hide: rule?.outcomes.hide ?? false,
   };
 }
+
+// What the picker offers as a new condition. Only one amount comparison and
+// one status make sense per rule in the common case, but nothing stops two
+// amount conditions — that is how a range is written.
+const CONDITION_KINDS: Array<{ label: string; make: () => DraftCondition }> = [
+  {
+    label: "Merchant",
+    make: () => ({ kind: "text", field: "merchant", op: "contains", values: [""] }),
+  },
+  {
+    label: "Description",
+    make: () => ({
+      kind: "text",
+      field: "description",
+      op: "contains",
+      values: [""],
+    }),
+  },
+  { label: "Amount", make: () => ({ kind: "amount", op: "gt", value: "" }) },
+  { label: "Account", make: () => ({ kind: "account", accountIds: [] }) },
+  { label: "Category", make: () => ({ kind: "category", categoryIds: [] }) },
+  { label: "Status", make: () => ({ kind: "pending", value: true }) },
+];
 
 function RuleDialog({
   rule,
@@ -482,8 +586,19 @@ function RuleDialog({
   const [draft, setDraft] = useState<Draft>(() => draftFrom(rule));
   const [saving, setSaving] = useState(false);
 
-  const set = <K extends keyof Draft>(key: K, value: Draft[K]) =>
-    setDraft((current) => ({ ...current, [key]: value }));
+  const setCondition = (index: number, condition: DraftCondition) =>
+    setDraft((current) => ({
+      ...current,
+      conditions: current.conditions.map((existing, position) =>
+        position === index ? condition : existing,
+      ),
+    }));
+
+  const removeCondition = (index: number) =>
+    setDraft((current) => ({
+      ...current,
+      conditions: current.conditions.filter((_, position) => position !== index),
+    }));
 
   const handleSave = () => {
     const built = buildRule(draft, accounts);
@@ -509,13 +624,9 @@ function RuleDialog({
 
   return (
     <Dialog open onOpenChange={(open) => (open ? null : onClose())}>
-      <DialogContent className="max-h-[85vh] overflow-y-auto">
+      <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>{rule ? "Edit rule" : "New rule"}</DialogTitle>
-          <DialogDescription>
-            A transaction has to meet every condition you set for the rule to
-            apply.
-          </DialogDescription>
         </DialogHeader>
 
         <div className="flex flex-col gap-5">
@@ -525,94 +636,48 @@ function RuleDialog({
               id="rule-name"
               placeholder="Coffee runs"
               value={draft.name}
-              onChange={(event) => set("name", event.target.value)}
+              onChange={(event) =>
+                setDraft((current) => ({ ...current, name: event.target.value }))
+              }
             />
           </div>
 
-          <div className="flex flex-col gap-3">
-            <Label>When a transaction…</Label>
-
-            <TextConditionRow
-              id="rule-merchant"
-              label="Merchant"
-              hint="Plaid's cleaned merchant name, or the bank's description when there is none — the same text Finny puts in the Notion title."
-              op={draft.merchantOp}
-              value={draft.merchantValue}
-              onOpChange={(op) => set("merchantOp", op)}
-              onValueChange={(value) => set("merchantValue", value)}
-            />
-
-            <TextConditionRow
-              id="rule-description"
-              label="Original description"
-              hint="The raw string from your bank, as synced to Original Description."
-              op={draft.descriptionOp}
-              value={draft.descriptionValue}
-              onOpChange={(op) => set("descriptionOp", op)}
-              onValueChange={(value) => set("descriptionValue", value)}
-            />
-
-            <div className="flex flex-col gap-1.5">
-              <div className="flex gap-2">
-                <select
-                  aria-label="Amount comparison"
-                  className={`${selectClass} w-40`}
-                  value={draft.amountOp}
-                  onChange={(event) =>
-                    set("amountOp", event.target.value as AmountOp | "")
-                  }
-                >
-                  <option value="">Any amount</option>
-                  {AMOUNT_OPS.map((entry) => (
-                    <option key={entry.value} value={entry.value}>
-                      Amount {entry.label}
-                    </option>
-                  ))}
-                </select>
-                <Input
-                  aria-label="Amount"
-                  type="number"
-                  step="0.01"
-                  placeholder="25"
-                  disabled={draft.amountOp === ""}
-                  value={draft.amountValue}
-                  onChange={(event) => set("amountValue", event.target.value)}
+          <div className="flex flex-col gap-2">
+            <Label>If a transaction matches all of</Label>
+            <div className="flex flex-col gap-2">
+              {draft.conditions.map((condition, index) => (
+                <ConditionRow
+                  key={index}
+                  condition={condition}
+                  accounts={accounts}
+                  onChange={(next) => setCondition(index, next)}
+                  onRemove={() => removeCondition(index)}
                 />
-              </div>
-              <p className="text-xs text-muted-foreground">
-                Money leaving the account is positive here, so{" "}
-                <code>more than 50</code> means spending over $50 and{" "}
-                <code>less than 0</code> catches refunds and deposits. The
-                Notion Amount column shows the same transaction with the sign
-                flipped.
-              </p>
+              ))}
             </div>
-
-            <div className="flex flex-col gap-1.5">
-              <select
-                aria-label="Account"
-                className={styledSelect}
-                value={draft.accountId}
-                onChange={(event) => set("accountId", event.target.value)}
-              >
-                <option value="">In any account</option>
-                {accounts.map((account) => (
-                  <option key={account.id} value={account.id}>
-                    In {account.label}
-                  </option>
-                ))}
-              </select>
-            </div>
+            <AddCondition
+              onAdd={(condition) =>
+                setDraft((current) => ({
+                  ...current,
+                  conditions: [...current.conditions, condition],
+                }))
+              }
+            />
           </div>
 
-          <div className="flex flex-col gap-3">
-            <Label>…then</Label>
+          <div className="flex flex-col gap-2">
+            <Label>Then</Label>
 
             <select
               aria-label="Category"
-              className={styledSelect}
+              className={`${selectClass} w-full`}
               value={draft.categoryId}
-              onChange={(event) => set("categoryId", event.target.value)}
+              onChange={(event) =>
+                setDraft((current) => ({
+                  ...current,
+                  categoryId: event.target.value,
+                }))
+              }
             >
               <option value="">Keep the category Plaid chose</option>
               {PFC_GROUPS.map((group) => (
@@ -626,36 +691,45 @@ function RuleDialog({
               ))}
             </select>
 
-            <div className="flex flex-col gap-1.5">
+            <div className="flex items-center gap-2">
               <Input
                 aria-label="Title in Notion"
-                placeholder="Leave the merchant name as the title"
+                placeholder="Keep the merchant name as the title"
                 value={draft.rename}
-                onChange={(event) => set("rename", event.target.value)}
+                onChange={(event) =>
+                  setDraft((current) => ({
+                    ...current,
+                    rename: event.target.value,
+                  }))
+                }
               />
-              <p className="text-xs text-muted-foreground">
+              <Hint label="About renaming">
                 Renaming changes the Notion title only. Original Description
                 keeps whatever your bank sent.
-              </p>
+              </Hint>
             </div>
 
-            <div className="flex items-start gap-3 rounded-md border p-3">
-              <div className="flex-1">
-                <div className="text-sm">Keep out of Notion</div>
-                <p className="text-xs text-muted-foreground">
-                  Matching transactions get no row. One that is already in
-                  Notion is archived the next time it syncs, and Finny forgets
-                  it — turning this back off brings the row back only when the
-                  transaction next changes at your bank.
-                </p>
+            <div className="flex items-center gap-3 rounded-md border px-3 py-2.5">
+              <div className="flex flex-1 items-center gap-1.5">
+                <span className="text-sm">Keep out of Notion</span>
+                <Hint label="About keeping transactions out of Notion">
+                  No row is created, and a row that already exists is archived
+                  on its next sync. Finny then forgets it, so turning this back
+                  off only brings the row back when the transaction next
+                  changes at your bank.
+                </Hint>
               </div>
               <Switch
                 checked={draft.hide}
                 aria-label="Keep out of Notion"
-                onCheckedChange={(checked) => set("hide", checked)}
+                onCheckedChange={(checked) =>
+                  setDraft((current) => ({ ...current, hide: checked }))
+                }
               />
             </div>
           </div>
+
+          <RuleTester draft={draft} accounts={accounts} />
         </div>
 
         <DialogFooter>
@@ -671,62 +745,492 @@ function RuleDialog({
   );
 }
 
-function TextConditionRow({
-  id,
-  label,
-  hint,
-  op,
-  value,
-  onOpChange,
-  onValueChange,
+function AddCondition({ onAdd }: { onAdd: (condition: DraftCondition) => void }) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button variant="outline" size="sm" className="w-fit">
+          <Plus /> Add condition
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start">
+        {CONDITION_KINDS.map((kind) => (
+          <DropdownMenuItem key={kind.label} onClick={() => onAdd(kind.make())}>
+            {kind.label}
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+function ConditionRow({
+  condition,
+  accounts,
+  onChange,
+  onRemove,
 }: {
-  id: string;
-  label: string;
-  hint: string;
-  op: TextOp | "";
-  value: string;
-  onOpChange: (op: TextOp | "") => void;
-  onValueChange: (value: string) => void;
+  condition: DraftCondition;
+  accounts: AccountOption[];
+  onChange: (condition: DraftCondition) => void;
+  onRemove: () => void;
 }) {
   return (
-    <div className="flex flex-col gap-1.5">
-      <div className="flex gap-2">
-        <select
-          aria-label={`${label} comparison`}
-          className={`${selectClass} w-40`}
-          value={op}
-          onChange={(event) => onOpChange(event.target.value as TextOp | "")}
+    <div className="flex flex-col gap-1.5 rounded-md border p-2">
+      <div className="flex items-start gap-2">
+        <div className="flex flex-1 flex-wrap items-center gap-2">
+          <ConditionFields
+            condition={condition}
+            accounts={accounts}
+            onChange={onChange}
+          />
+        </div>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="size-8 shrink-0 text-muted-foreground"
+          aria-label="Remove condition"
+          onClick={onRemove}
         >
-          <option value="">Any {label.toLowerCase()}</option>
-          {TEXT_OPS.map((entry) => (
-            <option key={entry.value} value={entry.value}>
-              {label} {entry.label}
-            </option>
-          ))}
-        </select>
-        <Input
-          id={id}
-          aria-label={label}
-          placeholder={op === "regex" ? "^SQ \\*" : "blue bottle"}
-          disabled={op === ""}
-          value={value}
-          onChange={(event) => onValueChange(event.target.value)}
-        />
+          <X className="size-3.5" />
+        </Button>
       </div>
-      <p className="text-xs text-muted-foreground">{hint}</p>
+      {condition.kind === "amount" ? (
+        // The one hint that has to stay inline: it silently inverts meaning.
+        <p className="text-xs text-muted-foreground">
+          Money out is positive here — the Notion column shows the opposite
+          sign.
+        </p>
+      ) : null}
     </div>
   );
 }
 
-type RuleArgs = {
-  name: string;
-  conditions: RuleRow["conditions"];
-  outcomes: RuleRow["outcomes"];
-};
+function ConditionFields({
+  condition,
+  accounts,
+  onChange,
+}: {
+  condition: DraftCondition;
+  accounts: AccountOption[];
+  onChange: (condition: DraftCondition) => void;
+}) {
+  switch (condition.kind) {
+    case "text":
+      return (
+        <>
+          <select
+            aria-label="Field"
+            className={`${selectClass} w-36`}
+            value={condition.field}
+            onChange={(event) =>
+              onChange({ ...condition, field: event.target.value as TextField })
+            }
+          >
+            <option value="merchant">Merchant</option>
+            <option value="description">Description</option>
+          </select>
+          <select
+            aria-label="Comparison"
+            className={`${selectClass} w-44`}
+            value={`${condition.op}${condition.negate ? ":not" : ""}`}
+            onChange={(event) => {
+              const [op, not] = event.target.value.split(":");
+              onChange({
+                ...condition,
+                op: op as TextOp,
+                negate: not === "not" ? true : undefined,
+              });
+            }}
+          >
+            {TEXT_OPS.map((entry) => (
+              <option key={entry.value} value={entry.value}>
+                {entry.label}
+              </option>
+            ))}
+            {TEXT_OPS.map((entry) => (
+              <option key={`${entry.value}:not`} value={`${entry.value}:not`}>
+                {entry.not}
+              </option>
+            ))}
+          </select>
+          <Hint label="About merchant and description">
+            <p className="mb-2">
+              <strong className="text-foreground">Merchant</strong> is Plaid's
+              cleaned name, falling back to the bank's description — the same
+              text Finny puts in the Notion title.
+            </p>
+            <p>
+              <strong className="text-foreground">Description</strong> is the
+              raw string from your bank, as synced to Original Description.
+            </p>
+          </Hint>
+          <div className="flex w-full flex-col gap-1.5">
+            {condition.values.map((value, index) => (
+              <div key={index} className="flex items-center gap-2">
+                <Input
+                  aria-label={`Text to match${index > 0 ? ` (or ${index + 1})` : ""}`}
+                  placeholder={condition.op === "regex" ? "^SQ \\*" : "blue bottle"}
+                  value={value}
+                  onChange={(event) =>
+                    onChange({
+                      ...condition,
+                      values: condition.values.map((existing, position) =>
+                        position === index ? event.target.value : existing,
+                      ),
+                    })
+                  }
+                />
+                {condition.values.length > 1 ? (
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="size-8 shrink-0 text-muted-foreground"
+                    aria-label="Remove this value"
+                    onClick={() =>
+                      onChange({
+                        ...condition,
+                        values: condition.values.filter(
+                          (_, position) => position !== index,
+                        ),
+                      })
+                    }
+                  >
+                    <X className="size-3.5" />
+                  </Button>
+                ) : null}
+              </div>
+            ))}
+            <button
+              type="button"
+              className="w-fit text-xs text-muted-foreground underline underline-offset-4"
+              onClick={() =>
+                onChange({ ...condition, values: [...condition.values, ""] })
+              }
+            >
+              + or
+            </button>
+          </div>
+        </>
+      );
+    case "amount":
+      return (
+        <>
+          <span className="text-sm">Amount</span>
+          <select
+            aria-label="Amount comparison"
+            className={`${selectClass} w-44`}
+            value={condition.op}
+            onChange={(event) =>
+              onChange({ ...condition, op: event.target.value as AmountOp })
+            }
+          >
+            {AMOUNT_OPS.map((entry) => (
+              <option key={entry.value} value={entry.value}>
+                {entry.label}
+              </option>
+            ))}
+          </select>
+          <Input
+            aria-label="Amount"
+            type="number"
+            step="0.01"
+            placeholder="25"
+            className="w-32"
+            value={condition.value}
+            onChange={(event) =>
+              onChange({ ...condition, value: event.target.value })
+            }
+          />
+        </>
+      );
+    case "account":
+      return (
+        <>
+          <span className="text-sm">In</span>
+          <Chips
+            values={condition.accountIds}
+            label={(id) =>
+              accounts.find((account) => account.id === id)?.label ??
+              "an account that is gone"
+            }
+            onRemove={(id) =>
+              onChange({
+                ...condition,
+                accountIds: condition.accountIds.filter(
+                  (existing) => existing !== id,
+                ),
+              })
+            }
+          />
+          <select
+            aria-label="Add an account"
+            className={`${selectClass} w-full`}
+            value=""
+            onChange={(event) =>
+              onChange({
+                ...condition,
+                accountIds: [
+                  ...condition.accountIds,
+                  event.target.value as Id<"accounts">,
+                ],
+              })
+            }
+          >
+            <option value="">Add an account…</option>
+            {accounts
+              .filter((account) => !condition.accountIds.includes(account.id))
+              .map((account) => (
+                <option key={account.id} value={account.id}>
+                  {account.label}
+                </option>
+              ))}
+          </select>
+        </>
+      );
+    case "category":
+      return (
+        <>
+          <span className="text-sm">Category</span>
+          <select
+            aria-label="Category comparison"
+            className={`${selectClass} w-28`}
+            value={condition.negate ? "not" : "is"}
+            onChange={(event) =>
+              onChange({
+                ...condition,
+                negate: event.target.value === "not" ? true : undefined,
+              })
+            }
+          >
+            <option value="is">is</option>
+            <option value="not">is not</option>
+          </select>
+          <Chips
+            values={condition.categoryIds}
+            label={(id) => (isPfcPrimary(id) ? `any ${pfcLabel(id)}` : pfcLabel(id))}
+            onRemove={(id) =>
+              onChange({
+                ...condition,
+                categoryIds: condition.categoryIds.filter(
+                  (existing) => existing !== id,
+                ),
+              })
+            }
+          />
+          <select
+            aria-label="Add a category"
+            className={`${selectClass} w-full`}
+            value=""
+            onChange={(event) =>
+              onChange({
+                ...condition,
+                categoryIds: [...condition.categoryIds, event.target.value],
+              })
+            }
+          >
+            <option value="">Add a category…</option>
+            {PFC_GROUPS.map((group) => (
+              <optgroup key={group.primary} label={group.label}>
+                {/* Naming the group is usually what people mean, and it keeps
+                    working when Plaid adds a category under it. */}
+                <option value={group.primary}>Any {group.label}</option>
+                {group.categories.map((category) => (
+                  <option key={category.id} value={category.id}>
+                    {category.label}
+                  </option>
+                ))}
+              </optgroup>
+            ))}
+          </select>
+        </>
+      );
+    case "pending":
+      return (
+        <>
+          <span className="text-sm">Transaction is</span>
+          <select
+            aria-label="Pending status"
+            className={`${selectClass} w-40`}
+            value={condition.value ? "pending" : "posted"}
+            onChange={(event) =>
+              onChange({ ...condition, value: event.target.value === "pending" })
+            }
+          >
+            <option value="pending">still pending</option>
+            <option value="posted">already posted</option>
+          </select>
+        </>
+      );
+  }
+}
+
+function Chips<T extends string>({
+  values,
+  label,
+  onRemove,
+}: {
+  values: T[];
+  label: (value: T) => string;
+  onRemove: (value: T) => void;
+}) {
+  if (values.length === 0) {
+    return null;
+  }
+  return (
+    <div className="flex w-full flex-wrap gap-1.5">
+      {values.map((value) => (
+        <Badge key={value} variant="secondary" className="gap-1 font-normal">
+          {label(value)}
+          <button
+            type="button"
+            aria-label={`Remove ${label(value)}`}
+            onClick={() => onRemove(value)}
+            className="text-muted-foreground transition-colors hover:text-foreground"
+          >
+            <X className="size-3" />
+          </button>
+        </Badge>
+      ))}
+    </div>
+  );
+}
+
+// ---------- the tester ----------
+
+// The engine is pure and has no Convex imports, so the same code the sync runs
+// answers "what would this do" right here — no round trip, and nothing about
+// the sample is ever sent anywhere or stored.
+function RuleTester({
+  draft,
+  accounts,
+}: {
+  draft: Draft;
+  accounts: AccountOption[];
+}) {
+  const [open, setOpen] = useState(false);
+  const [merchant, setMerchant] = useState("");
+  const [amount, setAmount] = useState("");
+
+  const verdict = useMemo(() => {
+    const built = buildRule(draft, accounts);
+    if ("error" in built) {
+      return { kind: "incomplete" as const, message: built.error };
+    }
+    if (!merchant.trim() && !amount.trim()) {
+      return null;
+    }
+    const parsed = Number(amount);
+    const match = evaluate(
+      [
+        {
+          id: "draft",
+          priority: 0,
+          enabled: true,
+          conditions: built.value.conditions,
+          outcomes: built.value.outcomes,
+        },
+      ],
+      {
+        merchant: merchant || null,
+        description: merchant || null,
+        amount: Number.isFinite(parsed) ? parsed : 0,
+        // A sample cannot stand in for an account or a Plaid category, so a
+        // rule that asks about either will not match one. Said plainly below
+        // rather than pretended around.
+        accountId: undefined,
+        category: null,
+        pending: false,
+      },
+    );
+    return { kind: "ran" as const, match };
+  }, [draft, accounts, merchant, amount]);
+
+  const untestable = draft.conditions.some(
+    (condition) => condition.kind === "account" || condition.kind === "category",
+  );
+
+  return (
+    <div className="flex flex-col gap-2 border-t pt-4">
+      <button
+        type="button"
+        className="w-fit text-sm text-muted-foreground underline underline-offset-4"
+        onClick={() => setOpen((current) => !current)}
+      >
+        {open ? "Hide the test" : "Try it on an example"}
+      </button>
+      {open ? (
+        <div className="flex flex-col gap-2">
+          <div className="flex flex-wrap gap-2">
+            <Input
+              aria-label="Example merchant"
+              placeholder="BLUE BOTTLE COFFEE"
+              value={merchant}
+              onChange={(event) => setMerchant(event.target.value)}
+            />
+            <Input
+              aria-label="Example amount"
+              type="number"
+              step="0.01"
+              placeholder="6.50"
+              className="w-32"
+              value={amount}
+              onChange={(event) => setAmount(event.target.value)}
+            />
+          </div>
+          {verdict === null ? null : verdict.kind === "incomplete" ? (
+            <p className="text-xs text-muted-foreground">{verdict.message}</p>
+          ) : verdict.match ? (
+            <p className="text-xs">
+              <span className="font-medium text-foreground">Matches</span>
+              <span className="text-muted-foreground">
+                {" "}
+                — {outcomeSummary(verdict.match)}
+              </span>
+            </p>
+          ) : (
+            <p className="text-xs text-muted-foreground">No match.</p>
+          )}
+          {untestable ? (
+            <p className="text-xs text-muted-foreground">
+              Account and category conditions are not part of the example, so a
+              rule using one will not match here.
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function outcomeSummary(outcomes: {
+  categoryId?: string;
+  rename?: string;
+  hide?: boolean;
+}): string {
+  if (outcomes.hide) {
+    return "kept out of Notion";
+  }
+  const parts: string[] = [];
+  if (outcomes.categoryId) {
+    parts.push(`category becomes ${pfcLabel(outcomes.categoryId)}`);
+  }
+  if (outcomes.rename) {
+    parts.push(`title becomes “${outcomes.rename}”`);
+  }
+  return parts.join(", ") || "nothing changes";
+}
+
+// ---------- draft -> mutation args ----------
+
+// Taken from the mutation rather than restated, so the account ids stay the
+// branded Id the server expects — the engine's own Condition keeps them as
+// plain strings to stay independent of the data model.
+type RuleArgs = FunctionArgs<typeof api.rules.create>;
 
 // Turn the form into mutation arguments, or say what is missing. The same
 // checks run on the server (convex/rules.ts); doing them here is what makes
-// the message specific.
+// the message specific — and what lets the tester run against a draft.
 function buildRule(
   draft: Draft,
   accounts: AccountOption[],
@@ -736,47 +1240,63 @@ function buildRule(
     return { error: "Give the rule a name" };
   }
 
-  const conditions: RuleArgs["conditions"] = {};
-  for (const [op, value, key] of [
-    [draft.merchantOp, draft.merchantValue, "merchant"],
-    [draft.descriptionOp, draft.descriptionValue, "description"],
-  ] as Array<[TextOp | "", string, "merchant" | "description"]>) {
-    if (op === "") {
-      continue;
-    }
-    const text = value.trim();
-    if (!text) {
-      return { error: `Fill in the ${key} to match, or set it back to any` };
-    }
-    if (op === "regex") {
-      try {
-        new RegExp(text);
-      } catch {
-        return { error: `“${text}” is not a valid regular expression` };
+  const conditions: RuleArgs["conditions"] = [];
+  for (const condition of draft.conditions) {
+    switch (condition.kind) {
+      case "text": {
+        const values = condition.values
+          .map((value) => value.trim())
+          .filter(Boolean);
+        if (values.length === 0) {
+          return { error: "Fill in the text to match, or remove that condition" };
+        }
+        if (condition.op === "regex") {
+          for (const value of values) {
+            try {
+              new RegExp(value);
+            } catch {
+              return { error: `“${value}” is not a valid regular expression` };
+            }
+          }
+        }
+        conditions.push({ ...condition, values });
+        break;
       }
+      case "amount": {
+        const value = Number(condition.value);
+        if (condition.value.trim() === "" || !Number.isFinite(value)) {
+          return { error: "Fill in an amount to compare against" };
+        }
+        conditions.push({ kind: "amount", op: condition.op, value });
+        break;
+      }
+      case "account": {
+        const accountIds = condition.accountIds.filter((id) =>
+          accounts.some((account) => account.id === id),
+        );
+        if (accountIds.length === 0) {
+          return { error: "Pick an account, or remove that condition" };
+        }
+        conditions.push({ kind: "account", accountIds });
+        break;
+      }
+      case "category": {
+        if (condition.categoryIds.length === 0) {
+          return { error: "Pick a category, or remove that condition" };
+        }
+        conditions.push(condition);
+        break;
+      }
+      case "pending":
+        conditions.push(condition);
+        break;
     }
-    conditions[key] = { op, value: text };
   }
 
-  if (draft.amountOp !== "") {
-    const amount = Number(draft.amountValue);
-    if (draft.amountValue.trim() === "" || !Number.isFinite(amount)) {
-      return { error: "Fill in an amount to compare against" };
-    }
-    conditions.amount = { op: draft.amountOp, value: amount };
-  }
-
-  if (draft.accountId) {
-    const account = accounts.find((option) => option.id === draft.accountId);
-    if (!account) {
-      return { error: "Pick an account that still exists" };
-    }
-    conditions.accountId = account.id;
-  }
-
-  if (Object.keys(conditions).length === 0) {
+  if (conditions.length === 0) {
     return {
-      error: "Add at least one condition — a rule with none would match every transaction",
+      error:
+        "Add at least one condition — a rule with none would match every transaction",
     };
   }
 
@@ -792,7 +1312,9 @@ function buildRule(
     outcomes.hide = true;
   }
   if (Object.keys(outcomes).length === 0) {
-    return { error: "Choose what the rule should do: a category, a title, or hide it" };
+    return {
+      error: "Choose what the rule should do: a category, a title, or hide it",
+    };
   }
 
   return { value: { name, conditions, outcomes } };
