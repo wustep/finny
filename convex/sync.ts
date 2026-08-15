@@ -104,7 +104,7 @@ async function loadContext(
 
 // ---------- failure handling ----------
 
-// Note that a Plaid failure was the Item's fault, not a passing one.
+// Does this failure mean the Item needs its owner, rather than another try?
 //
 // A sync is where most broken Items are actually discovered: Plaid's ITEM
 // ERROR webhook covers some cases, arrives late for others, and never arrives
@@ -114,24 +114,8 @@ async function loadContext(
 //
 // Transient codes — rate limits, institution outages, 5xx — are deliberately
 // not marked: a reconnect fixes none of them, and the next run will work.
-async function noteItemBroken(
-  ctx: ActionCtx,
-  connectionId: Id<"bankConnections">,
-  error: unknown,
-): Promise<void> {
-  const info = plaidErrorInfo(error);
-  if (!info.itemBroken) {
-    return;
-  }
-  await ctx.runMutation(internal.connections.markItemBroken, {
-    connectionId,
-    errorCode: info.code,
-  });
-  // The Notion Bank Connections row says Active until something tells it
-  // otherwise, and no sync will run to correct it while the Item is broken.
-  await ctx.scheduler.runAfter(0, internal.sync.pushConnectionStatusToNotion, {
-    connectionId,
-  });
+function itemIsBroken(error: unknown): boolean {
+  return plaidErrorInfo(error).itemBroken;
 }
 
 // End a run in error, saying what actually went wrong.
@@ -141,6 +125,12 @@ async function noteItemBroken(
 // Plaid's error_code and error_message are on the response body, so a Plaid
 // failure is unwrapped; anything else (a Notion write, a bug here) keeps its
 // own message behind a note of which stage it came from.
+//
+// This is the only place a connection is marked broken, and it always fails
+// the run at the same time. Marking without failing would be undone within the
+// same run: finishRun's success path forces the connection back to active, so
+// a stage that marked the Item and let the chain carry on would leave the card
+// flipping between "needs attention" and "active" once a day.
 async function failRun(
   ctx: ActionCtx,
   input: {
@@ -151,7 +141,19 @@ async function failRun(
   },
 ): Promise<void> {
   const info = plaidErrorInfo(input.error);
-  await noteItemBroken(ctx, input.connectionId, input.error);
+  if (info.itemBroken) {
+    await ctx.runMutation(internal.connections.markItemBroken, {
+      connectionId: input.connectionId,
+      errorCode: info.code,
+    });
+    // The Notion Bank Connections row says Active until something tells it
+    // otherwise, and no sync will run to correct it while the Item is broken.
+    await ctx.scheduler.runAfter(
+      0,
+      internal.sync.pushConnectionStatusToNotion,
+      { connectionId: input.connectionId },
+    );
+  }
   await ctx.runMutation(internal.syncData.finishRun, {
     runId: input.runId,
     status: "error",
@@ -582,16 +584,24 @@ export const accountBackfill = internalAction({
           },
         });
       } catch (error: any) {
-        // Nothing here has consumed a cursor, so a failed catch-up costs
-        // only this attempt: keep the flag and let a later run retry. The
-        // Item still gets marked if the reason was the Item — the rest of
-        // this run would only fail the same way.
         console.error(
           "account catch-up failed",
           args.plaidAccountId,
           plaidErrorInfo(error).message,
         );
-        await noteItemBroken(ctx, args.connectionId, error);
+        if (itemIsBroken(error)) {
+          // Every stage after this one talks to the same Item and will hit
+          // the same wall, so there is nothing to carry on to.
+          await failRun(ctx, {
+            runId: args.runId,
+            connectionId: args.connectionId,
+            stage: "Account catch-up",
+            error,
+          });
+          return;
+        }
+        // Nothing here has consumed a cursor, so a passing failure costs only
+        // this attempt: keep the flag and let a later run retry.
         await moveOn();
         return;
       }
@@ -1890,12 +1900,14 @@ async function syncHoldings(
       access_token: connection.accessToken,
     });
   } catch (error: any) {
-    // Holdings are optional — a cash-only Item simply has none — so this
-    // never fails the run. An Item that is broken rather than uninterested
-    // still gets marked, since the stages after this one will hit the same
-    // wall and the user needs the reconnect either way.
+    // Holdings are optional — a cash-only Item simply has none — so an Item
+    // that merely does not offer them is not a failure. One that is broken is
+    // the caller's problem: rethrowing puts it through failRun, which is what
+    // marks the connection and stops the chain.
     console.log("holdings unavailable", plaidErrorInfo(error).message);
-    await noteItemBroken(ctx, connection._id, error);
+    if (itemIsBroken(error)) {
+      throw error;
+    }
     return;
   }
 

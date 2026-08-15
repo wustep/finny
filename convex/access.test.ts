@@ -128,3 +128,72 @@ test("hasAccessInternal is false before the password is redeemed", async () => {
     await t.query(internal.access.hasAccessInternal, { userId }),
   ).toBe(false);
 });
+
+test("a ban lifts on its own once it has served its time", async () => {
+  const { t, asUser } = await signedIn();
+  for (let attempt = 0; attempt < 3; attempt++) {
+    await asUser.mutation(internal.access.attemptRedeem, {
+      ip: IP,
+      password: "wrong",
+    });
+  }
+  expect(
+    await asUser.mutation(internal.access.attemptRedeem, {
+      ip: IP,
+      password: PASSWORD,
+    }),
+  ).toBe("banned");
+
+  // Reach back past the ban window rather than waiting a day for it.
+  await t.run(async (ctx) => {
+    const row = await ctx.db
+      .query("accessAttempts")
+      .withIndex("by_ip", (q) => q.eq("ip", IP))
+      .unique();
+    await ctx.db.patch(row!._id, {
+      bannedAt: Date.now() - 25 * 60 * 60 * 1000,
+    });
+  });
+
+  expect(
+    await asUser.mutation(internal.access.attemptRedeem, {
+      ip: IP,
+      password: PASSWORD,
+    }),
+  ).toBe("ok");
+});
+
+test("an expired ban starts the count again rather than re-banning at once", async () => {
+  const { t, asUser } = await signedIn();
+  for (let attempt = 0; attempt < 3; attempt++) {
+    await asUser.mutation(internal.access.attemptRedeem, {
+      ip: IP,
+      password: "wrong",
+    });
+  }
+  await t.run(async (ctx) => {
+    const row = await ctx.db
+      .query("accessAttempts")
+      .withIndex("by_ip", (q) => q.eq("ip", IP))
+      .unique();
+    await ctx.db.patch(row!._id, {
+      bannedAt: Date.now() - 25 * 60 * 60 * 1000,
+    });
+  });
+
+  // One wrong guess after the expiry is one wrong guess, not the fourth.
+  expect(
+    await asUser.mutation(internal.access.attemptRedeem, {
+      ip: IP,
+      password: "wrong",
+    }),
+  ).toBe("wrong");
+  const row = await t.run(async (ctx) =>
+    ctx.db
+      .query("accessAttempts")
+      .withIndex("by_ip", (q) => q.eq("ip", IP))
+      .unique(),
+  );
+  expect(row?.failures).toBe(1);
+  expect(row?.bannedAt).toBeUndefined();
+});

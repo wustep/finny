@@ -870,6 +870,20 @@ const RUN_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 // account-deletion scan has to page through.
 const OAUTH_STATE_RETENTION_MS = 60 * 60 * 1000;
 
+// How long a balance-snapshot page id is worth keeping.
+//
+// Its key is `${accountId}|${YYYY-MM-DD}` and the only date a sync ever looks
+// up is today's, so a row for a past day is never read again — it exists only
+// to stop the same day being written twice. The window is generous because
+// the cost of being wrong is a duplicate row in Balance History, and days
+// this old have long since settled.
+const BALANCE_SNAPSHOT_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
+
+// How long an access-password attempt record outlives its last attempt. Also
+// the ban duration — see ACCESS_BAN_MS in access.ts, which is what actually
+// enforces it; this only clears the row afterwards.
+const ACCESS_ATTEMPT_RETENTION_MS = 24 * 60 * 60 * 1000;
+
 // Rows one retention pass deletes, per table. Bounded so the daily sweep stays
 // inside one transaction; a backlog drains over consecutive days.
 const RETENTION_BATCH = 500;
@@ -912,7 +926,49 @@ export const pruneHistory = internalMutation({
       await ctx.db.delete(state._id);
     }
 
-    return { runs: deletedRuns, oauthStates: states.length };
+    // Balance-snapshot page ids for days gone by. This is the only kind in
+    // notionPageMap that grows forever with nothing left to read it: a
+    // transaction's id may come back from Plaid at any time, but a snapshot
+    // key names a date, and a sync only ever asks about today.
+    const snapshots = await ctx.db
+      .query("notionPageMap")
+      .withIndex("by_kind", (q) =>
+        q
+          .eq("kind", "balanceSnapshot")
+          .lt("_creationTime", now - BALANCE_SNAPSHOT_RETENTION_MS),
+      )
+      .take(RETENTION_BATCH);
+    for (const snapshot of snapshots) {
+      await ctx.db.delete(snapshot._id);
+    }
+
+    // Attempt records that have been quiet for a day. Deleting one both frees
+    // the row and lifts its ban, which is the point: a ban that only a
+    // dashboard visit can lift is a way to lock yourself out of your own app
+    // from a hotel network.
+    const attempts = await ctx.db
+      .query("accessAttempts")
+      .withIndex("by_creation_time", (q) =>
+        q.lt("_creationTime", now - ACCESS_ATTEMPT_RETENTION_MS),
+      )
+      .take(RETENTION_BATCH);
+    let deletedAttempts = 0;
+    for (const attempt of attempts) {
+      // Creation time only says when the IP first showed up; a row still
+      // being tried against is one to keep.
+      if (now - attempt.lastAttemptAt < ACCESS_ATTEMPT_RETENTION_MS) {
+        continue;
+      }
+      await ctx.db.delete(attempt._id);
+      deletedAttempts++;
+    }
+
+    return {
+      runs: deletedRuns,
+      oauthStates: states.length,
+      balanceSnapshots: snapshots.length,
+      accessAttempts: deletedAttempts,
+    };
   },
 });
 

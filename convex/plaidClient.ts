@@ -57,7 +57,6 @@ const ITEM_BROKEN_CODES: ReadonlySet<string> = new Set([
   "INSUFFICIENT_CREDENTIALS",
   "USER_PERMISSION_REVOKED",
   "ACCESS_NOT_GRANTED",
-  "NO_ACCOUNTS",
 ]);
 
 export interface PlaidErrorInfo {

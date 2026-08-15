@@ -68,7 +68,9 @@ the right side of that line.
   15s stagger and its creation-time cursor through the continuation. Before it
   schedules anything it closes out stale runs and then prunes history
   (`syncData.pruneHistory`: finished runs past 30 days, OAuth states past an
-  hour) — in that order, so a run the sweep just failed is never also deleted.
+  hour, balance-snapshot map rows past 90 days — the one map kind nothing
+  reads again — and access attempts quiet for a day, which is also what lifts
+  their ban) — in that order, so a run the sweep just failed is never also deleted.
 - A failed run says what failed: every catch goes through `failRun`, which
   unwraps Plaid's `error_code`/`error_message` (`plaidErrorInfo` in
   `plaidClient.ts`) instead of letting `String(error)` write "Request failed
@@ -76,7 +78,11 @@ the right side of that line.
   `error` and mirror that to Notion, because a sync is where most broken Items
   are found and the ITEM ERROR webhook does not cover every case. Transient
   codes (rate limits, institution outages, 5xx) must stay out of that set — a
-  reconnect fixes none of them.
+  reconnect fixes none of them. `failRun` is the only thing that marks a
+  connection, and it always fails the run in the same breath: `finishRun`'s
+  success path forces the connection back to `active`, so a stage that marked
+  the Item and let the chain carry on would flip the card between states once
+  a day.
 - Pending → posted: when an added transaction carries a
   `pending_transaction_id` that is already mapped, update that page and
   `syncData.rekeyMapEntry` to the posted id. Never create a second page.
