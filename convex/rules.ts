@@ -21,16 +21,18 @@ import {
   isLegacyConditions,
   isPfcCategory,
   isPfcPrimary,
+  normalizeActions,
   normalizeConditions,
+  type Action,
   type Condition,
   type Rule,
 } from "./rulesEngine";
-import { ruleConditionValidator, ruleOutcomesValidator } from "./schema";
+import { ruleActionValidator, ruleConditionValidator } from "./schema";
 
 // The engine's condition types keep ids as plain strings so it stays
 // independent of the data model; stored rules use the real `Id<"accounts">`.
-type StoredOutcomes = Doc<"rules">["outcomes"];
 type StoredCondition = Infer<typeof ruleConditionValidator>;
+type StoredAction = Infer<typeof ruleActionValidator>;
 
 // The engine keeps account ids as plain strings, on purpose — it is pure and
 // knows nothing about the data model. The table stores branded ids, and every
@@ -38,6 +40,11 @@ type StoredCondition = Infer<typeof ruleConditionValidator>;
 // One named cast at that seam beats one at every write.
 function asStored(conditions: Condition[]): StoredCondition[] {
   return conditions as StoredCondition[];
+}
+
+// Same seam for the other list: the engine's Action has no Convex types in it.
+function asStoredActions(actions: Action[]): StoredAction[] {
+  return actions as StoredAction[];
 }
 
 // Every enabled rule is loaded once per batch of transactions and evaluated
@@ -79,7 +86,7 @@ export const listEnabledInternal = internalQuery({
         priority: rule.priority,
         enabled: rule.enabled,
         conditions: normalizeConditions(rule.conditions),
-        outcomes: rule.outcomes,
+        actions: normalizeActions(rule.actions ?? rule.outcomes),
       }));
   },
 });
@@ -88,11 +95,11 @@ export const create = mutation({
   args: {
     name: v.string(),
     conditions: v.array(ruleConditionValidator),
-    outcomes: ruleOutcomesValidator,
+    actions: v.array(ruleActionValidator),
   },
   handler: async (ctx, args): Promise<Id<"rules">> => {
     const userId = await requireUser(ctx);
-    const { name, conditions, outcomes } = await validateRule(ctx, userId, args);
+    const { name, conditions, actions } = await validateRule(ctx, userId, args);
 
     const rules = await ctx.db
       .query("rules")
@@ -109,13 +116,14 @@ export const create = mutation({
       0,
     );
 
+    await ensureTagColumn(ctx, userId, actions);
     return await ctx.db.insert("rules", {
       userId,
       name,
       priority: priority + 1,
       enabled: true,
       conditions: asStored(conditions),
-      outcomes,
+      actions: asStoredActions(actions),
     });
   },
 });
@@ -126,7 +134,7 @@ export const update = mutation({
     name: v.optional(v.string()),
     enabled: v.optional(v.boolean()),
     conditions: v.optional(v.array(ruleConditionValidator)),
-    outcomes: v.optional(ruleOutcomesValidator),
+    actions: v.optional(v.array(ruleActionValidator)),
   },
   handler: async (ctx, args) => {
     const { userId, rule } = await requireRule(ctx, args.ruleId);
@@ -138,14 +146,52 @@ export const update = mutation({
       // legacy conditions get rewritten, which is the cheapest migration
       // there is.
       conditions: args.conditions ?? normalizeConditions(rule.conditions),
-      outcomes: args.outcomes ?? rule.outcomes,
+      actions: args.actions ?? normalizeActions(rule.actions ?? rule.outcomes),
     });
+    await ensureTagColumn(ctx, userId, validated.actions);
     await ctx.db.patch(rule._id, {
       name: validated.name,
       conditions: asStored(validated.conditions),
-      outcomes: validated.outcomes,
+      actions: asStoredActions(validated.actions),
+      // A rule saved from here is a rule in the new shape; leaving the old
+      // field behind would make every later read ambiguous.
+      outcomes: undefined,
       enabled: args.enabled ?? rule.enabled,
     });
+  },
+});
+
+// Re-run the rules over everything already in Notion.
+//
+// There is nothing stored to re-run them against — that is the whole premise —
+// so this does the only thing that can work: rewinds the Plaid cursors and
+// replays the history through the sync, where the rules live. The page map
+// makes the replay update rows in place rather than duplicating them, which is
+// the same machinery the destination page's re-backfill uses.
+//
+// Slow, and honestly slow: a couple of years of transactions against Notion's
+// three writes a second is hours. The dialog says so.
+export const applyToHistory = mutation({
+  args: {},
+  handler: async (ctx): Promise<{ connections: number }> => {
+    const userId = await requireUser(ctx);
+    const user = await ctx.db.get(userId);
+    if (user?.accessGrantedAt === undefined) {
+      throw new Error("Access password required");
+    }
+    const connectionIds = await ctx.runMutation(
+      internal.syncData.clearCursors,
+      { userId },
+    );
+    let delay = 0;
+    for (const connectionId of connectionIds) {
+      await ctx.scheduler.runAfter(delay, internal.sync.runForConnection, {
+        connectionId,
+        trigger: "manual",
+      });
+      delay += 10 * 1000;
+    }
+    return { connections: connectionIds.length };
   },
 });
 
@@ -195,7 +241,7 @@ function toClientRule(rule: Doc<"rules">) {
     priority: rule.priority,
     enabled: rule.enabled,
     conditions: normalizeConditions(rule.conditions),
-    outcomes: rule.outcomes,
+    actions: normalizeActions(rule.actions ?? rule.outcomes),
   };
 }
 
@@ -229,6 +275,13 @@ const MAX_CONDITIONS = 10;
 // Values one text or category condition may OR together.
 const MAX_CONDITION_VALUES = 20;
 
+// Actions one rule may carry, and tags one addTags action may add. Both are
+// generous for anything written by hand and small enough that a rule stays
+// something a person can read.
+const MAX_ACTIONS = 10;
+const MAX_TAGS = 20;
+const MAX_TAG_LENGTH = 60;
+
 // Reject a rule that cannot do what it says before it reaches the sync, where
 // the only symptom would be transactions quietly not matching it.
 async function validateRule(
@@ -237,12 +290,12 @@ async function validateRule(
   input: {
     name: string;
     conditions: Condition[];
-    outcomes: StoredOutcomes;
+    actions: Action[];
   },
 ): Promise<{
   name: string;
   conditions: Condition[];
-  outcomes: StoredOutcomes;
+  actions: Action[];
 }> {
   const name = input.name.trim().slice(0, MAX_NAME_LENGTH);
   if (!name) {
@@ -250,6 +303,9 @@ async function validateRule(
   }
   if (input.conditions.length > MAX_CONDITIONS) {
     throw new Error(`A rule is limited to ${MAX_CONDITIONS} conditions`);
+  }
+  if (input.actions.length > MAX_ACTIONS) {
+    throw new Error(`A rule is limited to ${MAX_ACTIONS} actions`);
   }
 
   const conditions: Condition[] = [];
@@ -265,25 +321,48 @@ async function validateRule(
     throw new Error("A rule needs at least one condition");
   }
 
-  const outcomes: StoredOutcomes = {};
-  if (input.outcomes.categoryId) {
-    if (!isPfcCategory(input.outcomes.categoryId)) {
-      throw new Error(`Unknown category ${input.outcomes.categoryId}`);
+  const actions: Action[] = [];
+  for (const action of input.actions) {
+    const checked = validateAction(action);
+    if (checked) {
+      actions.push(checked);
     }
-    outcomes.categoryId = input.outcomes.categoryId;
   }
-  const rename = input.outcomes.rename?.trim().slice(0, MAX_VALUE_LENGTH);
-  if (rename) {
-    outcomes.rename = rename;
-  }
-  if (input.outcomes.hide) {
-    outcomes.hide = true;
-  }
-  if (Object.keys(outcomes).length === 0) {
-    throw new Error("A rule needs at least one outcome");
+  if (actions.length === 0) {
+    throw new Error("A rule needs at least one thing to do");
   }
 
-  return { name, conditions, outcomes };
+  return { name, conditions, actions };
+}
+
+function validateAction(action: Action): Action | null {
+  switch (action.kind) {
+    case "setCategory":
+      if (!isPfcCategory(action.categoryId)) {
+        // A group is a fine thing to match on and a meaningless thing to set:
+        // a Notion row lands in one category, not in a group of them.
+        throw new Error(`Unknown category ${action.categoryId}`);
+      }
+      return action;
+    case "rename": {
+      const value = action.value.trim().slice(0, MAX_VALUE_LENGTH);
+      return value ? { kind: "rename", value } : null;
+    }
+    case "addTags": {
+      const tags: string[] = [];
+      for (const raw of action.tags.slice(0, MAX_TAGS)) {
+        // Notion rejects a multi-select option containing a comma, so it is
+        // refused here rather than silently mangled on the way out.
+        const tag = raw.trim().replaceAll(",", " ").slice(0, MAX_TAG_LENGTH);
+        if (tag && !tags.includes(tag)) {
+          tags.push(tag);
+        }
+      }
+      return tags.length ? { kind: "addTags", tags } : null;
+    }
+    case "hide":
+      return action;
+  }
 }
 
 async function validateCondition(
@@ -367,18 +446,36 @@ function textValues(op: "contains" | "equals" | "regex", values: string[]) {
   return cleaned;
 }
 
-// ---------- one-off: rewrite legacy conditions ----------
+// A rule that tags needs somewhere to put them, and a Transactions database
+// built before tags existed has no such column — writing to one that is not
+// there fails the whole row. Saving the rule is the moment to add it: it is
+// when the column is first needed, and when a failure is explainable.
+async function ensureTagColumn(
+  ctx: MutationCtx,
+  userId: Id<"users">,
+  actions: Action[],
+): Promise<void> {
+  if (!actions.some((action) => action.kind === "addTags")) {
+    return;
+  }
+  await ctx.scheduler.runAfter(0, internal.notion.ensureTransactionColumns, {
+    userId,
+  });
+}
+
+// ---------- one-off: rewrite rules into the list shapes ----------
 
 // Rules one pass rewrites. There are at most MAX_RULES per user, so this is
 // only batched at all because the table spans every user.
 const MIGRATE_BATCH = 200;
 
-// Rewrite rules still storing conditions as the old one-slot-per-field record.
+// Rewrite rules still holding the old shapes: conditions as a record with one
+// slot per field, effects as a record with one field per effect.
 //
 // Nothing depends on this having run — reads normalise (see toClientRule and
 // listEnabledInternal), which is what makes the deploy order a non-question.
-// It exists so the legacy branch of the validator can eventually be deleted.
-// Idempotent: a rule already holding a list is skipped.
+// It exists so the legacy branches of the validator can eventually be deleted.
+// Idempotent: a rule already holding both lists is skipped.
 //
 //   npx convex run rules:migrateConditions '{}'
 export const migrateConditions = internalMutation({
@@ -396,11 +493,21 @@ export const migrateConditions = internalMutation({
 
     let migrated = args.migrated ?? 0;
     for (const rule of rules) {
-      if (!isLegacyConditions(rule.conditions)) {
+      const staleConditions = isLegacyConditions(rule.conditions);
+      const staleActions = rule.actions === undefined;
+      if (!staleConditions && !staleActions) {
         continue;
       }
       await ctx.db.patch(rule._id, {
-        conditions: asStored(normalizeConditions(rule.conditions)),
+        ...(staleConditions
+          ? { conditions: asStored(normalizeConditions(rule.conditions)) }
+          : {}),
+        ...(staleActions
+          ? {
+              actions: asStoredActions(normalizeActions(rule.outcomes)),
+              outcomes: undefined,
+            }
+          : {}),
       });
       migrated++;
     }

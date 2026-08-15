@@ -2,13 +2,14 @@ import { describe, expect, test } from "vitest";
 import {
   evaluate,
   isPfcPrimary,
+  normalizeActions,
   normalizeConditions,
   isPfcCategory,
   pfcLabel,
   pfcPrimary,
+  type Action,
   type Condition,
   type Rule,
-  type RuleOutcomes,
   type RuleTransaction,
 } from "./rulesEngine";
 
@@ -16,7 +17,7 @@ let nextId = 0;
 
 function rule(
   conditions: Condition[],
-  outcomes: RuleOutcomes = { hide: true },
+  actions: Action[] = [{ kind: "hide" }],
   overrides: Partial<Rule> = {},
 ): Rule {
   nextId++;
@@ -25,7 +26,7 @@ function rule(
     priority: nextId,
     enabled: true,
     conditions,
-    outcomes,
+    actions,
     ...overrides,
   };
 }
@@ -99,9 +100,9 @@ describe("text conditions", () => {
 
   test("an invalid regex makes its rule match nothing instead of throwing", () => {
     const broken = rule([merchant("regex", "coffee(")]);
-    const fallback = rule([merchant("contains", "coffee")], {
-      categoryId: "FOOD_AND_DRINK_COFFEE",
-    });
+    const fallback = rule([merchant("contains", "coffee")], [
+      { kind: "setCategory", categoryId: "FOOD_AND_DRINK_COFFEE" },
+    ]);
     expect(() => evaluate([broken], txn())).not.toThrow();
     expect(evaluate([broken], txn())).toBeNull();
     // The broken rule is first by priority, but a rule that cannot match
@@ -180,20 +181,26 @@ describe("condition combination", () => {
 
   test("a rule with no conditions matches nothing", () => {
     // Otherwise a rule saved empty would hide every transaction the user has.
-    expect(evaluate([rule([], { hide: true })], txn())).toBeNull();
+    expect(evaluate([rule([], [{ kind: "hide" }])], txn())).toBeNull();
   });
 });
 
 describe("rule ordering", () => {
-  test("the first matching rule wins outright and applies all its outcomes", () => {
+  test("the first matching rule wins outright and applies all its actions", () => {
     const first = rule(
       [merchant("contains", "coffee")],
-      { categoryId: "FOOD_AND_DRINK_COFFEE", rename: "Coffee" },
+      [
+        { kind: "setCategory", categoryId: "FOOD_AND_DRINK_COFFEE" },
+        { kind: "rename", value: "Coffee" },
+      ],
       { priority: 1 },
     );
     const second = rule(
       [merchant("contains", "blue bottle")],
-      { categoryId: "FOOD_AND_DRINK_RESTAURANT", hide: true },
+      [
+        { kind: "setCategory", categoryId: "FOOD_AND_DRINK_RESTAURANT" },
+        { kind: "hide" },
+      ],
       { priority: 2 },
     );
 
@@ -202,26 +209,28 @@ describe("rule ordering", () => {
       ruleId: first.id,
       categoryId: "FOOD_AND_DRINK_COFFEE",
       rename: "Coffee",
+      tags: [],
+      hide: false,
     });
-    // No outcome leaks in from the rule below it.
-    expect(match?.hide).toBeUndefined();
+    // Nothing leaks in from the rule below it.
+    expect(match?.hide).toBe(false);
   });
 
   test("priority order decides, not the order rules arrive in", () => {
-    const low = rule([merchant("contains", "coffee")], { rename: "Low" }, { priority: 10 });
-    const high = rule([merchant("contains", "coffee")], { rename: "High" }, { priority: 2 });
+    const low = rule([merchant("contains", "coffee")], [{ kind: "rename", value: "Low" }], { priority: 10 });
+    const high = rule([merchant("contains", "coffee")], [{ kind: "rename", value: "High" }], { priority: 2 });
     expect(evaluate([low, high], txn())).toMatchObject({ rename: "High" });
   });
 
   test("disabled rules are skipped", () => {
     const off = rule(
       [merchant("contains", "coffee")],
-      { hide: true },
+      [{ kind: "hide" }],
       { priority: 1, enabled: false },
     );
     const on = rule(
       [merchant("contains", "coffee")],
-      { rename: "Coffee" },
+      [{ kind: "rename", value: "Coffee" }],
       { priority: 2 },
     );
     expect(evaluate([off], txn())).toBeNull();
@@ -394,5 +403,124 @@ describe("reading rules stored in the old shape", () => {
   test("an empty old record still matches nothing", () => {
     expect(normalizeConditions({})).toEqual([]);
     expect(evaluate([rule(normalizeConditions({}))], txn())).toBeNull();
+  });
+});
+
+describe("actions", () => {
+  const coffee = txn();
+
+  test("every action of the winning rule applies", () => {
+    const match = evaluate(
+      [
+        rule(
+          [merchant("contains", "blue bottle")],
+          [
+            { kind: "setCategory", categoryId: "FOOD_AND_DRINK_COFFEE" },
+            { kind: "rename", value: "Coffee" },
+            { kind: "addTags", tags: ["Treat"] },
+          ],
+        ),
+      ],
+      coffee,
+    );
+    expect(match).toMatchObject({
+      categoryId: "FOOD_AND_DRINK_COFFEE",
+      rename: "Coffee",
+      tags: ["Treat"],
+      hide: false,
+    });
+  });
+
+  test("tags accumulate across actions and never repeat", () => {
+    const match = evaluate(
+      [
+        rule(
+          [merchant("contains", "blue bottle")],
+          [
+            { kind: "addTags", tags: ["Treat", "Coffee"] },
+            { kind: "addTags", tags: ["Coffee", "Weekly"] },
+          ],
+        ),
+      ],
+      coffee,
+    );
+    expect(match?.tags).toEqual(["Treat", "Coffee", "Weekly"]);
+  });
+
+  test("the last of a colliding pair wins, so a rule reads top to bottom", () => {
+    const match = evaluate(
+      [
+        rule(
+          [merchant("contains", "blue bottle")],
+          [
+            { kind: "rename", value: "First" },
+            { kind: "rename", value: "Second" },
+          ],
+        ),
+      ],
+      coffee,
+    );
+    expect(match?.rename).toBe("Second");
+  });
+
+  test("hide is a latch, wherever it sits in the list", () => {
+    const match = evaluate(
+      [
+        rule(
+          [merchant("contains", "blue bottle")],
+          [
+            { kind: "hide" },
+            { kind: "rename", value: "Never seen" },
+          ],
+        ),
+      ],
+      coffee,
+    );
+    expect(match?.hide).toBe(true);
+    // Still resolved, because the caller decides what hiding means — the
+    // engine's job is to say what the rule asked for.
+    expect(match?.rename).toBe("Never seen");
+  });
+
+  test("a rule with no actions resolves to doing nothing", () => {
+    // Writes refuse this; the engine must not invent an effect for it.
+    const match = evaluate([rule([merchant("contains", "blue bottle")], [])], coffee);
+    expect(match).toEqual({ ruleId: expect.any(String), tags: [], hide: false });
+  });
+});
+
+describe("reading rules whose effects predate the action list", () => {
+  test("every old field becomes one action, in a fixed order", () => {
+    expect(
+      normalizeActions({
+        categoryId: "FOOD_AND_DRINK_COFFEE",
+        rename: "Coffee",
+        hide: true,
+      }),
+    ).toEqual([
+      { kind: "setCategory", categoryId: "FOOD_AND_DRINK_COFFEE" },
+      { kind: "rename", value: "Coffee" },
+      { kind: "hide" },
+    ]);
+  });
+
+  test("a rule already in the new shape is left alone", () => {
+    const actions: Action[] = [{ kind: "hide" }];
+    expect(normalizeActions(actions)).toBe(actions);
+  });
+
+  test("an absent or empty record is no actions", () => {
+    expect(normalizeActions(undefined)).toEqual([]);
+    expect(normalizeActions({})).toEqual([]);
+    // hide: false is not an action, which is what made the old shape
+    // ambiguous in the first place.
+    expect(normalizeActions({ hide: false })).toEqual([]);
+  });
+
+  test("an old rule still does exactly what it did", () => {
+    const legacy = normalizeActions({ categoryId: "FOOD_AND_DRINK_COFFEE" });
+    expect(
+      evaluate([rule([merchant("contains", "blue bottle")], legacy)], txn()),
+    ).toMatchObject({ categoryId: "FOOD_AND_DRINK_COFFEE", hide: false });
   });
 });

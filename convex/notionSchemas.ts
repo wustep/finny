@@ -163,6 +163,10 @@ export const DATABASE_SPECS: DatabaseSpec[] = [
       Amount: dollar,
       Date: date,
       Pending: { checkbox: {} },
+      // Written only by a rule's addTags action. Options are created by Notion
+      // as they are used, so the property starts empty and stays whatever the
+      // user's rules make of it.
+      Tags: { multi_select: { options: [] } },
     }),
   },
   {

@@ -122,14 +122,31 @@ and retries 429/409/5xx with jittered exponential backoff, honouring
   later rule is consulted. That one-rule-per-row semantics is load-bearing,
   not a simplification — Finny stores no transactions, so a row's fate can
   only be explained if exactly one rule decided it.
-- Conditions are a list, ANDed; several values inside one text or category
-  condition are ORed, and a range is two amount conditions. No nesting, no OR
-  across fields. A rule with no conditions matches nothing.
-- Rules written before conditions were a list are still on disk in the old
-  one-slot-per-field record. Nothing has to be migrated first: `rules.ts`
-  normalises on read through `normalizeConditions`, so the engine and the UI
-  only ever see the list, and `rules.migrateConditions` tidies rows at rest.
-  Writes only ever produce the list.
+- A rule is two lists: conditions (ANDed) and actions (applied in order). If
+  all of these, then do all of these. Several values inside one text or
+  category condition are ORed, and a range is two amount conditions. No
+  nesting, no OR across fields. A rule with no conditions matches nothing.
+- `evaluate` returns a resolved `RuleMatch` (categoryId / rename / tags / hide)
+  rather than the action list, so the sync never learns about action kinds.
+  Colliding actions resolve last-wins; tags accumulate; hide is a latch.
+- `addTags` writes the Tags multi-select on Transactions. A database built
+  before Tags existed has no such column and writing to one that is not there
+  fails the whole row — so `transactionProperties` omits Tags when there are
+  none, and saving a rule with an addTags action schedules
+  `notion.ensureTransactionColumns` to add the column. Commas are stripped
+  from tags: Notion refuses them inside an option name.
+- A category *condition* may name a primary group; a category *action* may
+  not. A row lands in one category, not a group of them.
+- Rules written before either list existed are still on disk in the old
+  shapes: conditions as a one-slot-per-field record, effects in `outcomes`.
+  Nothing has to be migrated first — `rules.ts` normalises on read
+  (`normalizeConditions` / `normalizeActions`), so the engine and the UI only
+  ever see lists, and `rules.migrateConditions` tidies rows at rest. Writes
+  only ever produce lists, and clear `outcomes` so no read has to guess which
+  field is authoritative.
+- `rules.applyToHistory` is the only way a rule reaches rows that already
+  exist: there is nothing stored to re-run against, so it rewinds the Plaid
+  cursors and replays through the sync, where the rules live.
 - A category condition may name a whole primary group (`FOOD_AND_DRINK`),
   which matches every detailed category under it, or one detailed category.
   An outcome may only name a detailed one — a Notion row lands in a category,

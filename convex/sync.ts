@@ -1738,6 +1738,7 @@ async function upsertTransaction(
     input.accountPage,
     await input.ensureCategory(txn, decision?.categoryId),
     decision?.rename,
+    decision?.tags,
   );
   // Merchant logos ride along in the request we are already making, so
   // keeping them current costs no extra calls.
