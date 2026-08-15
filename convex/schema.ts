@@ -166,6 +166,14 @@ export default defineSchema({
     // the Item forever.
     cursorFailures: v.optional(v.number()),
     lastSyncedAt: v.optional(v.number()),
+    // When a run last walked the whole investments window and reached the end
+    // of it without a failed write. Investment transactions have no cursor —
+    // the only way to read them is a date range — so every run re-reads and
+    // re-writes whatever range it is given. Most runs therefore take a recent
+    // window, and this is what says when a full pass is due again. It is also
+    // what gates archiving: a row missing from a short window has not
+    // vanished, it is merely older than the window.
+    lastInvestmentsFullSyncAt: v.optional(v.number()),
     // Exclusive sync lease. Only one run may touch this connection at a
     // time, or two runs race the shared Plaid cursor and duplicate Notion
     // pages. The lease is heartbeated by each batch and released by

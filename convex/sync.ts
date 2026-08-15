@@ -1196,6 +1196,27 @@ export const transactionsBatch = internalAction({
 
 // ---------- stage 3: investment transactions (self-rescheduling) ----------
 
+// How far back a routine investments pass reads.
+//
+// Plaid has no cursor for investment transactions — the only way to ask is a
+// date range — so a run re-reads and re-writes every row in whatever range it
+// is given. Reading from the start date every time meant a daily cron PATCHing
+// years of settled trades into Notion, thousands of writes at ~3 rps, to find
+// the handful that changed. Amendments land within days, so a month is
+// generous.
+const INVESTMENTS_WINDOW_DAYS = 30;
+
+// How long between full passes. The full window is the only thing that can
+// notice a canceled trade has dropped out of Plaid's history, so it still has
+// to happen — just not every morning.
+const INVESTMENTS_FULL_SYNC_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
+
+function windowStart(days: number, end: string): string {
+  const start = new Date(`${end}T00:00:00Z`);
+  start.setUTCDate(start.getUTCDate() - days);
+  return start.toISOString().slice(0, 10);
+}
+
 export const investmentsBatch = internalAction({
   args: {
     connectionId: v.id("bankConnections"),
@@ -1204,6 +1225,11 @@ export const investmentsBatch = internalAction({
     // Rows earlier pages of this window failed to write. Carried along
     // because reconciliation may only run after a walk that saw everything.
     pageErrors: v.optional(v.number()),
+    // Whether this walk covers the whole history or only the recent window.
+    // Decided once, on the first page, and carried through the continuation:
+    // pages of one walk have to agree on the range they are paging through,
+    // and only a full walk may archive.
+    full: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
     const context = await loadContext(ctx, args.connectionId);
@@ -1225,10 +1251,22 @@ export const investmentsBatch = internalAction({
 
     try {
       const client = plaidClient(connection.plaidEnv ?? "production");
-      // Full window from the configured start date. The ID map makes
-      // re-processing overlap free of duplicates.
-      const start = notion.startDate ?? "2000-01-01";
       const end = todayUTC();
+      // Decided on the first page and carried from there, so every page of one
+      // walk pages through the same range.
+      const full =
+        args.full ??
+        Date.now() - (connection.lastInvestmentsFullSyncAt ?? 0) >=
+          INVESTMENTS_FULL_SYNC_INTERVAL_MS;
+      const configuredStart = notion.startDate ?? "2000-01-01";
+      const recentStart = windowStart(INVESTMENTS_WINDOW_DAYS, end);
+      // A recent window that reaches back before the configured start date is
+      // just the configured start date.
+      const start = full
+        ? configuredStart
+        : recentStart > configuredStart
+          ? recentStart
+          : configuredStart;
       let response;
       try {
         response = await client.investmentsTransactionsGet({
@@ -1384,6 +1422,7 @@ export const investmentsBatch = internalAction({
           runId: args.runId,
           offset: nextOffset,
           pageErrors,
+          full,
         });
         return;
       }
@@ -1393,9 +1432,14 @@ export const investmentsBatch = internalAction({
       // so anything still mapped for this Item's accounts that the walk
       // never mentioned is gone and its Notion row should be archived.
       //
-      // Only after a clean walk: a window cut short by write failures would
-      // archive live history.
-      if (pageErrors === 0) {
+      // Only after a clean walk of the *whole* window. A recent-window pass
+      // never mentions last year's trades, so every one of them would look
+      // vanished — and a walk cut short by write failures would archive live
+      // history for the same reason.
+      if (pageErrors === 0 && full) {
+        await ctx.runMutation(internal.syncData.recordInvestmentsFullSync, {
+          connectionId: connection._id,
+        });
         const archived = await reconcileInvestmentTransactions(ctx, {
           userId,
           runId: args.runId,
@@ -1416,12 +1460,23 @@ export const investmentsBatch = internalAction({
         });
         return;
       }
+      if (pageErrors === 0) {
+        // A clean pass over the recent window. Nothing to reconcile against —
+        // that is the full pass's job, and it stays due until one runs.
+        await ctx.runMutation(internal.syncData.finishRun, {
+          runId: args.runId,
+          status: "success",
+        });
+        return;
+      }
       await ctx.runMutation(internal.syncData.finishRun, {
         runId: args.runId,
         status: "error",
         error:
-          `${pageErrors} investment transaction(s) failed to reach Notion; ` +
-          `skipped archiving rows that vanished from Plaid this run.`,
+          `${pageErrors} investment transaction(s) failed to reach Notion` +
+          (full
+            ? `; skipped archiving rows that vanished from Plaid this run.`
+            : `.`),
       });
     } catch (error) {
       console.error("investments batch failed", error);
