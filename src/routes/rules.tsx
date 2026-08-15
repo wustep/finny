@@ -16,19 +16,17 @@ import {
   Wand2,
   X,
 } from "lucide-react";
-import { useMemo, useState, type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 import {
   PFC_GROUPS,
-  evaluate,
   pfcLabel,
   isPfcPrimary,
   type Action,
   type AmountOp,
   type Condition,
-  type RuleMatch,
   type TextField,
   type TextOp,
 } from "../../convex/rulesEngine";
@@ -72,11 +70,19 @@ export const Route = createFileRoute("/rules")({
 type RuleRow = FunctionReturnType<typeof api.rules.list>[number];
 type AccountOption = { id: Id<"accounts">; label: string };
 
+// Each operator next to its own negation, so picking the opposite of what is
+// selected is the neighbouring row rather than three rows down.
 const TEXT_OPS: Array<{ value: TextOp; label: string; not: string }> = [
   { value: "contains", label: "contains", not: "doesn't contain" },
   { value: "equals", label: "is exactly", not: "is not" },
   { value: "regex", label: "matches regex", not: "doesn't match regex" },
 ];
+
+const TEXT_OP_OPTIONS: Array<{ value: string; label: string }> =
+  TEXT_OPS.flatMap((entry) => [
+    { value: entry.value, label: entry.label },
+    { value: `${entry.value}:not`, label: entry.not },
+  ]);
 
 const AMOUNT_OPS: Array<{ value: AmountOp; label: string }> = [
   { value: "gt", label: "is more than" },
@@ -808,8 +814,6 @@ function RuleDialog({
               }
             />
           </div>
-
-          <RuleTester draft={draft} accounts={accounts} />
         </div>
 
         <DialogFooter>
@@ -1109,14 +1113,9 @@ function ConditionFields({
               });
             }}
           >
-            {TEXT_OPS.map((entry) => (
+            {TEXT_OP_OPTIONS.map((entry) => (
               <option key={entry.value} value={entry.value}>
                 {entry.label}
-              </option>
-            ))}
-            {TEXT_OPS.map((entry) => (
-              <option key={`${entry.value}:not`} value={`${entry.value}:not`}>
-                {entry.not}
               </option>
             ))}
           </select>
@@ -1360,130 +1359,6 @@ function Chips<T extends string>({
       ))}
     </div>
   );
-}
-
-// ---------- the tester ----------
-
-// The engine is pure and has no Convex imports, so the same code the sync runs
-// answers "what would this do" right here — no round trip, and nothing about
-// the sample is ever sent anywhere or stored.
-function RuleTester({
-  draft,
-  accounts,
-}: {
-  draft: Draft;
-  accounts: AccountOption[];
-}) {
-  const [open, setOpen] = useState(false);
-  const [merchant, setMerchant] = useState("");
-  const [amount, setAmount] = useState("");
-
-  const verdict = useMemo(() => {
-    const built = buildRule(draft, accounts);
-    if ("error" in built) {
-      return { kind: "incomplete" as const, message: built.error };
-    }
-    if (!merchant.trim() && !amount.trim()) {
-      return null;
-    }
-    const parsed = Number(amount);
-    const match = evaluate(
-      [
-        {
-          id: "draft",
-          priority: 0,
-          enabled: true,
-          conditions: built.value.conditions,
-          actions: built.value.actions,
-        },
-      ],
-      {
-        merchant: merchant || null,
-        description: merchant || null,
-        amount: Number.isFinite(parsed) ? parsed : 0,
-        // A sample cannot stand in for an account or a Plaid category, so a
-        // rule that asks about either will not match one. Said plainly below
-        // rather than pretended around.
-        accountId: undefined,
-        category: null,
-        pending: false,
-      },
-    );
-    return { kind: "ran" as const, match };
-  }, [draft, accounts, merchant, amount]);
-
-  const untestable = draft.conditions.some(
-    (condition) => condition.kind === "account" || condition.kind === "category",
-  );
-
-  return (
-    <div className="flex flex-col gap-2 border-t pt-4">
-      <button
-        type="button"
-        className="w-fit text-sm text-muted-foreground underline underline-offset-4"
-        onClick={() => setOpen((current) => !current)}
-      >
-        {open ? "Hide the test" : "Try it on an example"}
-      </button>
-      {open ? (
-        <div className="flex flex-col gap-2">
-          <div className="flex flex-wrap gap-2">
-            <Input
-              aria-label="Example merchant"
-              placeholder="BLUE BOTTLE COFFEE"
-              value={merchant}
-              onChange={(event) => setMerchant(event.target.value)}
-            />
-            <Input
-              aria-label="Example amount"
-              type="number"
-              step="0.01"
-              placeholder="6.50"
-              className="w-32"
-              value={amount}
-              onChange={(event) => setAmount(event.target.value)}
-            />
-          </div>
-          {verdict === null ? null : verdict.kind === "incomplete" ? (
-            <p className="text-xs text-muted-foreground">{verdict.message}</p>
-          ) : verdict.match ? (
-            <p className="text-xs">
-              <span className="font-medium text-foreground">Matches</span>
-              <span className="text-muted-foreground">
-                {" "}
-                — {outcomeSummary(verdict.match)}
-              </span>
-            </p>
-          ) : (
-            <p className="text-xs text-muted-foreground">No match.</p>
-          )}
-          {untestable ? (
-            <p className="text-xs text-muted-foreground">
-              Account and category conditions are not part of the example, so a
-              rule using one will not match here.
-            </p>
-          ) : null}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function outcomeSummary(match: RuleMatch): string {
-  if (match.hide) {
-    return "kept out of Notion";
-  }
-  const parts: string[] = [];
-  if (match.categoryId) {
-    parts.push(`category becomes ${pfcLabel(match.categoryId)}`);
-  }
-  if (match.rename) {
-    parts.push(`title becomes “${match.rename}”`);
-  }
-  if (match.tags.length) {
-    parts.push(`tagged ${match.tags.join(", ")}`);
-  }
-  return parts.join(", ") || "nothing changes";
 }
 
 // ---------- draft -> mutation args ----------
