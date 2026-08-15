@@ -197,6 +197,19 @@ from `DATABASE_SPECS` by probing it, so it cannot drift from the specs. A
 retyped column is reported and never repaired: changing a Notion property's
 type discards what was in it.
 
+## 6b2. Adding a property to a spec
+
+`ensureDatabases` only ever *creates* databases, so a property added to a spec
+is absent from every destination already built — and writing a column that is
+not there is a 400 for the whole row, which fails the run. Whenever you add
+one: bump `NOTION_SCHEMA_VERSION` in `notionSchemas.ts`. Stage 1 of a sync
+compares it against `notionConnections.schemaVersion` and, when they differ,
+runs `notion.ensureDatabaseColumns` before writing anything — additive only,
+and the version is recorded after every database succeeded, so a transient
+failure retries next run rather than stranding the destination a version back.
+A destination built from the current specs records the version outright.
+`notionSchemas.test.ts` counts the properties as a tripwire.
+
 ## 6c. Reset & resync (`convex/sync.ts`)
 
 `resetAndResync` takes `existingRows`. `leave` is the old behaviour — forget

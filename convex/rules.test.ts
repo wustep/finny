@@ -493,7 +493,7 @@ test("a category group can be matched on but not set", async () => {
   ).rejects.toThrow("Unknown category");
 });
 
-test("saving a rule that tags asks for the Tags column", async () => {
+test("saving a rule that tags asks for the missing columns", async () => {
   const { asAlice, t } = await twoUsers();
   await asAlice.mutation(api.rules.create, {
     ...COFFEE,
@@ -504,7 +504,7 @@ test("saving a rule that tags asks for the Tags column", async () => {
     ctx.db.system.query("_scheduled_functions").collect(),
   );
   expect(
-    scheduled.filter((job) => job.name.includes("ensureTransactionColumns")),
+    scheduled.filter((job) => job.name.includes("ensureDatabaseColumns")),
   ).toHaveLength(1);
 });
 

@@ -17,6 +17,7 @@ import {
   DATABASE_SPECS,
   MAP_KINDS_BY_DATABASE,
   MODULE_DATABASES,
+  NOTION_SCHEMA_VERSION,
   SPEC_BY_KEY,
   propertyTypes,
   relationDependencies,
@@ -477,6 +478,11 @@ async function ensureDatabases(
       startDate: input.startDate,
       databases: created,
     });
+    // Anything built from the current specs is current by construction.
+    await ctx.runMutation(internal.notion.setSchemaVersion, {
+      userId: input.userId,
+      version: NOTION_SCHEMA_VERSION,
+    });
   }
   return created;
 }
@@ -625,55 +631,82 @@ export const setStartDate = mutation({
   },
 });
 
-// Make sure the Transactions database has the columns the current build
-// writes — today that means Tags, which every database created before rules
-// could add them is missing.
+// Bring every database this destination has up to the properties the current
+// build writes.
 //
-// Scheduled when a rule that adds tags is saved, which is the moment the
-// column is first needed and the moment a failure is explainable. Idempotent
-// and quiet: a database that already has it costs one GET.
-export const ensureTransactionColumns = internalAction({
+// Databases are only ever created, never altered, by ensureDatabases — so a
+// property added to a spec (Accounts.Currency, Transactions.Tags) is simply
+// absent from every destination built before it, and the sync then writes a
+// column that is not there. Notion answers that with a 400 for the whole row,
+// which fails the run rather than the column.
+//
+// Additive only: this adds properties, and never removes, renames or retypes
+// one. Guarded by NOTION_SCHEMA_VERSION so it costs one integer comparison on
+// a current destination rather than eight requests every sync.
+export const ensureDatabaseColumns = internalAction({
   args: { userId: v.id("users") },
-  handler: async (ctx, args) => {
-    try {
-      const connection = await ctx.runQuery(
-        internal.notion.getConnectionInternal,
-        { userId: args.userId },
-      );
-      const databaseId = connection?.databases?.transactions;
-      if (!connection || !databaseId) {
-        return;
+  handler: async (ctx, args): Promise<{ added: string[] }> => {
+    const added: string[] = [];
+    const connection = await ctx.runQuery(
+      internal.notion.getConnectionInternal,
+      { userId: args.userId },
+    );
+    if (!connection?.databases) {
+      return { added };
+    }
+    const databases = connection.databases;
+
+    for (const [key, databaseId] of Object.entries(databases)) {
+      if (!SPEC_BY_KEY[key]) {
+        continue;
       }
       const state = await inspectDatabase(
         connection.accessToken,
-        "transactions",
+        key,
         databaseId,
       );
       if (state.state !== "damaged" || state.missingProperties.length === 0) {
-        return;
+        continue;
       }
-      const definitions = SPEC_BY_KEY.transactions.properties(
-        connection.databases ?? {},
-      );
+      const definitions = SPEC_BY_KEY[key].properties(databases);
       const patch = Object.fromEntries(
         state.missingProperties
           .filter((name) => definitions[name])
           .map((name) => [name, definitions[name]]),
       );
       if (Object.keys(patch).length === 0) {
-        return;
+        continue;
       }
       await notionFetch(connection.accessToken, `/databases/${databaseId}`, {
         method: "PATCH",
         body: { properties: patch },
       });
-      console.log(
-        `added ${Object.keys(patch).join(", ")} to the Transactions database`,
-      );
-    } catch (error) {
-      // The destination page's Check button is the fallback; a rule saving is
-      // not the place to fail over a column.
-      console.error("could not add missing Transactions columns", error);
+      added.push(...Object.keys(patch).map((name) => `${key}.${name}`));
+    }
+
+    // Only once everything above worked. A failure part-way leaves the
+    // version behind so the next run tries again, which is the difference
+    // between a transient Notion error and a destination stuck a version back.
+    await ctx.runMutation(internal.notion.setSchemaVersion, {
+      userId: args.userId,
+      version: NOTION_SCHEMA_VERSION,
+    });
+    if (added.length > 0) {
+      console.log(`added ${added.join(", ")} to the Notion databases`);
+    }
+    return { added };
+  },
+});
+
+export const setSchemaVersion = internalMutation({
+  args: { userId: v.id("users"), version: v.number() },
+  handler: async (ctx, args) => {
+    const connection = await ctx.db
+      .query("notionConnections")
+      .withIndex("by_user", (q) => q.eq("userId", args.userId))
+      .unique();
+    if (connection) {
+      await ctx.db.patch(connection._id, { schemaVersion: args.version });
     }
   },
 });
