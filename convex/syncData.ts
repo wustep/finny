@@ -247,6 +247,30 @@ export const clearMapEntries = internalMutation({
   },
 });
 
+// Forget the pages of one kind, in bounded batches. Returns true while more
+// remain.
+//
+// For a database that had to be rebuilt: its rows went with it, so every map
+// entry addressing one is an address of a page that is not there. Left in
+// place, the next sync patches each of them, every patch 404s, and the run
+// fails on rows it could have simply created.
+export const clearMapEntriesOfKind = internalMutation({
+  args: { userId: v.id("users"), kind: kindValidator },
+  handler: async (ctx, args) => {
+    const BATCH = 500;
+    const entries = await ctx.db
+      .query("notionPageMap")
+      .withIndex("by_user_kind_provider", (q) =>
+        q.eq("userId", args.userId).eq("kind", args.kind),
+      )
+      .take(BATCH + 1);
+    for (const entry of entries.slice(0, BATCH)) {
+      await ctx.db.delete(entry._id);
+    }
+    return entries.length > BATCH;
+  },
+});
+
 // Rewind every connection's transactions/sync cursor so the next run replays
 // the full history rather than only what has changed since last time.
 export const clearCursors = internalMutation({

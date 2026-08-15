@@ -6,6 +6,7 @@ import {
   RotateCcw,
   TriangleAlert,
   Unplug,
+  Wrench,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -525,35 +526,10 @@ function DestinationCard({
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-6">
-          <div className="flex flex-col gap-2">
-            <Label>Databases</Label>
-            {status.parentPageId ? (
-              <a
-                href={`https://notion.so/${status.parentPageId.replaceAll("-", "")}`}
-                target="_blank"
-                rel="noreferrer"
-                className="inline-flex w-fit items-center gap-1.5 text-xs text-muted-foreground underline-offset-4 hover:underline"
-              >
-                Inside your chosen page
-                <ExternalLink className="size-3" />
-              </a>
-            ) : null}
-            <ul className="flex flex-col gap-2">
-              {Object.entries(databases).map(([key, id]) => (
-                <li key={key}>
-                  <a
-                    href={`https://notion.so/${id.replaceAll("-", "")}`}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex items-center gap-1.5 text-sm underline-offset-4 hover:underline"
-                  >
-                    {DATABASE_LABELS[key] ?? key}
-                    <ExternalLink className="size-3.5 text-muted-foreground" />
-                  </a>
-                </li>
-              ))}
-            </ul>
-          </div>
+          <DatabaseSection
+            databases={databases}
+            parentPageId={status.parentPageId}
+          />
 
           <ModuleSection modules={status.modules} />
           <StartDateSection startDate={status.startDate} />
@@ -581,6 +557,199 @@ function DestinationCard({
 
       <RecentSyncs />
     </>
+  );
+}
+
+type DatabaseState = Awaited<
+  ReturnType<ReturnType<typeof useAction<typeof api.notion.checkDatabases>>>
+>[number];
+
+// What each state means, in the fewest words that still say what to do.
+function describe(state: DatabaseState): string | null {
+  switch (state.state) {
+    case "ok":
+      return null;
+    case "missing":
+      return "deleted, or no longer shared with Finny";
+    case "trashed":
+      return "in your Notion trash — restore it there to keep its rows";
+    case "unknown":
+      return "could not be checked";
+    case "damaged": {
+      const parts: string[] = [];
+      if (state.missingProperties.length) {
+        parts.push(`missing ${state.missingProperties.join(", ")}`);
+      }
+      for (const wrong of state.wrongTypeProperties) {
+        parts.push(`${wrong.name} is now a ${wrong.actual}`);
+      }
+      return parts.join(" · ");
+    }
+  }
+}
+
+// The databases, and whether they are still the ones Finny thinks they are.
+//
+// checkHealth answers "does the token work". This answers the question after
+// it: a deleted database or a renamed column fails every write while the
+// destination page happily reports healthy.
+function DatabaseSection({
+  databases,
+  parentPageId,
+}: {
+  databases: Record<string, string>;
+  parentPageId?: string;
+}) {
+  const checkDatabases = useAction(api.notion.checkDatabases);
+  const repairDatabases = useAction(api.notion.repairDatabases);
+  const [states, setStates] = useState<DatabaseState[] | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [repairing, setRepairing] = useState(false);
+  const [confirmRebuild, setConfirmRebuild] = useState(false);
+
+  const byKey = new Map((states ?? []).map((state) => [state.key, state]));
+  const rebuildable = (states ?? []).filter(
+    (state) => state.state === "missing" || state.state === "trashed",
+  );
+  const fixableProperties = (states ?? []).filter(
+    (state) => state.state === "damaged" && state.missingProperties.length > 0,
+  );
+
+  const runCheck = () => {
+    setChecking(true);
+    checkDatabases()
+      .then((result) => {
+        setStates(result);
+        const broken = result.filter((state) => state.state !== "ok").length;
+        toast[broken ? "warning" : "success"](
+          broken ? `${broken} need attention` : "All databases look right",
+        );
+      })
+      .catch(() => toast.error("Could not check your databases"))
+      .finally(() => setChecking(false));
+  };
+
+  const runRepair = () => {
+    setRepairing(true);
+    repairDatabases()
+      .then((result) => {
+        toast.success(
+          result.rebuilt.length
+            ? `Rebuilt ${result.rebuilt.length}, syncing ${result.syncing} ${
+                result.syncing === 1 ? "bank" : "banks"
+              }`
+            : `Added ${result.propertiesAdded} ${
+                result.propertiesAdded === 1 ? "column" : "columns"
+              }`,
+        );
+        setConfirmRebuild(false);
+        return checkDatabases().then(setStates);
+      })
+      .catch((error: unknown) => {
+        console.error(error);
+        toast.error("Repair failed — check the Convex logs");
+      })
+      .finally(() => setRepairing(false));
+  };
+
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex items-center justify-between">
+        <Label>Databases</Label>
+        <button
+          type="button"
+          className="text-xs text-muted-foreground underline underline-offset-4 disabled:opacity-50"
+          onClick={runCheck}
+          disabled={checking}
+        >
+          {checking ? "Checking…" : "Check"}
+        </button>
+      </div>
+      {parentPageId ? (
+        <a
+          href={`https://notion.so/${parentPageId.replaceAll("-", "")}`}
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex w-fit items-center gap-1.5 text-xs text-muted-foreground underline-offset-4 hover:underline"
+        >
+          Inside your chosen page
+          <ExternalLink className="size-3" />
+        </a>
+      ) : null}
+      <ul className="flex flex-col gap-2">
+        {Object.entries(databases).map(([key, id]) => {
+          const state = byKey.get(key);
+          const detail = state ? describe(state) : null;
+          return (
+            <li key={key} className="flex flex-wrap items-baseline gap-x-2">
+              {state && state.state !== "ok" ? (
+                <TriangleAlert className="size-3.5 shrink-0 self-center text-destructive" />
+              ) : null}
+              <a
+                href={`https://notion.so/${id.replaceAll("-", "")}`}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-1.5 text-sm underline-offset-4 hover:underline"
+              >
+                {DATABASE_LABELS[key] ?? key}
+                <ExternalLink className="size-3.5 text-muted-foreground" />
+              </a>
+              {detail ? (
+                <span className="text-xs text-muted-foreground">{detail}</span>
+              ) : null}
+            </li>
+          );
+        })}
+      </ul>
+      {fixableProperties.length > 0 && rebuildable.length === 0 ? (
+        <Button
+          variant="outline"
+          className="mt-1 w-fit"
+          disabled={repairing}
+          onClick={runRepair}
+        >
+          <Wrench /> {repairing ? "Adding…" : "Add the missing columns"}
+        </Button>
+      ) : null}
+      {rebuildable.length > 0 ? (
+        <Button
+          variant="outline"
+          className="mt-1 w-fit"
+          disabled={repairing}
+          onClick={() => setConfirmRebuild(true)}
+        >
+          <Wrench /> Rebuild {rebuildable.length}…
+        </Button>
+      ) : null}
+
+      <Dialog open={confirmRebuild} onOpenChange={setConfirmRebuild}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              Rebuild {rebuildable.map((state) => DATABASE_LABELS[state.key] ?? state.key).join(", ")}?
+            </DialogTitle>
+            <DialogDescription>
+              Finny makes them again, repoints the relations that referenced
+              them, and syncs your banks to fill them in from Plaid. The rows
+              that were in them are gone with them — if a database is only in
+              your Notion trash, restoring it there keeps its history.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setConfirmRebuild(false)}
+              disabled={repairing}
+            >
+              Cancel
+            </Button>
+            <Button variant="destructive" onClick={runRepair} disabled={repairing}>
+              {repairing ? "Rebuilding…" : "Rebuild"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
   );
 }
 

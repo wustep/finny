@@ -1,0 +1,65 @@
+import { expect, test } from "vitest";
+import {
+  DATABASE_SPECS,
+  MAP_KINDS_BY_DATABASE,
+  SPEC_BY_KEY,
+  propertyTypes,
+  relationDependencies,
+} from "./notionSchemas";
+
+test("every relation between Finny's databases is discovered", () => {
+  const found = relationDependencies().map(
+    (dependency) => `${dependency.from}.${dependency.property} -> ${dependency.to}`,
+  );
+  // Read off the specs. A relation added or removed there should fail this
+  // and be added or removed here deliberately — the rebuild path repoints
+  // exactly this list, so a missed one is a dead column in Notion.
+  expect(found.sort()).toEqual(
+    [
+      "accounts.Bank Connection -> bankConnections",
+      "balanceHistory.Account -> accounts",
+      "holdings.Account -> accounts",
+      "holdings.Security -> securities",
+      "investmentTransactions.Related Account -> accounts",
+      "investmentTransactions.Related Security -> securities",
+      "transactions.Account -> accounts",
+      "transactions.Category -> categories",
+    ].sort(),
+  );
+});
+
+test("a database is always created after everything it points at", () => {
+  // ensureDatabases walks DATABASE_SPECS in order and hands each spec the ids
+  // built so far, so a relation to a database further down the list would be
+  // built against undefined.
+  const position = new Map(
+    DATABASE_SPECS.map((spec, index) => [spec.key, index]),
+  );
+  for (const dependency of relationDependencies()) {
+    expect(position.get(dependency.to)!).toBeLessThan(
+      position.get(dependency.from)!,
+    );
+  }
+});
+
+test("property types are read off the specs", () => {
+  const transactions = propertyTypes(SPEC_BY_KEY.transactions);
+  expect(transactions).toMatchObject({
+    Name: "title",
+    ID: "rich_text",
+    Amount: "number",
+    Date: "date",
+    Pending: "checkbox",
+    Account: "relation",
+    Category: "relation",
+  });
+});
+
+test("every database says which page ids live in it", () => {
+  // A rebuild drops the map entries pointing into the database it replaced.
+  // A spec with no entry here would leave them behind, and every later sync
+  // would patch pages that no longer exist.
+  for (const spec of DATABASE_SPECS) {
+    expect(MAP_KINDS_BY_DATABASE[spec.key]).toBeDefined();
+  }
+});

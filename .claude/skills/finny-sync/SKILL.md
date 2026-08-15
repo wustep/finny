@@ -153,6 +153,19 @@ from `localhost` go to the Sandbox when `PLAID_SANDBOX_SECRET` is set
 Items. Each connection stores its `plaidEnv` and every later call for it
 reuses that; access tokens do not work across environments.
 
+## 6b. Destination integrity (`convex/notion.ts`)
+
+`checkHealth` asks whether the token works. `checkDatabases` asks the question
+after it — every database Finny recorded is fetched and compared against its
+spec (missing / trashed / missing columns / retyped columns). `repairDatabases`
+adds missing columns, and rebuilds a database that is gone: the rows went with
+it, so it also drops the `notionPageMap` entries pointing into it (they address
+pages that no longer exist) and repoints every relation that named it — a
+relation stores the target's id, not its name. The relation graph is derived
+from `DATABASE_SPECS` by probing it, so it cannot drift from the specs. A
+retyped column is reported and never repaired: changing a Notion property's
+type discards what was in it.
+
 ## 7. Docs
 
 PLAN.md's Notion property tables are stale — `convex/notionSchemas.ts` is
