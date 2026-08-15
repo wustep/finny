@@ -762,3 +762,106 @@ test("a run on a healthy connection says nothing", async () => {
   );
   expect(scheduled).toHaveLength(0);
 });
+
+// Delays from finishRun's RETRY_DELAYS_MS, mirrored so the assertions name
+// what they are checking.
+const RETRY_DELAYS_MS = [5 * 60 * 1000, 20 * 60 * 1000, 60 * 60 * 1000];
+
+async function failOnce(
+  t: ReturnType<typeof convexTest>,
+  seeded: Seeded,
+  retryable: boolean,
+) {
+  const runId = await t.run(async (ctx) =>
+    ctx.db.insert("syncRuns", {
+      userId: seeded.userId,
+      connectionId: seeded.connectionId,
+      trigger: "cron",
+      status: "running",
+      startedAt: Date.now(),
+    }),
+  );
+  await t.mutation(internal.syncData.finishRun, {
+    runId,
+    status: "error",
+    error: "Notion returned 502",
+    retryable,
+  });
+}
+
+async function scheduledRetries(t: ReturnType<typeof convexTest>) {
+  return await t.run(async (ctx) => {
+    const jobs = await ctx.db.system.query("_scheduled_functions").collect();
+    return jobs.filter((job) => job.name.includes("runForConnection"));
+  });
+}
+
+test("a failure worth retrying schedules the next attempt itself", async () => {
+  const t = convexTest(schema, modules);
+  const seeded = await seed(t);
+
+  await failOnce(t, seeded, true);
+
+  const jobs = await scheduledRetries(t);
+  expect(jobs).toHaveLength(1);
+  expect(jobs[0].args[0]).toMatchObject({ trigger: "retry" });
+  expect(jobs[0].scheduledTime - Date.now()).toBeGreaterThan(
+    RETRY_DELAYS_MS[0] - 5_000,
+  );
+  const connection = await t.run(async (ctx) => ctx.db.get(seeded.connectionId));
+  expect(connection?.syncRetryCount).toBe(1);
+});
+
+test("a failure a human has to fix schedules nothing", async () => {
+  const t = convexTest(schema, modules);
+  const seeded = await seed(t);
+
+  await failOnce(t, seeded, false);
+
+  expect(await scheduledRetries(t)).toHaveLength(0);
+  const connection = await t.run(async (ctx) => ctx.db.get(seeded.connectionId));
+  expect(connection?.syncRetryCount).toBeUndefined();
+});
+
+test("retries back off and then give up", async () => {
+  const t = convexTest(schema, modules);
+  const seeded = await seed(t);
+
+  for (let attempt = 0; attempt < RETRY_DELAYS_MS.length; attempt++) {
+    await failOnce(t, seeded, true);
+  }
+  const jobs = await scheduledRetries(t);
+  expect(jobs).toHaveLength(RETRY_DELAYS_MS.length);
+  const delays = jobs
+    .map((job) => job.scheduledTime - Date.now())
+    .sort((a, b) => a - b);
+  // Growing, not a fixed interval: a failure that survives five minutes is
+  // unlikely to clear in another five.
+  expect(delays[0]).toBeLessThan(delays[1]);
+  expect(delays[1]).toBeLessThan(delays[2]);
+
+  // One past the end of the list. The daily sweep is the backstop from here.
+  await failOnce(t, seeded, true);
+  expect(await scheduledRetries(t)).toHaveLength(RETRY_DELAYS_MS.length);
+});
+
+test("a run that works clears the retry count", async () => {
+  const t = convexTest(schema, modules);
+  const seeded = await seed(t);
+  await failOnce(t, seeded, true);
+
+  const runId = await t.run(async (ctx) =>
+    ctx.db.insert("syncRuns", {
+      userId: seeded.userId,
+      connectionId: seeded.connectionId,
+      trigger: "retry",
+      status: "running",
+      startedAt: Date.now(),
+    }),
+  );
+  await t.mutation(internal.syncData.finishRun, { runId, status: "success" });
+
+  const connection = await t.run(async (ctx) => ctx.db.get(seeded.connectionId));
+  expect(connection?.syncRetryCount).toBeUndefined();
+});
+

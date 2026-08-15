@@ -180,6 +180,11 @@ export default defineSchema({
     // morning, so without a record of what has already been said, every
     // morning would be a fresh comment about the same dead bank.
     notifiedStatusKey: v.optional(v.string()),
+    // Consecutive automatic retries since the last run that worked. A run
+    // that fails for a passing reason schedules the next one itself rather
+    // than leaving the connection stale until the daily sweep; this is what
+    // gives that up after a few tries. Cleared by any successful run.
+    syncRetryCount: v.optional(v.number()),
   })
     .index("by_user", ["userId"])
     .index("by_plaid_item", ["plaidItemId"]),
@@ -342,6 +347,9 @@ export default defineSchema({
       v.literal("webhook"),
       v.literal("manual"),
       v.literal("cron"),
+      // Scheduled by the run before it, which failed for a reason worth
+      // trying again — see finishRun.
+      v.literal("retry"),
     ),
     status: v.union(
       v.literal("running"),

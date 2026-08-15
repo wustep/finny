@@ -44,6 +44,7 @@ const triggerValidator = v.union(
   v.literal("webhook"),
   v.literal("manual"),
   v.literal("cron"),
+  v.literal("retry"),
 );
 
 // How long a lease survives without a heartbeat. Long enough for the
@@ -152,11 +153,23 @@ export const addRunStats = internalMutation({
   },
 });
 
+// How long after a failed run the next attempt is due. Growing, because a
+// failure that survives five minutes is unlikely to clear in another five;
+// short enough that the first two land well inside the day the daily sweep
+// would otherwise have made the user wait.
+const RETRY_DELAYS_MS = [5 * 60 * 1000, 20 * 60 * 1000, 60 * 60 * 1000];
+
 export const finishRun = internalMutation({
   args: {
     runId: v.id("syncRuns"),
     status: v.union(v.literal("success"), v.literal("error")),
     error: v.optional(v.string()),
+    // Whether this failure is the kind another attempt could get past — a
+    // Notion 5xx, a rate limit, a page that failed to write. Callers pass
+    // false for anything a human has to fix first (a broken bank, a
+    // destination that went away), where retrying only writes the same error
+    // to the log three more times.
+    retryable: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
     const run = await ctx.db.get(args.runId);
@@ -187,6 +200,8 @@ export const finishRun = internalMutation({
         status: "active",
         errorCode: undefined,
       });
+      // A run that worked ends the retry sequence, whatever it took.
+      await ctx.db.patch(run.connectionId, { syncRetryCount: undefined });
       if (recovered) {
         // A bank that fixed itself is worth saying out loud, since the user
         // was told when it broke. The push is what writes the Notion row's
@@ -197,7 +212,27 @@ export const finishRun = internalMutation({
           { connectionId: run.connectionId },
         );
       }
+      return;
     }
+    if (!args.retryable || !connection) {
+      return;
+    }
+    // Scheduled from here rather than from the action that failed, because
+    // this is the one place every failure passes through — and because the
+    // lease is released in the same transaction, so the retry cannot arrive
+    // to find the connection still locked by the run that scheduled it.
+    const attempt = connection.syncRetryCount ?? 0;
+    const delay = RETRY_DELAYS_MS[attempt];
+    if (delay === undefined) {
+      // Out of attempts. The daily sweep is the backstop, and the run rows
+      // say what has been happening.
+      return;
+    }
+    await ctx.db.patch(run.connectionId, { syncRetryCount: attempt + 1 });
+    await ctx.scheduler.runAfter(delay, internal.sync.runForConnection, {
+      connectionId: run.connectionId,
+      trigger: "retry",
+    });
   },
 });
 
