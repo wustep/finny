@@ -683,3 +683,82 @@ test("the teardown page spans kinds, including the unbounded ones", async () => 
     "page-transaction",
   ]);
 });
+
+test("a connection is only commented about when its state changes", async () => {
+  const t = convexTest(schema, modules);
+  const seeded = await seed(t);
+  const claim = () =>
+    t.mutation(internal.syncData.claimStatusNotification, {
+      connectionId: seeded.connectionId,
+    });
+  const setStatus = (
+    status: "active" | "error" | "pending_expiration",
+    errorCode?: string,
+  ) =>
+    t.run(async (ctx) => {
+      await ctx.db.patch(seeded.connectionId, { status, errorCode });
+    });
+
+  // A connection that has always worked is not news.
+  expect(await claim()).toBeNull();
+
+  await setStatus("error", "ITEM_LOGIN_REQUIRED");
+  expect(await claim()).toMatchObject({
+    status: "error",
+    errorCode: "ITEM_LOGIN_REQUIRED",
+  });
+  // The daily sweep pushes the status of a broken Item every morning; only
+  // the first one is a comment.
+  expect(await claim()).toBeNull();
+  expect(await claim()).toBeNull();
+
+  // A different reason for being broken is a different thing to say.
+  await setStatus("error", "INSTITUTION_DOWN");
+  expect(await claim()).toMatchObject({ errorCode: "INSTITUTION_DOWN" });
+
+  await setStatus("active", undefined);
+  expect(await claim()).toMatchObject({ status: "active" });
+  expect(await claim()).toBeNull();
+
+  // And it can break again afterwards.
+  await setStatus("error", "ITEM_LOGIN_REQUIRED");
+  expect(await claim()).toMatchObject({ errorCode: "ITEM_LOGIN_REQUIRED" });
+});
+
+test("a run that recovers a broken connection schedules the news", async () => {
+  const t = convexTest(schema, modules);
+  const seeded = await seed(t);
+  await t.run(async (ctx) => {
+    await ctx.db.patch(seeded.connectionId, {
+      status: "error",
+      errorCode: "ITEM_LOGIN_REQUIRED",
+    });
+  });
+
+  await t.mutation(internal.syncData.finishRun, {
+    runId: seeded.runId,
+    status: "success",
+  });
+
+  const scheduled = await t.run(async (ctx) =>
+    ctx.db.system.query("_scheduled_functions").collect(),
+  );
+  expect(
+    scheduled.filter((job) => job.name.includes("pushConnectionStatusToNotion")),
+  ).toHaveLength(1);
+});
+
+test("a run on a healthy connection says nothing", async () => {
+  const t = convexTest(schema, modules);
+  const seeded = await seed(t);
+
+  await t.mutation(internal.syncData.finishRun, {
+    runId: seeded.runId,
+    status: "success",
+  });
+
+  const scheduled = await t.run(async (ctx) =>
+    ctx.db.system.query("_scheduled_functions").collect(),
+  );
+  expect(scheduled).toHaveLength(0);
+});

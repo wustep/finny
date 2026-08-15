@@ -109,6 +109,11 @@ npx convex env set NOTION_CLIENT_ID <client-id>
 npx convex env set NOTION_CLIENT_SECRET <client-secret>
 ```
 
+Under **Capabilities**, leave *Insert comments* on. Finny comments on a bank's
+row in Notion when it breaks or comes back, which is how you find out without
+opening the app. Without the capability everything else still works and the
+comment is skipped.
+
 ### 6. Access password
 
 Sign-in is open to any Google account, so an extra shared password gates

@@ -180,12 +180,55 @@ export const finishRun = internalMutation({
       });
     }
     if (args.status === "success") {
+      const recovered = connection !== null && connection.status !== "active";
       await ctx.db.patch(run.connectionId, {
         lastSyncedAt: Date.now(),
         status: "active",
         errorCode: undefined,
       });
+      if (recovered) {
+        // A bank that fixed itself is worth saying out loud, since the user
+        // was told when it broke. The push is what writes the Notion row's
+        // Status and leaves the comment; it de-duplicates itself.
+        await ctx.scheduler.runAfter(
+          0,
+          internal.sync.pushConnectionStatusToNotion,
+          { connectionId: run.connectionId },
+        );
+      }
     }
+  },
+});
+
+// Take the right to comment about this connection's current state, once.
+//
+// Read-and-set in one mutation because several paths reach here at the same
+// moment — a webhook, the run it schedules, and the daily sweep — and mutations
+// are serialisable, so exactly one of them comes away with the claim. Returns
+// null when there is nothing new to say.
+export const claimStatusNotification = internalMutation({
+  args: { connectionId: v.id("bankConnections") },
+  handler: async (ctx, args) => {
+    const connection = await ctx.db.get(args.connectionId);
+    if (!connection) {
+      return null;
+    }
+    const key = `${connection.status}:${connection.errorCode ?? ""}`;
+    if (connection.notifiedStatusKey === key) {
+      return null;
+    }
+    const first = connection.notifiedStatusKey === undefined;
+    await ctx.db.patch(args.connectionId, { notifiedStatusKey: key });
+    // A connection that has never been commented about and is simply working
+    // is not news; saying "all fine" the first time a sync runs would be.
+    if (first && connection.status === "active") {
+      return null;
+    }
+    return {
+      status: connection.status,
+      errorCode: connection.errorCode,
+      institutionName: connection.institutionName,
+    };
   },
 });
 

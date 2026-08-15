@@ -38,12 +38,18 @@ import type {
 } from "plaid";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
-import { action, internalAction, type ActionCtx } from "./_generated/server";
+import {
+  action,
+  env,
+  internalAction,
+  type ActionCtx,
+} from "./_generated/server";
 import {
   P,
   accountTitle,
   archivePage,
   categoryName,
+  createComment,
   createPage,
   externalIcon,
   fileUploadIcon,
@@ -421,11 +427,73 @@ export const pushConnectionStatusToNotion = internalAction({
       await updatePage(notion.accessToken, pageId, {
         Status: P.select(notionStatus(connection.status)),
       });
+      await commentOnStatusChange(ctx, args.connectionId, notion.accessToken, pageId);
     } catch (error) {
       console.error("failed to write connection status to Notion", error);
     }
   },
 });
+
+// What to say about a connection that has just changed state, or null when
+// its state is not worth a comment.
+function statusComment(input: {
+  status: Doc<"bankConnections">["status"];
+  errorCode?: string;
+  institutionName: string;
+}): string | null {
+  const app = env.SITE_URL ? ` Reconnect it at ${env.SITE_URL}` : "";
+  switch (input.status) {
+    case "error":
+      return (
+        `⚠️ Finny can't reach ${input.institutionName} any more, so nothing ` +
+        `from it is reaching this page.${app}` +
+        (input.errorCode ? ` (${input.errorCode})` : "")
+      );
+    case "pending_expiration":
+      return (
+        `⏳ ${input.institutionName} is about to stop sharing data with ` +
+        `Finny — banks that sign you in through their own site expire every ` +
+        `few months.${app}`
+      );
+    case "active":
+      return `✅ ${input.institutionName} is working again.`;
+  }
+}
+
+// Tell the user, in the one place they already look at this data.
+//
+// A comment on the Bank Connections row lands in their Notion inbox, which
+// needs no email provider, no address on file, and carries nothing Finny is
+// not allowed to keep — an institution name and a Plaid error code.
+//
+// Claimed through a mutation so the daily sweep, the webhook, and the run the
+// webhook schedules cannot each say the same thing; and never throws, because
+// a bank being broken is already the bad news.
+async function commentOnStatusChange(
+  ctx: ActionCtx,
+  connectionId: Id<"bankConnections">,
+  token: string,
+  pageId: string,
+): Promise<void> {
+  const claim = await ctx.runMutation(
+    internal.syncData.claimStatusNotification,
+    { connectionId },
+  );
+  if (!claim) {
+    return;
+  }
+  const text = statusComment(claim);
+  if (!text) {
+    return;
+  }
+  try {
+    await createComment(token, pageId, text);
+  } catch (error) {
+    // The integration may not have been granted the insert-comments
+    // capability, which is a 403 every time and not worth a failed sync.
+    console.error("failed to comment on connection status", error);
+  }
+}
 
 // ---------- stage 1: connection, accounts, balances, holdings ----------
 

@@ -113,6 +113,11 @@ export default defineSchema({
     // When a webhook arrived while the lease was held, the time the retry
     // it queued is due. Keeps a burst of webhooks to one pending follow-up.
     syncFollowUpAt: v.optional(v.number()),
+    // The `status:errorCode` this connection was last commented about in
+    // Notion. The daily sweep pushes the status of a broken Item every
+    // morning, so without a record of what has already been said, every
+    // morning would be a fresh comment about the same dead bank.
+    notifiedStatusKey: v.optional(v.string()),
   })
     .index("by_user", ["userId"])
     .index("by_plaid_item", ["plaidItemId"]),
