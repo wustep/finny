@@ -12,10 +12,10 @@ import {
   query,
   type ActionCtx,
 } from "./_generated/server";
+import { NOTION_VERSION, notionFetch } from "./notionApi";
 import { DATABASE_SPECS, MODULE_DATABASES } from "./notionSchemas";
 import { allowedOrigins } from "./origins";
 
-const NOTION_VERSION = "2022-06-28";
 const OAUTH_STATE_TTL_MS = 15 * 60 * 1000;
 
 const modulesValidator = v.object({
@@ -41,29 +41,6 @@ async function requireAccess(
   if (!ok) {
     throw new Error("Access password required");
   }
-}
-
-async function notionFetch(
-  token: string,
-  path: string,
-  init?: { method?: string; body?: unknown },
-) {
-  const response = await fetch(`https://api.notion.com/v1${path}`, {
-    method: init?.method ?? "GET",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Notion-Version": NOTION_VERSION,
-      "Content-Type": "application/json",
-    },
-    body: init?.body === undefined ? undefined : JSON.stringify(init.body),
-  });
-  const data: any = await response.json();
-  if (!response.ok) {
-    throw new Error(
-      `Notion API ${path} failed (${response.status}): ${data?.message ?? "unknown"}`,
-    );
-  }
-  return data;
 }
 
 // ---------- status / config ----------
@@ -104,6 +81,10 @@ export const getStatus = query({
 // "Notion is down". It hits the Notion API on every call, so it is a one-shot
 // action the destination page runs on load and on demand — never a reactive
 // query.
+//
+// The one call in this file that does not go through notionFetch: the status
+// code is the answer here, and notionFetch's job is to turn a failure into a
+// thrown Error after retrying it.
 export const checkHealth = action({
   args: {},
   handler: async (

@@ -302,23 +302,29 @@ export const recentRuns = query({
       .withIndex("by_user", (q) => q.eq("userId", userId))
       .order("desc")
       .take(10);
-    return Promise.all(
-      runs.map(async (run) => {
-        const connection = run.connectionId
-          ? await ctx.db.get(run.connectionId)
-          : null;
-        return {
-          id: run._id,
-          institutionName: connection?.institutionName ?? "Unknown",
-          trigger: run.trigger,
-          status: run.status,
-          startedAt: run.startedAt,
-          finishedAt: run.finishedAt,
-          stats: run.stats,
-          error: run.error,
-        };
-      }),
-    );
+    // Ten runs are usually ten runs of the same two or three connections, and
+    // this query is reactive — it re-runs on every stats bump of a live sync.
+    // Read each connection once.
+    const names = new Map<string, string>();
+    for (const connectionId of new Set(
+      runs.flatMap((run) => (run.connectionId ? [run.connectionId] : [])),
+    )) {
+      const connection = await ctx.db.get(connectionId);
+      if (connection) {
+        names.set(connectionId, connection.institutionName);
+      }
+    }
+    return runs.map((run) => ({
+      id: run._id,
+      institutionName:
+        (run.connectionId && names.get(run.connectionId)) || "Unknown",
+      trigger: run.trigger,
+      status: run.status,
+      startedAt: run.startedAt,
+      finishedAt: run.finishedAt,
+      stats: run.stats,
+      error: run.error,
+    }));
   },
 });
 
@@ -451,6 +457,31 @@ export const saveConnection = internalMutation({
       }
     }
     return connectionId;
+  },
+});
+
+// Mark a connection broken from inside a sync, which is where most Item
+// failures are actually discovered: Plaid sends an ITEM ERROR webhook, but not
+// for every case and not always before the next scheduled run. Without this
+// the run row carries the error and the connection keeps saying "Active", so
+// the Accounts page offers no reconnect and the Notion row stays green.
+//
+// Only ever moves a connection to a broken state — a sync that succeeds clears
+// it through finishRun, so this never has to argue with that.
+export const markItemBroken = internalMutation({
+  args: {
+    connectionId: v.id("bankConnections"),
+    errorCode: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const connection = await ctx.db.get(args.connectionId);
+    if (!connection || connection.status === "error") {
+      return;
+    }
+    await ctx.db.patch(args.connectionId, {
+      status: "error",
+      errorCode: args.errorCode,
+    });
   },
 });
 

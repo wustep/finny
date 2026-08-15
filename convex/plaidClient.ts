@@ -42,6 +42,52 @@ export function plaidClient(forEnv?: PlaidEnv) {
   );
 }
 
+// Plaid's error codes that mean this Item needs the user, not another try.
+// Anything else — a rate limit, an institution outage, a 5xx — is transient,
+// and marking the connection broken over one would send the user to a
+// reconnect flow that fixes nothing.
+const ITEM_BROKEN_CODES: ReadonlySet<string> = new Set([
+  "ITEM_LOGIN_REQUIRED",
+  "ITEM_LOCKED",
+  "ITEM_NOT_FOUND",
+  "ITEM_NOT_SUPPORTED",
+  "INVALID_CREDENTIALS",
+  "INVALID_MFA",
+  "INVALID_UPDATED_USERNAME",
+  "INSUFFICIENT_CREDENTIALS",
+  "USER_PERMISSION_REVOKED",
+  "ACCESS_NOT_GRANTED",
+  "NO_ACCOUNTS",
+]);
+
+export interface PlaidErrorInfo {
+  code?: string;
+  // Already fit to show a user or write on a run row.
+  message: string;
+  // True when the connection should be marked broken so the app offers a
+  // reconnect, rather than waiting for a webhook that may never come.
+  itemBroken: boolean;
+}
+
+// Read Plaid's error body off a thrown axios error.
+//
+// Without this a failed Plaid call reaches a run row as
+// "Error: Request failed with status code 400", which says nothing about
+// which of the two dozen reasons it was. The body carries error_code and
+// error_message; both only live on error.response.data.
+export function plaidErrorInfo(error: any): PlaidErrorInfo {
+  const body = error?.response?.data;
+  const code: string | undefined = body?.error_code;
+  const detail: string | undefined = body?.error_message;
+  return {
+    code,
+    message: code
+      ? `Plaid ${code}: ${detail ?? "no further detail"}`
+      : `Plaid request failed: ${error?.message ?? String(error)}`,
+    itemBroken: code !== undefined && ITEM_BROKEN_CODES.has(code),
+  };
+}
+
 // Plaid's error body (error_code, error_message, ...) only lives on
 // error.response.data — axios errors otherwise log as a bare status code.
 // Wrap calls with this so Convex logs show the actual Plaid error.

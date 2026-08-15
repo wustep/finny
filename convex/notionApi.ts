@@ -14,7 +14,7 @@ export {
   titleCase,
 } from "./syncMappers";
 
-const NOTION_VERSION = "2022-06-28";
+export const NOTION_VERSION = "2022-06-28";
 // File uploads, and file-backed page icons, postdate 2022-06-28. Only those
 // calls opt into the newer version; everything else stays on the version
 // whose database semantics the rest of this integration is written against.
@@ -24,12 +24,57 @@ function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// Notion allows roughly three requests a second per integration token, and
+// answers a burst with 429s. Firing as fast as the loop can go and retrying
+// the rejections is strictly slower than not being rejected: every 429 costs
+// a round trip plus at least a second of backoff, and the retry budget is
+// then gone if a real conflict follows.
+//
+// So requests queue behind one another at a fixed spacing. The queue is a
+// promise chain rather than a timer, which keeps the ordering the caller
+// wrote and needs no cleanup — an action that ends mid-chain simply stops.
+const MIN_REQUEST_INTERVAL_MS = 340;
+
+// Module state, so the spacing covers one action invocation: the bursts that
+// matter are inside a single batch (a hundred transactions written in one
+// transactionsBatch), and Convex gives concurrent actions their own module
+// instances anyway. The lease in sync.ts is what stops two runs of the same
+// connection overlapping; two different connections sharing a token is the
+// residual case, and the 429 retry below still covers it.
+let nextSlot = Promise.resolve();
+let lastStartedAt = 0;
+
+function takeSlot(): Promise<void> {
+  const slot = nextSlot.then(async () => {
+    const wait = lastStartedAt + MIN_REQUEST_INTERVAL_MS - Date.now();
+    if (wait > 0) {
+      await sleep(wait);
+    }
+    lastStartedAt = Date.now();
+  });
+  // The chain must survive a rejection, or one failed slot poisons every
+  // request that queues behind it.
+  nextSlot = slot.catch(() => {});
+  return slot;
+}
+
+// How many times a retryable response is retried before the error is thrown.
+const MAX_ATTEMPTS = 5;
+
+// Exponential with full jitter. Two syncs that hit the same limit at the same
+// moment otherwise back off in lockstep and collide again on every retry.
+function backoffMs(attempt: number): number {
+  const ceiling = Math.min(500 * 2 ** attempt, 8_000);
+  return ceiling / 2 + Math.random() * (ceiling / 2);
+}
+
 export async function notionFetch(
   token: string,
   path: string,
   init?: { method?: string; body?: unknown; version?: string },
 ): Promise<any> {
   for (let attempt = 0; ; attempt++) {
+    await takeSlot();
     const response = await fetch(`https://api.notion.com/v1${path}`, {
       method: init?.method ?? "GET",
       headers: {
@@ -44,13 +89,13 @@ export async function notionFetch(
       (response.status === 429 ||
         response.status === 409 ||
         response.status >= 500) &&
-      attempt < 4
+      attempt < MAX_ATTEMPTS - 1
     ) {
       const retryAfter = Number(response.headers.get("retry-after"));
       await sleep(
         Number.isFinite(retryAfter) && retryAfter > 0
           ? retryAfter * 1000
-          : 1000 * (attempt + 1),
+          : backoffMs(attempt),
       );
       continue;
     }

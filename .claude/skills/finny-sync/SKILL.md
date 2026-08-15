@@ -65,7 +65,18 @@ the right side of that line.
   seen, and those are archived (capped per run). A short walk archives live
   history, which is why `pageErrors` gates it.
 - The daily sweep walks all users' connections in batched passes, carrying its
-  15s stagger and its creation-time cursor through the continuation.
+  15s stagger and its creation-time cursor through the continuation. Before it
+  schedules anything it closes out stale runs and then prunes history
+  (`syncData.pruneHistory`: finished runs past 30 days, OAuth states past an
+  hour) — in that order, so a run the sweep just failed is never also deleted.
+- A failed run says what failed: every catch goes through `failRun`, which
+  unwraps Plaid's `error_code`/`error_message` (`plaidErrorInfo` in
+  `plaidClient.ts`) instead of letting `String(error)` write "Request failed
+  with status code 400". Codes in `ITEM_BROKEN_CODES` also mark the connection
+  `error` and mirror that to Notion, because a sync is where most broken Items
+  are found and the ITEM ERROR webhook does not cover every case. Transient
+  codes (rate limits, institution outages, 5xx) must stay out of that set — a
+  reconnect fixes none of them.
 - Pending → posted: when an added transaction carries a
   `pending_transaction_id` that is already mapped, update that page and
   `syncData.rekeyMapEntry` to the posted id. Never create a second page.
@@ -83,6 +94,15 @@ the right side of that line.
 - The Notion property names in this file are a live contract with the
   databases built by `convex/notionSchemas.ts`; renaming one renames a
   column users already have data in.
+
+## 3b. Talking to Notion (`convex/notionApi.ts`)
+
+Every Notion call goes through `notionFetch` — the setup actions in
+`notion.ts` included. It spaces requests ~340ms apart (Notion allows about
+three a second and answers a burst with 429s, which cost more than the wait)
+and retries 429/409/5xx with jittered exponential backoff, honouring
+`Retry-After`. Do not add a second fetch path; the one exception is
+`notion.checkHealth`, which wants the status code rather than a thrown error.
 
 ## 4. Transaction rules (`convex/rulesEngine.ts`, `convex/rules.ts`)
 

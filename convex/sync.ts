@@ -54,7 +54,7 @@ import {
   updatePage,
   uploadDataUri,
 } from "./notionApi";
-import { plaidClient } from "./plaidClient";
+import { plaidClient, plaidErrorInfo } from "./plaidClient";
 import { evaluate, pfcPrimary, type Rule } from "./rulesEngine";
 import {
   accountProperties,
@@ -100,6 +100,65 @@ async function loadContext(
     return null;
   }
   return context as SyncContext;
+}
+
+// ---------- failure handling ----------
+
+// Note that a Plaid failure was the Item's fault, not a passing one.
+//
+// A sync is where most broken Items are actually discovered: Plaid's ITEM
+// ERROR webhook covers some cases, arrives late for others, and never arrives
+// for an Item whose access was revoked outside the bank's own flow. Until the
+// connection is marked, the Accounts page shows it as Active with no reconnect
+// button and the daily cron keeps producing the same error.
+//
+// Transient codes — rate limits, institution outages, 5xx — are deliberately
+// not marked: a reconnect fixes none of them, and the next run will work.
+async function noteItemBroken(
+  ctx: ActionCtx,
+  connectionId: Id<"bankConnections">,
+  error: unknown,
+): Promise<void> {
+  const info = plaidErrorInfo(error);
+  if (!info.itemBroken) {
+    return;
+  }
+  await ctx.runMutation(internal.connections.markItemBroken, {
+    connectionId,
+    errorCode: info.code,
+  });
+  // The Notion Bank Connections row says Active until something tells it
+  // otherwise, and no sync will run to correct it while the Item is broken.
+  await ctx.scheduler.runAfter(0, internal.sync.pushConnectionStatusToNotion, {
+    connectionId,
+  });
+}
+
+// End a run in error, saying what actually went wrong.
+//
+// `String(error)` on a failed Plaid call reads "Error: Request failed with
+// status code 400", which is the one thing about it that does not matter.
+// Plaid's error_code and error_message are on the response body, so a Plaid
+// failure is unwrapped; anything else (a Notion write, a bug here) keeps its
+// own message behind a note of which stage it came from.
+async function failRun(
+  ctx: ActionCtx,
+  input: {
+    runId: Id<"syncRuns">;
+    connectionId: Id<"bankConnections">;
+    stage: string;
+    error: unknown;
+  },
+): Promise<void> {
+  const info = plaidErrorInfo(input.error);
+  await noteItemBroken(ctx, input.connectionId, input.error);
+  await ctx.runMutation(internal.syncData.finishRun, {
+    runId: input.runId,
+    status: "error",
+    error: info.code
+      ? `${input.stage}: ${info.message}`
+      : `${input.stage}: ${String(input.error)}`,
+  });
 }
 
 // ---------- triggers ----------
@@ -410,10 +469,11 @@ export const runForConnection = internalAction({
       await scheduleNextStage(ctx, { context, runId, completed: [] });
     } catch (error) {
       console.error("sync failed", error);
-      await ctx.runMutation(internal.syncData.finishRun, {
+      await failRun(ctx, {
         runId,
-        status: "error",
-        error: String(error),
+        connectionId: connection._id,
+        stage: "Accounts and balances",
+        error,
       });
     }
   },
@@ -523,13 +583,15 @@ export const accountBackfill = internalAction({
         });
       } catch (error: any) {
         // Nothing here has consumed a cursor, so a failed catch-up costs
-        // only this attempt: keep the flag and let a later run retry.
+        // only this attempt: keep the flag and let a later run retry. The
+        // Item still gets marked if the reason was the Item — the rest of
+        // this run would only fail the same way.
         console.error(
           "account catch-up failed",
           args.plaidAccountId,
-          error?.response?.data?.error_code,
-          error?.message,
+          plaidErrorInfo(error).message,
         );
+        await noteItemBroken(ctx, args.connectionId, error);
         await moveOn();
         return;
       }
@@ -623,10 +685,11 @@ export const accountBackfill = internalAction({
       await moveOn();
     } catch (error) {
       console.error("account catch-up batch failed", error);
-      await ctx.runMutation(internal.syncData.finishRun, {
+      await failRun(ctx, {
         runId: args.runId,
-        status: "error",
-        error: String(error),
+        connectionId: args.connectionId,
+        stage: "Account catch-up",
+        error,
       });
     }
   },
@@ -913,10 +976,11 @@ export const transactionsBatch = internalAction({
       }
     } catch (error) {
       console.error("transaction batch failed", error);
-      await ctx.runMutation(internal.syncData.finishRun, {
+      await failRun(ctx, {
         runId: args.runId,
-        status: "error",
-        error: String(error),
+        connectionId: args.connectionId,
+        stage: "Transactions",
+        error,
       });
     }
   },
@@ -980,12 +1044,11 @@ export const investmentsBatch = internalAction({
           return;
         }
         console.error("investment transactions failed", code, error?.message);
-        await ctx.runMutation(internal.syncData.finishRun, {
+        await failRun(ctx, {
           runId: args.runId,
-          status: "error",
-          error: `Plaid investments/transactions/get failed (${code ?? "unknown"}): ${
-            error?.response?.data?.error_message ?? error?.message ?? error
-          }`,
+          connectionId: args.connectionId,
+          stage: "Investment transactions",
+          error,
         });
         return;
       }
@@ -1154,10 +1217,11 @@ export const investmentsBatch = internalAction({
       });
     } catch (error) {
       console.error("investments batch failed", error);
-      await ctx.runMutation(internal.syncData.finishRun, {
+      await failRun(ctx, {
         runId: args.runId,
-        status: "error",
-        error: String(error),
+        connectionId: args.connectionId,
+        stage: "Investments",
+        error,
       });
     }
   },
@@ -1826,7 +1890,12 @@ async function syncHoldings(
       access_token: connection.accessToken,
     });
   } catch (error: any) {
-    console.log("holdings unavailable", error?.message);
+    // Holdings are optional — a cash-only Item simply has none — so this
+    // never fails the run. An Item that is broken rather than uninterested
+    // still gets marked, since the stages after this one will hit the same
+    // wall and the user needs the reconnect either way.
+    console.log("holdings unavailable", plaidErrorInfo(error).message);
+    await noteItemBroken(ctx, connection._id, error);
     return;
   }
 
