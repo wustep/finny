@@ -35,26 +35,31 @@ function sleep(ms: number) {
 // wrote and needs no cleanup — an action that ends mid-chain simply stops.
 const MIN_REQUEST_INTERVAL_MS = 340;
 
-// Module state, so the spacing covers one action invocation: the bursts that
-// matter are inside a single batch (a hundred transactions written in one
-// transactionsBatch), and Convex gives concurrent actions their own module
-// instances anyway. The lease in sync.ts is what stops two runs of the same
-// connection overlapping; two different connections sharing a token is the
-// residual case, and the 429 retry below still covers it.
-let nextSlot = Promise.resolve();
-let lastStartedAt = 0;
+// One queue per token, because that is what Notion's limit is per. Sharing a
+// single queue across tokens would make two users' setup flows wait on each
+// other for no reason — module state is not guaranteed to be per-invocation in
+// the V8 runtime that notion.ts runs in, only in "use node".
+//
+// The queues live as long as the module instance does, which is the point:
+// the bursts that matter are inside a single batch (a hundred transactions
+// written by one transactionsBatch). Two instances syncing different
+// connections of the same workspace at once is the case this cannot see, and
+// the 429 retry below is what covers it.
+const queues = new Map<string, { chain: Promise<void>; lastStartedAt: number }>();
 
-function takeSlot(): Promise<void> {
-  const slot = nextSlot.then(async () => {
-    const wait = lastStartedAt + MIN_REQUEST_INTERVAL_MS - Date.now();
+function takeSlot(token: string): Promise<void> {
+  const queue = queues.get(token) ?? { chain: Promise.resolve(), lastStartedAt: 0 };
+  queues.set(token, queue);
+  const slot = queue.chain.then(async () => {
+    const wait = queue.lastStartedAt + MIN_REQUEST_INTERVAL_MS - Date.now();
     if (wait > 0) {
       await sleep(wait);
     }
-    lastStartedAt = Date.now();
+    queue.lastStartedAt = Date.now();
   });
   // The chain must survive a rejection, or one failed slot poisons every
   // request that queues behind it.
-  nextSlot = slot.catch(() => {});
+  queue.chain = slot.catch(() => {});
   return slot;
 }
 
@@ -74,7 +79,7 @@ export async function notionFetch(
   init?: { method?: string; body?: unknown; version?: string },
 ): Promise<any> {
   for (let attempt = 0; ; attempt++) {
-    await takeSlot();
+    await takeSlot(token);
     const response = await fetch(`https://api.notion.com/v1${path}`, {
       method: init?.method ?? "GET",
       headers: {

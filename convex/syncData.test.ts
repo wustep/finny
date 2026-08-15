@@ -491,3 +491,93 @@ test("pruneHistory clears OAuth states left behind by abandoned flows", async ()
   );
   expect(left.map((row) => row.state)).toEqual(["in-flight"]);
 });
+
+test("pruneHistory drops balance snapshot page ids for days gone by", async () => {
+  const t = convexTest(schema, modules);
+  const OLD = Date.now() - 91 * 24 * 60 * 60 * 1000;
+
+  const userId = await atTime(OLD, async () =>
+    t.run(async (ctx) => {
+      const userId = await ctx.db.insert("users", { email: "saver@example.com" });
+      await ctx.db.insert("notionPageMap", {
+        userId,
+        kind: "balanceSnapshot",
+        providerId: "acct-a|2026-05-01",
+        notionPageId: "page-old",
+        accountId: "acct-a",
+      });
+      // Only the snapshot kind is prunable: a transaction id can come back
+      // from Plaid at any time, so its mapping has to outlive the row's age.
+      await ctx.db.insert("notionPageMap", {
+        userId,
+        kind: "transaction",
+        providerId: "txn-old",
+        notionPageId: "page-txn",
+        accountId: "acct-a",
+      });
+      return userId;
+    }),
+  );
+
+  await t.run(async (ctx) => {
+    await ctx.db.insert("notionPageMap", {
+      userId,
+      kind: "balanceSnapshot",
+      providerId: "acct-a|2026-08-15",
+      notionPageId: "page-today",
+      accountId: "acct-a",
+    });
+  });
+
+  expect(await t.mutation(internal.syncData.pruneHistory, {})).toMatchObject({
+    balanceSnapshots: 1,
+  });
+
+  const left = await t.run(async (ctx) =>
+    ctx.db.query("notionPageMap").collect(),
+  );
+  expect(left.map((row) => row.notionPageId).sort()).toEqual([
+    "page-today",
+    "page-txn",
+  ]);
+});
+
+test("pruneHistory forgets a quiet access attempt but keeps a live one", async () => {
+  const t = convexTest(schema, modules);
+  const DAY = 24 * 60 * 60 * 1000;
+
+  await atTime(Date.now() - 2 * DAY, async () =>
+    t.run(async (ctx) => {
+      await ctx.db.insert("accessAttempts", {
+        ip: "quiet",
+        failures: 3,
+        lastAttemptAt: Date.now(),
+        bannedAt: Date.now(),
+      });
+      // Same age, still being tried against — creation time alone would drop
+      // it, which is why the check is on lastAttemptAt.
+      await ctx.db.insert("accessAttempts", {
+        ip: "persistent",
+        failures: 3,
+        lastAttemptAt: Date.now(),
+        bannedAt: Date.now(),
+      });
+    }),
+  );
+  await t.run(async (ctx) => {
+    const persistent = await ctx.db
+      .query("accessAttempts")
+      .withIndex("by_ip", (q) => q.eq("ip", "persistent"))
+      .unique();
+    await ctx.db.patch(persistent!._id, { lastAttemptAt: Date.now() });
+  });
+
+  expect(await t.mutation(internal.syncData.pruneHistory, {})).toMatchObject({
+    accessAttempts: 1,
+  });
+
+  const left = await t.run(async (ctx) =>
+    ctx.db.query("accessAttempts").collect(),
+  );
+  expect(left.map((row) => row.ip)).toEqual(["persistent"]);
+});

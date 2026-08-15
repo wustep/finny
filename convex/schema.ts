@@ -165,8 +165,9 @@ export default defineSchema({
     databases: v.optional(v.record(v.string(), v.string())),
   }).index("by_user", ["userId"]),
 
-  // Access-password attempts per IP. 3 consecutive failures bans the IP
-  // (cleared manually from the dashboard).
+  // Access-password attempts per IP. 3 consecutive failures bans the IP for
+  // ACCESS_BAN_MS (see access.ts); the row is cleared by the daily prune once
+  // it has been quiet that long.
   accessAttempts: defineTable({
     ip: v.string(),
     failures: v.number(),
@@ -234,7 +235,12 @@ export default defineSchema({
       "kind",
       "accountId",
       "providerId",
-    ]),
+    ])
+    // Oldest rows of one kind, across all users — every Convex index ends in
+    // _creationTime, which is what makes this a bounded read. Only the daily
+    // prune uses it, to drop balance-snapshot rows whose key (account + a past
+    // date) can never be looked up again.
+    .index("by_kind", ["kind"]),
 
   // User overrides applied to transactions as they sync: recategorise,
   // retitle, or keep out of Notion. Config, not data — the conditions are
