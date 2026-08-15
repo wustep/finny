@@ -178,6 +178,23 @@ again forever; a 404 is the outcome we wanted. Cursors are only rewound and
 syncs only scheduled at the end of the chain (`startRebuild`), so a rebuild
 never races the teardown.
 
+## 6d. Telling the user a bank broke (`convex/sync.ts`)
+
+`pushConnectionStatusToNotion` writes the Status property and then leaves a
+comment on the same row when the state has actually changed. The comment is
+the notification: it lands in the user's Notion inbox, needs no email
+provider, and carries only an institution name and a Plaid error code — which
+is the only reason this is allowed to exist at all.
+
+The claim is what stops it repeating: `syncData.claimStatusNotification` reads
+and sets `notifiedStatusKey` (`status:errorCode`) in one mutation, so the
+webhook, the run it schedules, and the daily sweep — all of which push the
+status of a broken Item — say it once between them. A first-ever claim on an
+`active` connection returns null, because "still fine" is not news.
+`finishRun` schedules a push only when a run actually recovers a broken
+connection. Commenting never throws: the integration may not have the
+insert-comments capability, which is a 403 forever.
+
 ## 7. Docs
 
 PLAN.md's Notion property tables are stale — `convex/notionSchemas.ts` is

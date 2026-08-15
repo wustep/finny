@@ -226,6 +226,30 @@ export async function uploadDataUri(
   return data.id as string;
 }
 
+// Leave a comment on a page.
+//
+// This is how Finny tells someone a bank stopped working. It lands in their
+// Notion inbox, which is where they already are, and it needs no email
+// provider, no address on file, and no delivery of anything Finny is not
+// allowed to store — the text names an institution and a Plaid error code and
+// nothing else.
+//
+// Requires the "insert comments" capability on the integration; without it
+// Notion answers 403 and the caller is expected to shrug.
+export function createComment(
+  token: string,
+  pageId: string,
+  text: string,
+): Promise<any> {
+  return notionFetch(token, "/comments", {
+    method: "POST",
+    body: {
+      parent: { page_id: pageId },
+      rich_text: [{ type: "text", text: { content: text.slice(0, 2000) } }],
+    },
+  });
+}
+
 export function archivePage(token: string, pageId: string): Promise<any> {
   return notionFetch(token, `/pages/${pageId}`, {
     method: "PATCH",
