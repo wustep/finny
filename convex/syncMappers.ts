@@ -170,6 +170,15 @@ export function accountProperties(
     "Current Balance": P.number(account.balances.current),
     "Available Balance": P.number(account.balances.available),
     "Account Limit": P.number(account.balances.limit),
+    // Which dollar. Plaid Link is configured for the US and Canada and every
+    // money column is dollar-formatted, so an account in CAD is otherwise
+    // indistinguishable from one in USD. unofficial_currency_code is what
+    // Plaid falls back to for currencies it has no ISO code for.
+    Currency: P.select(
+      account.balances.iso_currency_code ??
+        account.balances.unofficial_currency_code ??
+        null,
+    ),
     "Next Payment Due": P.date(credit?.next_payment_due_date ?? null),
     "Minimum Payment": P.number(credit?.minimum_payment_amount),
     "Last Statement Balance": P.number(credit?.last_statement_balance),
