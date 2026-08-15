@@ -93,7 +93,21 @@ the right side of that line.
   is the only chance a changed rule gets.
 - Priority ascending, and the first enabled rule whose conditions all match
   wins outright: its outcomes (category, rename, hide) apply together and no
-  later rule is consulted. A rule with no conditions matches nothing.
+  later rule is consulted. That one-rule-per-row semantics is load-bearing,
+  not a simplification — Finny stores no transactions, so a row's fate can
+  only be explained if exactly one rule decided it.
+- Conditions are a list, ANDed; several values inside one text or category
+  condition are ORed, and a range is two amount conditions. No nesting, no OR
+  across fields. A rule with no conditions matches nothing.
+- Rules written before conditions were a list are still on disk in the old
+  one-slot-per-field record. Nothing has to be migrated first: `rules.ts`
+  normalises on read through `normalizeConditions`, so the engine and the UI
+  only ever see the list, and `rules.migrateConditions` tidies rows at rest.
+  Writes only ever produce the list.
+- A category condition may name a whole primary group (`FOOD_AND_DRINK`),
+  which matches every detailed category under it, or one detailed category.
+  An outcome may only name a detailed one — a Notion row lands in a category,
+  not a group.
 - Amount conditions use Plaid's sign (positive = money out), the opposite of
   the Notion column. Regexes are compiled defensively — an invalid one
   matches nothing rather than throwing and failing the row.
