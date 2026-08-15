@@ -40,6 +40,11 @@ export async function upsertTransaction(
     accountRowId?: string;
     // Loaded once per batch, never per transaction.
     rules: Rule[];
+    // The destination's title templates, and the names a template may refer
+    // to that only the caller knows — the account's Notion title, and the
+    // category the row ends up in.
+    titleFormats?: Record<string, string>;
+    accountName?: string;
     // Resolves (and creates on first sight) the category page, taking a rule's
     // category override into account. Called after the rules run, so a hidden
     // transaction never creates a category row for a category it never gets.
@@ -71,6 +76,13 @@ export async function upsertTransaction(
     await input.ensureCategory(txn, decision?.categoryId),
     decision?.rename,
     decision?.tags,
+    input.titleFormats,
+    {
+      account: input.accountName,
+      // The category the row actually ends up in, which is the rule's when it
+      // set one — not the one Plaid picked and the rule overrode.
+      category: categoryLabel(decision?.categoryId, txn),
+    },
   );
   // Merchant logos ride along in the request we are already making, so
   // keeping them current costs no extra calls.
@@ -122,6 +134,21 @@ export async function upsertTransaction(
   }
   txnPages[txn.transaction_id] = claimed.pageId;
   return "added";
+}
+
+// What a {category} token in a transaction's title renders as.
+function categoryLabel(
+  override: string | undefined,
+  txn: Transaction,
+): string | undefined {
+  const detailed = override ?? txn.personal_finance_category?.detailed;
+  if (!detailed) {
+    return undefined;
+  }
+  const primary = override
+    ? (pfcPrimary(override) ?? override)
+    : (txn.personal_finance_category?.primary ?? detailed);
+  return categoryName(detailed, primary);
 }
 
 // A rule says this transaction does not belong in Notion.

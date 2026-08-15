@@ -194,6 +194,26 @@ and retries 429/409/5xx with jittered exponential backoff, honouring
 - One-way sync still wins: a rename or category set in Notion is overwritten
   by the next `updatePage`. Rules are the supported way to change either.
 
+## 4b. Title formats (`convex/titleFormats.ts`)
+
+What a synced row is *called*. Deliberately not part of the rules engine: a
+rule is conditional and per transaction, a format is unconditional and per
+database, and only transactions have rules at all. They meet once — a rule's
+`rename` beats the format for the row it matched.
+
+`renderTitle(template, values, fallback)` is pure and shared with the browser.
+Two behaviours carry the design: an empty token closes the gap it leaves (and
+the brackets around it), so one template covers rows with and without a
+merchant without a syntax for alternatives; and a template that renders to
+nothing falls back to the title the code produced before formats existed, so
+an untouched destination is unchanged and an over-ambitious format never
+yields "Untitled". Tokens are validated on write against the database's own
+list.
+
+`{account}` refers to the Notion title of the account row, so it is derived
+through `syncRun.accountTitles` rather than read back — a stage that never
+touched the Accounts database still knows it.
+
 ## 5. Webhooks (`convex/http.ts` → `convex/plaid.ts`)
 
 `/plaid/webhook` acks 200 immediately and schedules

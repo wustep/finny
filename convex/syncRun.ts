@@ -8,7 +8,12 @@
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { env, type ActionCtx } from "./_generated/server";
-import { createComment, fileUploadIcon, uploadDataUri } from "./notionApi";
+import {
+  accountTitle,
+  createComment,
+  fileUploadIcon,
+  uploadDataUri,
+} from "./notionApi";
 import { plaidErrorInfo } from "./plaidClient";
 import type { NotionIcon } from "./syncPages";
 
@@ -43,6 +48,27 @@ export async function loadContext(
 //
 // Transient codes — rate limits, institution outages, 5xx — are deliberately
 // not marked: a reconnect fixes none of them, and the next run will work.
+// The Notion title each of this connection's accounts has, keyed by Plaid
+// account id. What a {account} token in any other database's format refers
+// to, and derived rather than read back so a stage that never touched the
+// Accounts database still knows it.
+export function accountTitles(context: SyncContext): Record<string, string> {
+  return Object.fromEntries(
+    context.accounts.map((account) => [
+      account.plaidAccountId,
+      accountTitle(
+        context.connection.institutionName,
+        {
+          name: account.name,
+          official_name: account.officialName,
+          mask: account.mask,
+        },
+        account.customName,
+      ),
+    ]),
+  );
+}
+
 export function itemIsBroken(error: unknown): boolean {
   return plaidErrorInfo(error).itemBroken;
 }

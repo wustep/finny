@@ -16,7 +16,7 @@ import {
   Wand2,
   X,
 } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
@@ -30,6 +30,12 @@ import {
   type TextField,
   type TextOp,
 } from "../../convex/rulesEngine";
+import {
+  TITLE_FORMATS,
+  renderTitle,
+  unknownTokens,
+  type TitleFormatSpec,
+} from "../../convex/titleFormats";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -218,6 +224,8 @@ function RulesPage() {
         />
       )}
 
+      <TitleFormats />
+
       {editing ? (
         <RuleDialog
           rule={editing === "new" ? null : editing}
@@ -292,6 +300,135 @@ function ApplyToHistory() {
         </DialogContent>
       </Dialog>
     </>
+  );
+}
+
+// Naming, which is not a rule: a rule is conditional and per transaction —
+// which of these rows is special — while a title format is unconditional and
+// per database. They share a page because they answer the same question from
+// two ends, and they meet in exactly one place: a rule's rename beats the
+// format for the row it matched.
+function TitleFormats() {
+  const status = useQuery(api.notion.getStatus);
+  if (!status?.connected || !status.databases) {
+    return null;
+  }
+  const { databases, titleFormats } = status;
+  const available = TITLE_FORMATS.filter((spec) => databases[spec.key]);
+  if (available.length === 0) {
+    return null;
+  }
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Titles</CardTitle>
+        <CardDescription>
+          What each row is called in Notion. Leave one empty for the default.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-5">
+        {available.map((spec) => (
+          <TitleFormatRow
+            key={spec.key}
+            spec={spec}
+            saved={titleFormats?.[spec.key] ?? ""}
+          />
+        ))}
+      </CardContent>
+    </Card>
+  );
+}
+
+function TitleFormatRow({
+  spec,
+  saved,
+}: {
+  spec: TitleFormatSpec;
+  saved: string;
+}) {
+  const setTitleFormat = useMutation(api.notion.setTitleFormat);
+  const [value, setValue] = useState(saved);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => setValue(saved), [saved]);
+
+  const unknown = unknownTokens(spec.key, value);
+  const dirty = value.trim() !== saved.trim();
+
+  const handleSave = () => {
+    setSaving(true);
+    setTitleFormat({ key: spec.key, template: value })
+      .then(() =>
+        toast.success(
+          value.trim()
+            ? `${spec.label} titles updated`
+            : `${spec.label} titles back to the default`,
+        ),
+      )
+      .catch((err: unknown) => {
+        console.error(err);
+        toast.error(
+          err instanceof Error ? err.message : "Could not save that format",
+        );
+      })
+      .finally(() => setSaving(false));
+  };
+
+  return (
+    <div className="flex flex-col gap-2">
+      <Label htmlFor={`format-${spec.key}`}>{spec.label}</Label>
+      <div className="flex flex-wrap items-center gap-2">
+        <Input
+          id={`format-${spec.key}`}
+          className="min-w-64 flex-1 font-mono text-sm"
+          placeholder={`Default: ${spec.fallbackDescription}`}
+          value={value}
+          onChange={(event) => setValue(event.target.value)}
+        />
+        {dirty ? (
+          <Button
+            variant="outline"
+            disabled={saving || unknown.length > 0}
+            onClick={handleSave}
+          >
+            {saving ? "Saving…" : "Save"}
+          </Button>
+        ) : null}
+      </div>
+      <div className="flex flex-wrap gap-1.5">
+        {spec.tokens.map((token) => (
+          <button
+            key={token.name}
+            type="button"
+            title={token.describes}
+            className="rounded border px-1.5 py-0.5 font-mono text-xs text-muted-foreground transition-colors hover:text-foreground"
+            onClick={() => setValue((current) => `${current}{${token.name}}`)}
+          >
+            {`{${token.name}}`}
+          </button>
+        ))}
+      </div>
+      <p className="text-xs text-muted-foreground">
+        {unknown.length > 0 ? (
+          <span className="text-destructive">
+            {unknown.map((name) => `{${name}}`).join(", ")}{" "}
+            {unknown.length === 1 ? "is not a field" : "are not fields"} here.
+          </span>
+        ) : value.trim() ? (
+          // A template is pure formatting, so an example renders it exactly —
+          // there is no condition hiding behind it that a sample cannot stand
+          // in for.
+          <>
+            A row would read{" "}
+            <span className="text-foreground">
+              {renderTitle(value, spec.example, "—")}
+            </span>
+          </>
+        ) : (
+          `Currently ${spec.fallbackDescription}.`
+        )}
+      </p>
+    </div>
   );
 }
 

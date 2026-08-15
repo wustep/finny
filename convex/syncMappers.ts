@@ -16,6 +16,12 @@ import type {
   TransactionStream,
 } from "plaid";
 import type { RuleTransaction } from "./rulesEngine";
+import { renderTitle } from "./titleFormats";
+
+// The title templates a destination has set, keyed by database. Threaded
+// through every mapper so a title is decided in one place rather than by
+// whichever line of code happened to build the row.
+export type TitleFormats = Record<string, string> | undefined;
 
 // ---------- property value builders ----------
 
@@ -147,9 +153,31 @@ export function transactionProperties(
   // Transactions database built before Tags existed has no such column, and
   // writing a property a database does not have fails the whole row.
   tags: string[] = [],
+  // The destination's template for this database, and the names a template
+  // can refer to that the mapper alone knows.
+  formats?: TitleFormats,
+  named?: { account?: string; category?: string },
 ) {
+  const fallback = transactionTitle(txn, rename);
   return {
-    Name: P.title(transactionTitle(txn, rename)),
+    // A rule's rename is the specific case and beats the format; without one,
+    // the template decides.
+    Name: P.title(
+      rename
+        ? fallback
+        : renderTitle(
+            formats?.transactions,
+            {
+              merchant: txn.merchant_name ?? txn.name,
+              description: txn.original_description ?? txn.name,
+              amount: -txn.amount,
+              date: txn.date,
+              account: named?.account,
+              category: named?.category,
+            },
+            fallback,
+          ),
+    ),
     ID: P.text(txn.transaction_id),
     "Original Description": P.text(txn.original_description ?? txn.name),
     Account: P.relation(accountPageId),
@@ -212,10 +240,28 @@ export function investmentTransactionProperties(
   txn: InvestmentTransaction,
   accountPageId: string,
   securityPageId: string | null | undefined,
+  formats?: TitleFormats,
+  named?: { account?: string; security?: string },
 ) {
   const amount = txn.type === "cash" ? -txn.amount : txn.amount;
+  const fallback = txn.name || titleCase(txn.subtype ?? txn.type);
   return {
-    "Transaction Summary": P.title(txn.name || titleCase(txn.subtype ?? txn.type)),
+    "Transaction Summary": P.title(
+      renderTitle(
+        formats?.investmentTransactions,
+        {
+          name: txn.name,
+          type: txn.type,
+          subtype: txn.subtype ? titleCase(txn.subtype) : null,
+          security: named?.security,
+          amount,
+          quantity: txn.quantity,
+          date: txn.date,
+          account: named?.account,
+        },
+        fallback,
+      ),
+    ),
     "Transaction ID": P.text(txn.investment_transaction_id),
     "Transaction Type": P.select(txn.type),
     "Transaction Subtype": P.select(
@@ -243,9 +289,24 @@ export function recurringStreamProperties(
   accountPageId: string,
   categoryPageId: string | null,
   hasCategoryRelation: boolean,
+  formats?: TitleFormats,
+  named?: { account?: string },
 ) {
+  const fallback = stream.merchant_name || stream.description;
   return {
-    Stream: P.title(stream.merchant_name || stream.description),
+    Stream: P.title(
+      renderTitle(
+        formats?.recurring,
+        {
+          merchant: fallback,
+          frequency: titleCase(String(stream.frequency)),
+          direction,
+          amount: negated(stream.average_amount?.amount),
+          account: named?.account,
+        },
+        fallback,
+      ),
+    ),
     ID: P.text(stream.stream_id),
     Account: P.relation(accountPageId),
     Direction: P.select(direction),

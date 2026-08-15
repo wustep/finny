@@ -50,12 +50,14 @@ import {
   investmentTransactionProperties,
 } from "./syncMappers";
 import { claimAndCreatePage, upsertMapped } from "./syncPages";
+import { renderTitle } from "./titleFormats";
 import {
   commentOnStatusChange,
   failRun,
   heartbeat,
   institutionIcon,
   itemIsBroken,
+  accountTitles,
   loadContext,
   notionStatus,
   type SyncContext,
@@ -446,10 +448,19 @@ export const runForConnection = internalAction({
       }
 
       const accountPages: Record<string, string> = {};
+      // The title each account row got, which is what a {account} token in
+      // any other database's format refers to.
+      const accountNames: Record<string, string> = {};
       for (const account of balances.data.accounts) {
         if (!enabledIds.has(account.account_id)) {
           continue;
         }
+        const accountName = accountTitle(
+          connection.institutionName,
+          account,
+          customNames.get(account.account_id),
+        );
+        accountNames[account.account_id] = accountName;
         const pageId = await upsertMapped(ctx, connection.userId, {
           kind: "account",
           providerId: account.account_id,
@@ -478,11 +489,15 @@ export const runForConnection = internalAction({
             databaseId: databases.balanceHistory,
             properties: {
               Summary: P.title(
-                `${day} · ${accountTitle(
-                  connection.institutionName,
-                  account,
-                  customNames.get(account.account_id),
-                )}`,
+                renderTitle(
+                  notion.titleFormats?.balanceHistory,
+                  {
+                    date: day,
+                    account: accountName,
+                    balance: balanceForNotion(account),
+                  },
+                  `${day} · ${accountName}`,
+                ),
               ),
               Account: P.relation(pageId),
               Balance: P.number(balanceForNotion(account)),
@@ -506,12 +521,13 @@ export const runForConnection = internalAction({
           context,
           runId,
           accountPages,
+          accountNames,
         });
       }
 
       // 5. Recurring streams
       if (notion.modules.recurring && databases.recurring) {
-        await syncRecurring(ctx, { context, runId, accountPages });
+        await syncRecurring(ctx, { context, runId, accountPages, accountNames });
       }
 
       // 6. Hand off to the transaction chain, catching up any account that
@@ -609,6 +625,7 @@ export const accountBackfill = internalAction({
         internal.syncData.getAllMapEntries,
         { userId, kind: "account" },
       );
+      const accountNames = accountTitles(context);
       const accountPage = accountPages[args.plaidAccountId];
       if (!accountPage) {
         // Stage 1 makes the account page. Without it these rows have
@@ -696,6 +713,8 @@ export const accountBackfill = internalAction({
             rules,
             ensureCategory,
             txnPages,
+            titleFormats: notion.titleFormats,
+            accountName: accountNames[txn.account_id],
           });
           // A rule keeping a row out of Notion wrote nothing to report.
           if (result !== "hidden") {
@@ -892,6 +911,7 @@ export const transactionsBatch = internalAction({
       const accountRowIds = new Map(
         accounts.map((account) => [account.plaidAccountId, account._id]),
       );
+      const accountNames = accountTitles(context);
 
       // A transaction whose account is switched off (or that predates the
       // start date) still gets its updates if it already has a Notion page:
@@ -932,6 +952,8 @@ export const transactionsBatch = internalAction({
             rules,
             ensureCategory,
             txnPages,
+            titleFormats: notion.titleFormats,
+            accountName: accountNames[txn.account_id],
           });
           // A rule keeping a row out of Notion wrote nothing to report.
           if (result !== "hidden") {
@@ -1168,6 +1190,13 @@ export const investmentsBatch = internalAction({
         internal.syncData.getAllMapEntries,
         { userId, kind: "account" },
       );
+      const securityNames = Object.fromEntries(
+        securities.map((security) => [
+          security.security_id,
+          security.ticker_symbol ?? security.name ?? security.security_id,
+        ]),
+      );
+      const accountNames = accountTitles(context);
       const securityPages = await syncSecurities(ctx, {
         userId,
         token,
@@ -1205,6 +1234,11 @@ export const investmentsBatch = internalAction({
             txn,
             accountPage,
             txn.security_id ? securityPages[txn.security_id] : null,
+            notion.titleFormats,
+            {
+              account: accountNames[txn.account_id],
+              security: securityNames[txn.security_id ?? ""],
+            },
           );
           const existing = invPages[txn.investment_transaction_id];
           if (existing) {

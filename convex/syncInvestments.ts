@@ -14,6 +14,7 @@ import { P, archivePage, updatePage } from "./notionApi";
 import { plaidClient, plaidErrorInfo } from "./plaidClient";
 import { claimAndCreatePage } from "./syncPages";
 import { recurringStreamProperties } from "./syncMappers";
+import { renderTitle } from "./titleFormats";
 import { itemIsBroken, type SyncContext } from "./syncRun";
 
 // A run archives at most this many vanished rows; the next one picks up the
@@ -188,6 +189,7 @@ export async function syncRecurring(
     context: SyncContext;
     runId: Id<"syncRuns">;
     accountPages: Record<string, string>;
+    accountNames: Record<string, string>;
   },
 ): Promise<void> {
   const { connection, notion, accounts } = input.context;
@@ -258,6 +260,8 @@ export async function syncRecurring(
       // transaction, and a stream is not one.
       categoryPages[stream.personal_finance_category?.detailed ?? ""] ?? null,
       hasCategoryRelation,
+      notion.titleFormats,
+      { account: input.accountNames[stream.account_id] },
     );
     try {
       const existing = mapped[stream.stream_id];
@@ -300,6 +304,7 @@ export async function syncHoldings(
     context: SyncContext;
     runId: Id<"syncRuns">;
     accountPages: Record<string, string>;
+    accountNames: Record<string, string>;
   },
 ): Promise<void> {
   const { connection, notion, accounts } = input.context;
@@ -373,7 +378,17 @@ export async function syncHoldings(
     const symbol =
       security?.ticker_symbol ?? security?.name ?? holding.security_id;
     const properties = {
-      Summary: P.title(`${symbol} Holding`),
+      Summary: P.title(
+        renderTitle(
+          notion.titleFormats?.holdings,
+          {
+            security: symbol,
+            quantity: holding.quantity,
+            account: input.accountNames[holding.account_id],
+          },
+          `${symbol} Holding`,
+        ),
+      ),
       Account: P.relation(accountPage),
       Security: P.relation(securityPages[holding.security_id]),
       Quantity: P.number(holding.quantity),

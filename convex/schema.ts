@@ -246,6 +246,11 @@ export default defineSchema({
     startDate: v.optional(v.string()),
     // logical database key (e.g. "transactions") -> Notion database/data source id
     databases: v.optional(v.record(v.string(), v.string())),
+    // Notion database key -> title template, e.g.
+    // `{"investmentTransactions": "[{date}] {subtype} {security}"}`. Config:
+    // a template says how to lay a row out, never what was found in one.
+    // Absent, or absent for a database, means the built-in title.
+    titleFormats: v.optional(v.record(v.string(), v.string())),
     // The NOTION_SCHEMA_VERSION these databases were last brought up to.
     // Absent means "before versions existed", which is the case a sync has to
     // fix: a property added to a spec is not on a database already built.

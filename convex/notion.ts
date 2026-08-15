@@ -23,6 +23,11 @@ import {
   relationDependencies,
 } from "./notionSchemas";
 import { allowedOrigins } from "./origins";
+import {
+  MAX_TEMPLATE_LENGTH,
+  TITLE_FORMAT_BY_KEY,
+  unknownTokens,
+} from "./titleFormats";
 
 const OAUTH_STATE_TTL_MS = 15 * 60 * 1000;
 
@@ -89,6 +94,7 @@ export const getStatus = query({
       modules: connection.modules,
       startDate: connection.startDate,
       databases: connection.databases,
+      titleFormats: connection.titleFormats,
     };
   },
 });
@@ -940,6 +946,52 @@ export const repairDatabases = action({
 
     const syncing = await scheduleSyncs(ctx, userId, "manual");
     return { rebuilt: gone, propertiesAdded, syncing };
+  },
+});
+
+// Set or clear one database's title template.
+//
+// Validated against the tokens that database actually offers: a template
+// naming something Finny cannot fill in would render a blank in every row
+// from then on, and the place to notice that is here.
+export const setTitleFormat = mutation({
+  args: { key: v.string(), template: v.string() },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) {
+      throw new Error("Not signed in");
+    }
+    const user = await ctx.db.get(userId);
+    if (user?.accessGrantedAt === undefined) {
+      throw new Error("Access password required");
+    }
+    if (!TITLE_FORMAT_BY_KEY[args.key]) {
+      throw new Error(`${args.key} has no title format`);
+    }
+    const template = args.template.trim().slice(0, MAX_TEMPLATE_LENGTH);
+    const unknown = unknownTokens(args.key, template);
+    if (unknown.length > 0) {
+      throw new Error(
+        `${unknown.map((name) => `{${name}}`).join(", ")} ${
+          unknown.length === 1 ? "is not a field" : "are not fields"
+        } here`,
+      );
+    }
+    const connection = await ctx.db
+      .query("notionConnections")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .unique();
+    if (!connection) {
+      throw new Error("Notion not connected");
+    }
+    const titleFormats = { ...(connection.titleFormats ?? {}) };
+    if (template) {
+      titleFormats[args.key] = template;
+    } else {
+      // Cleared, which is how you ask for the built-in title back.
+      delete titleFormats[args.key];
+    }
+    await ctx.db.patch(connection._id, { titleFormats });
   },
 });
 
