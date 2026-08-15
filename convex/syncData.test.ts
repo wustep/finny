@@ -581,3 +581,36 @@ test("pruneHistory forgets a quiet access attempt but keeps a live one", async (
   );
   expect(left.map((row) => row.ip)).toEqual(["persistent"]);
 });
+
+test("clearMapEntriesOfKind empties one kind and leaves the rest", async () => {
+  const t = convexTest(schema, modules);
+  const seeded = await seed(t);
+  await t.run(async (ctx) => {
+    for (let index = 0; index < 3; index++) {
+      await ctx.db.insert("notionPageMap", {
+        userId: seeded.userId,
+        kind: "transaction",
+        providerId: `txn-${index}`,
+        notionPageId: `page-txn-${index}`,
+      });
+    }
+    await ctx.db.insert("notionPageMap", {
+      userId: seeded.userId,
+      kind: "account",
+      providerId: "acct-a",
+      notionPageId: "page-acct",
+    });
+  });
+
+  expect(
+    await t.mutation(internal.syncData.clearMapEntriesOfKind, {
+      userId: seeded.userId,
+      kind: "transaction",
+    }),
+  ).toBe(false);
+
+  const left = await t.run(async (ctx) =>
+    ctx.db.query("notionPageMap").collect(),
+  );
+  expect(left.map((row) => row.kind)).toEqual(["account"]);
+});

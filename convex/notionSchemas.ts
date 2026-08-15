@@ -217,3 +217,76 @@ export const MODULE_DATABASES: Record<string, string[]> = {
   spending: ["categories", "transactions"],
   investments: ["securities", "holdings", "investmentTransactions"],
 };
+
+// Which notionPageMap kinds keep their page ids in each database. A database
+// that had to be rebuilt takes its rows with it, so the map entries pointing
+// into it are addresses of pages that no longer exist and have to go too —
+// otherwise every later sync patches a 404 and the whole page fails.
+export const MAP_KINDS_BY_DATABASE: Record<string, string[]> = {
+  bankConnections: ["bankConnection"],
+  accounts: ["account"],
+  balanceHistory: ["balanceSnapshot"],
+  categories: ["category"],
+  transactions: ["transaction"],
+  securities: ["security"],
+  holdings: ["holding"],
+  investmentTransactions: ["investmentTransaction"],
+};
+
+export const SPEC_BY_KEY: Record<string, DatabaseSpec> = Object.fromEntries(
+  DATABASE_SPECS.map((spec) => [spec.key, spec]),
+);
+
+// The Notion property type each spec asks for, as property name -> type
+// ("title", "rich_text", "number", …). A spec's property value is a one-key
+// object whose key is the type, which is what this reads.
+export function propertyTypes(spec: DatabaseSpec): Record<string, string> {
+  const types: Record<string, string> = {};
+  for (const [name, definition] of Object.entries(spec.properties(RELATION_PROBE))) {
+    const type = Object.keys(definition as object)[0];
+    if (type) {
+      types[name] = type;
+    }
+  }
+  return types;
+}
+
+// Hands every spec a marked string for any database id it asks for, so the
+// relations it builds can be read back out of the result. Deriving the
+// dependency graph this way rather than writing it down twice means a spec
+// that gains or loses a relation cannot get out of step with it.
+const RELATION_PROBE = new Proxy({} as Record<string, string>, {
+  get: (_target, key) => `__depends-on:${String(key)}__`,
+});
+
+export interface RelationDependency {
+  // The database holding the relation property.
+  from: string;
+  // The database it points at.
+  to: string;
+  // The property on `from` that holds it.
+  property: string;
+}
+
+// Every relation between the databases Finny creates.
+//
+// Needed because a database that has to be rebuilt gets a new id, and every
+// relation pointing at the old one goes dead: Notion stores the target's id in
+// the property, not its name. Rebuilding Accounts without repointing
+// Transactions leaves a relation column that can never be filled in again.
+export function relationDependencies(): RelationDependency[] {
+  const dependencies: RelationDependency[] = [];
+  for (const spec of DATABASE_SPECS) {
+    for (const [property, definition] of Object.entries(
+      spec.properties(RELATION_PROBE),
+    )) {
+      const target = (definition as { relation?: { database_id?: string } })
+        .relation?.database_id;
+      const match = target?.match(/^__depends-on:(.+)__$/);
+      if (match) {
+        dependencies.push({ from: spec.key, to: match[1], property });
+      }
+    }
+  }
+  return dependencies;
+}

@@ -1,6 +1,6 @@
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { v } from "convex/values";
-import { internal } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import {
   action,
@@ -13,7 +13,14 @@ import {
   type ActionCtx,
 } from "./_generated/server";
 import { NOTION_VERSION, notionFetch } from "./notionApi";
-import { DATABASE_SPECS, MODULE_DATABASES } from "./notionSchemas";
+import {
+  DATABASE_SPECS,
+  MAP_KINDS_BY_DATABASE,
+  MODULE_DATABASES,
+  SPEC_BY_KEY,
+  propertyTypes,
+  relationDependencies,
+} from "./notionSchemas";
 import { allowedOrigins } from "./origins";
 
 const OAUTH_STATE_TTL_MS = 15 * 60 * 1000;
@@ -564,6 +571,238 @@ export const setStartDate = mutation({
       delay += 10 * 1000;
     }
     return { connections: connectionIds.length };
+  },
+});
+
+// ---------- destination integrity ----------
+
+// What one of Finny's databases looks like from the outside right now.
+//
+// checkHealth asks whether the token still works. This asks the question after
+// it: the token is fine, the sync is running, and every write fails anyway
+// because a database was deleted or a column was renamed. That failure is
+// invisible today — the run row carries a Notion error, the destination page
+// says "healthy", and nothing says which database.
+export type DatabaseState =
+  // Present, with every property Finny writes.
+  | { key: string; state: "ok" }
+  // Gone from the workspace, or no longer shared with the integration.
+  | { key: string; state: "missing" }
+  // In the Notion trash. Restorable by hand, which is worth saying, because
+  // rebuilding loses the rows and restoring does not.
+  | { key: string; state: "trashed" }
+  // There, but not as Finny left it.
+  | {
+      key: string;
+      state: "damaged";
+      // Properties Finny writes that are not there any more. A renamed column
+      // is indistinguishable from a deleted one from here.
+      missingProperties: string[];
+      // Properties whose type was changed. Not repaired automatically:
+      // changing a Notion property's type discards what was in it, and doing
+      // that to a column the user deliberately converted would be worse than
+      // the failing writes.
+      wrongTypeProperties: Array<{ name: string; expected: string; actual: string }>;
+    }
+  // Notion could not be asked. Says nothing about the database either way.
+  | { key: string; state: "unknown"; message: string };
+
+async function inspectDatabase(
+  token: string,
+  key: string,
+  databaseId: string,
+): Promise<DatabaseState> {
+  let data: any;
+  try {
+    data = await notionFetch(token, `/databases/${databaseId}`);
+  } catch (error) {
+    const message = String(error);
+    if (message.includes("(404)")) {
+      return { key, state: "missing" };
+    }
+    return { key, state: "unknown", message };
+  }
+  if (data?.archived || data?.in_trash) {
+    return { key, state: "trashed" };
+  }
+  const spec = SPEC_BY_KEY[key];
+  if (!spec) {
+    // A database key this build does not know about. Not ours to judge.
+    return { key, state: "ok" };
+  }
+  const actual: Record<string, { type?: string }> = data?.properties ?? {};
+  const missingProperties: string[] = [];
+  const wrongTypeProperties: Array<{
+    name: string;
+    expected: string;
+    actual: string;
+  }> = [];
+  for (const [name, expected] of Object.entries(propertyTypes(spec))) {
+    const found = actual[name];
+    if (!found) {
+      missingProperties.push(name);
+    } else if (found.type && found.type !== expected) {
+      wrongTypeProperties.push({ name, expected, actual: found.type });
+    }
+  }
+  if (missingProperties.length === 0 && wrongTypeProperties.length === 0) {
+    return { key, state: "ok" };
+  }
+  return { key, state: "damaged", missingProperties, wrongTypeProperties };
+}
+
+// Ask Notion about every database Finny has recorded.
+//
+// One request each, so it is an action the destination page runs on demand
+// rather than a reactive query.
+export const checkDatabases = action({
+  args: {},
+  handler: async (ctx): Promise<DatabaseState[]> => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) {
+      throw new Error("Not signed in");
+    }
+    await requireAccess(ctx, userId);
+    const connection = await ctx.runQuery(
+      internal.notion.getConnectionInternal,
+      { userId },
+    );
+    if (!connection?.databases) {
+      return [];
+    }
+    const results: DatabaseState[] = [];
+    for (const [key, databaseId] of Object.entries(connection.databases)) {
+      results.push(await inspectDatabase(connection.accessToken, key, databaseId));
+    }
+    return results;
+  },
+});
+
+// Put the destination back the way Finny expects to find it.
+//
+// Two repairs, and they are not the same size:
+//
+//  - A missing property is added back. Additive and safe; the next sync fills
+//    it in for every row it touches.
+//  - A missing or trashed database is rebuilt, which is not: the rows went
+//    with it. So the map entries pointing into it are dropped (they address
+//    pages that no longer exist), every relation aimed at it is repointed at
+//    the new id, and the next sync writes the history again from Plaid.
+//
+// A property whose type was changed is left alone — see DatabaseState.
+export const repairDatabases = action({
+  args: {},
+  handler: async (
+    ctx,
+  ): Promise<{ rebuilt: string[]; propertiesAdded: number; syncing: number }> => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) {
+      throw new Error("Not signed in");
+    }
+    await requireAccess(ctx, userId);
+    const connection = await ctx.runQuery(
+      internal.notion.getConnectionInternal,
+      { userId },
+    );
+    if (!connection?.databases || !connection.parentPageId) {
+      throw new Error("Set up the Notion destination first");
+    }
+    const token = connection.accessToken;
+    const states = await ctx.runAction(api.notion.checkDatabases, {});
+
+    // 1. Properties first: they need no new ids and cannot fail the rest.
+    let propertiesAdded = 0;
+    for (const state of states) {
+      if (state.state !== "damaged" || state.missingProperties.length === 0) {
+        continue;
+      }
+      const spec = SPEC_BY_KEY[state.key];
+      const definitions = spec.properties(connection.databases);
+      const patch = Object.fromEntries(
+        state.missingProperties
+          .filter((name) => definitions[name])
+          .map((name) => [name, definitions[name]]),
+      );
+      if (Object.keys(patch).length === 0) {
+        continue;
+      }
+      await notionFetch(token, `/databases/${connection.databases[state.key]}`, {
+        method: "PATCH",
+        body: { properties: patch },
+      });
+      propertiesAdded += Object.keys(patch).length;
+    }
+
+    // 2. Databases that have to be built again.
+    const gone = states
+      .filter((state) => state.state === "missing" || state.state === "trashed")
+      .map((state) => state.key);
+    if (gone.length === 0) {
+      return { rebuilt: [], propertiesAdded, syncing: 0 };
+    }
+
+    // Forgetting the id is what makes ensureDatabases create it: it skips any
+    // key it already has one for.
+    const kept = Object.fromEntries(
+      Object.entries(connection.databases).filter(([key]) => !gone.includes(key)),
+    );
+    const databases = await ensureDatabases(ctx, {
+      userId,
+      token,
+      parentPageId: connection.parentPageId,
+      modules: connection.modules,
+      startDate: connection.startDate,
+      existing: kept,
+    });
+
+    // 3. Repoint every relation that aimed at one of the rebuilt databases.
+    //    A relation stores the target's id, so a database built with the same
+    //    name is a different database as far as the columns pointing at it are
+    //    concerned.
+    for (const dependency of relationDependencies()) {
+      if (!gone.includes(dependency.to) || gone.includes(dependency.from)) {
+        // A dependent that was itself rebuilt already has the new id — it was
+        // created after its dependency, which is what DATABASE_SPECS' order
+        // guarantees.
+        continue;
+      }
+      const from = databases[dependency.from];
+      const to = databases[dependency.to];
+      if (!from || !to) {
+        continue;
+      }
+      await notionFetch(token, `/databases/${from}`, {
+        method: "PATCH",
+        body: {
+          properties: {
+            [dependency.property]: {
+              relation: {
+                database_id: to,
+                type: "single_property",
+                single_property: {},
+              },
+            },
+          },
+        },
+      });
+    }
+
+    // 4. Drop the page ids that pointed into the databases that went away.
+    for (const key of gone) {
+      for (const kind of MAP_KINDS_BY_DATABASE[key] ?? []) {
+        while (
+          await ctx.runMutation(internal.syncData.clearMapEntriesOfKind, {
+            userId,
+            kind: kind as any,
+          })
+        ) {
+          // Batched; keep going until this kind is empty for the user.
+        }
+      }
+    }
+
+    const syncing = await scheduleSyncs(ctx, userId, "manual");
+    return { rebuilt: gone, propertiesAdded, syncing };
   },
 });
 
