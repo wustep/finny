@@ -204,6 +204,49 @@ export const DATABASE_SPECS: DatabaseSpec[] = [
     }),
   },
   {
+    key: "recurring",
+    title: "Recurring",
+    emoji: "🔄",
+    properties: (ids) => ({
+      Stream: { title: {} },
+      ID: text,
+      Account: relation(ids.accounts),
+      // Plaid works out which transactions belong to a stream, so this is one
+      // row per subscription or paycheque rather than per payment.
+      Direction: select([
+        ["Inflow", "green"],
+        ["Outflow", "red"],
+      ]),
+      Frequency: select([
+        ["Weekly", "blue"],
+        ["Biweekly", "purple"],
+        ["Semi Monthly", "pink"],
+        ["Monthly", "orange"],
+        ["Annually", "brown"],
+        ["Unknown", "default"],
+      ]),
+      "Average Amount": dollar,
+      "Last Amount": dollar,
+      "First Date": date,
+      "Last Date": date,
+      "Predicted Next Date": date,
+      Active: { checkbox: {} },
+      // Plaid keeps a stream around once it has seen one, so a cancelled
+      // subscription becomes inactive rather than disappearing — which is
+      // more useful than deleting it, and means nothing here ever needs
+      // archiving.
+      Status: select([
+        ["Mature", "green"],
+        ["Early Detection", "yellow"],
+        ["Tombstoned", "gray"],
+        ["Unknown", "default"],
+      ]),
+      // Only when Spending is on, since that is what builds Categories. A
+      // relation to a database that was never created is not a relation.
+      ...(ids.categories ? { Category: relation(ids.categories) } : {}),
+    }),
+  },
+  {
     key: "investmentTransactions",
     title: "Investment Transactions",
     emoji: "🔁",
@@ -246,6 +289,7 @@ export const MODULE_DATABASES: Record<string, string[]> = {
   balances: ["balanceHistory"],
   spending: ["categories", "transactions"],
   investments: ["securities", "holdings", "investmentTransactions"],
+  recurring: ["recurring"],
 };
 
 // Which notionPageMap kinds keep their page ids in each database. A database
@@ -255,6 +299,7 @@ export const MODULE_DATABASES: Record<string, string[]> = {
 export const MAP_KINDS_BY_DATABASE: Record<string, string[]> = {
   bankConnections: ["bankConnection"],
   accounts: ["account"],
+  recurring: ["recurringStream"],
   balanceHistory: ["balanceSnapshot"],
   categories: ["category"],
   transactions: ["transaction"],

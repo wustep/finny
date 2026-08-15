@@ -13,6 +13,7 @@ import type {
   CreditCardLiability,
   InvestmentTransaction,
   Transaction,
+  TransactionStream,
 } from "plaid";
 import type { RuleTransaction } from "./rulesEngine";
 
@@ -212,4 +213,40 @@ export function investmentTransactionProperties(
     "Related Account": P.relation(accountPageId),
     "Related Security": P.relation(securityPageId),
   };
+}
+
+// A recurring stream — one subscription, salary, or standing order, which
+// Plaid works out for itself from the transactions it has already sent.
+//
+// Amounts keep the same convention as everything else here: Plaid's positive
+// is money out, and Notion's column is flipped, so both amounts are negated.
+// Direction then carries what the sign used to have to imply.
+export function recurringStreamProperties(
+  stream: TransactionStream,
+  direction: "Inflow" | "Outflow",
+  accountPageId: string,
+  categoryPageId: string | null,
+  hasCategoryRelation: boolean,
+) {
+  return {
+    Stream: P.title(stream.merchant_name || stream.description),
+    ID: P.text(stream.stream_id),
+    Account: P.relation(accountPageId),
+    Direction: P.select(direction),
+    Frequency: P.select(titleCase(String(stream.frequency))),
+    "Average Amount": P.number(negated(stream.average_amount?.amount)),
+    "Last Amount": P.number(negated(stream.last_amount?.amount)),
+    "First Date": P.date(stream.first_date),
+    "Last Date": P.date(stream.last_date),
+    "Predicted Next Date": P.date(stream.predicted_next_date ?? null),
+    Active: P.checkbox(stream.is_active),
+    Status: P.select(titleCase(String(stream.status))),
+    // The relation only exists when Spending built the Categories database;
+    // writing a property the database does not have is a 400 for the row.
+    ...(hasCategoryRelation ? { Category: P.relation(categoryPageId) } : {}),
+  };
+}
+
+function negated(amount: number | null | undefined): number | null {
+  return typeof amount === "number" && Number.isFinite(amount) ? -amount : null;
 }

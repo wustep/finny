@@ -163,6 +163,9 @@ export default defineSchema({
       balances: v.boolean(),
       spending: v.boolean(),
       investments: v.boolean(),
+      // Optional because every connection made before this module existed has
+      // a row without it. Absent reads as off, which is what it was.
+      recurring: v.optional(v.boolean()),
     }),
     // ISO date; how far back the initial backfill goes
     startDate: v.optional(v.string()),
@@ -202,6 +205,7 @@ export default defineSchema({
       v.literal("investmentTransaction"),
       v.literal("category"),
       v.literal("balanceSnapshot"),
+      v.literal("recurringStream"),
     ),
     // Plaid id, or composite key: holdings = `${accountId}|${securityId}`,
     // balance snapshots = `${accountId}|${YYYY-MM-DD}`

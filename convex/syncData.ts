@@ -16,6 +16,7 @@ const kindValidator = v.union(
   v.literal("investmentTransaction"),
   v.literal("category"),
   v.literal("balanceSnapshot"),
+  v.literal("recurringStream"),
 );
 
 // Everything the sync engine needs to run for one connection.

@@ -29,11 +29,22 @@ const modulesValidator = v.object({
   balances: v.boolean(),
   spending: v.boolean(),
   investments: v.boolean(),
+  recurring: v.optional(v.boolean()),
 });
 
-type Modules = { balances: boolean; spending: boolean; investments: boolean };
+type Modules = {
+  balances: boolean;
+  spending: boolean;
+  investments: boolean;
+  recurring?: boolean;
+};
 
-const MODULE_KEYS = ["balances", "spending", "investments"] as const;
+const MODULE_KEYS = [
+  "balances",
+  "spending",
+  "investments",
+  "recurring",
+] as const;
 
 function redirectUri() {
   return `${process.env.CONVEX_SITE_URL}/notion/oauth/callback`;
@@ -310,7 +321,14 @@ export const saveConnection = internalMutation({
         workspaceName: args.workspaceName,
         workspaceIcon: args.workspaceIcon,
         botId: args.botId,
-        modules: { balances: true, spending: true, investments: true },
+        modules: {
+          balances: true,
+          spending: true,
+          investments: true,
+          // Off unless asked for: it is one more Plaid call per sync, and a
+          // database nobody wanted is still a database in their page.
+          recurring: false,
+        },
       });
     }
   },

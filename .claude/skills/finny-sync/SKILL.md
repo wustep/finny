@@ -195,6 +195,23 @@ status of a broken Item — say it once between them. A first-ever claim on an
 connection. Commenting never throws: the integration may not have the
 insert-comments capability, which is a 403 forever.
 
+## 6e. Recurring streams (`convex/sync.ts`)
+
+An optional module. Plaid's `transactions/recurring/get` works out the streams
+itself, so Finny computes nothing and keeps nothing — the amounts go straight
+to Notion like every other figure. One pass in stage 1 rather than a chain,
+because streams number in the tens. Nothing is archived: a cancelled
+subscription becomes `is_active: false` and stays.
+
+Two things to keep right. The Category relation only exists when Spending
+built the Categories database, so both the spec and the mapper omit it
+otherwise — writing a property a database does not have is a 400 for that row.
+And amounts are negated like transactions (Plaid positive = money out), with
+Direction carrying what the sign used to imply.
+
+`modules.recurring` is optional in the schema because every connection made
+before the module existed has a row without it; absent reads as off.
+
 ## 7. Docs
 
 PLAN.md's Notion property tables are stale — `convex/notionSchemas.ts` is

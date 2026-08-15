@@ -50,6 +50,7 @@ const DATABASE_LABELS: Record<string, string> = {
   securities: "Securities",
   holdings: "Holdings",
   investmentTransactions: "Investment Transactions",
+  recurring: "Recurring",
 };
 
 function defaultStartDate() {
@@ -66,7 +67,12 @@ const RECONNECT_KEY = "finny.notion.reconnect";
 
 type PreviousWorkspace = { workspaceId: string; workspaceName?: string };
 
-type Modules = { balances: boolean; spending: boolean; investments: boolean };
+type Modules = {
+  balances: boolean;
+  spending: boolean;
+  investments: boolean;
+  recurring?: boolean;
+};
 
 const MODULE_ROWS: Array<{
   key: keyof Modules;
@@ -87,6 +93,11 @@ const MODULE_ROWS: Array<{
     key: "investments",
     label: "Investments",
     detail: "Securities, Holdings, Investment Transactions",
+  },
+  {
+    key: "recurring",
+    label: "Recurring",
+    detail: "Subscriptions, salary, and standing orders Plaid has spotted",
   },
 ];
 
@@ -467,7 +478,7 @@ function SetupCard({ modules: initialModules }: { modules: Modules }) {
                 </div>
               </div>
               <Switch
-                checked={modules[row.key]}
+                checked={modules[row.key] ?? false}
                 onCheckedChange={(checked) =>
                   setModules((current) => ({ ...current, [row.key]: checked }))
                 }
@@ -841,7 +852,7 @@ function ModuleSection({ modules }: { modules: Modules }) {
             </div>
           </div>
           <Switch
-            checked={modules[row.key]}
+            checked={modules[row.key] ?? false}
             disabled={pending !== null}
             onCheckedChange={(checked) => handleToggle(row, checked)}
           />
