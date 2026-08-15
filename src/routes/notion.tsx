@@ -209,8 +209,7 @@ function NotionPage() {
           <CardHeader className="items-center text-center">
             <CardTitle>Not connected</CardTitle>
             <CardDescription>
-              Connect your Notion workspace and grant access to the page where
-              Finny should create its databases.
+              Grant access to the page Finny should build its databases in.
             </CardDescription>
             <Button
               className="mx-auto mt-2 w-fit"
@@ -291,12 +290,10 @@ function WorkspaceChangedCard({
           <div className="flex flex-col gap-1.5">
             <CardTitle>You reconnected to a different workspace</CardTitle>
             <CardDescription>
-              Finny was pointed at {from} and is now pointed at{" "}
-              {current ?? "this workspace"}. The databases it built in {from}{" "}
-              cannot be reached with the new token, so Finny has forgotten
-              them: setting up here creates a fresh set of databases and starts
-              syncing from scratch. Everything already in {from} stays where it
-              is.
+              Finny is now pointed at {current ?? "this workspace"}. The
+              databases it built in {from} cannot be reached with the new
+              token, so setting up here starts a fresh set from scratch —
+              everything in {from} stays where it is.
             </CardDescription>
           </div>
         </div>
@@ -330,9 +327,9 @@ function UnhealthyCard({
           <div className="flex flex-col gap-1.5">
             <CardTitle>Notion connection unhealthy — reconnect</CardTitle>
             <CardDescription>
-              Notion rejected the stored token, so syncs cannot write anything.
-              Reconnect the same workspace to hand Finny a new token; your
-              databases and their rows are kept. ({message})
+              Notion rejected the stored token, so nothing can be written.
+              Reconnect the same workspace and your databases are kept.{" "}
+              ({message})
             </CardDescription>
           </div>
         </div>
@@ -407,8 +404,7 @@ function SetupCard({ modules: initialModules }: { modules: Modules }) {
       <CardHeader>
         <CardTitle>Set up your destination</CardTitle>
         <CardDescription>
-          Finny creates its databases inside a page you choose. Only pages you
-          shared during the Notion grant are listed.
+          Only pages you shared during the Notion grant are listed.
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-6">
@@ -839,8 +835,7 @@ function ModuleSection({ modules }: { modules: Modules }) {
       <div className="flex flex-col gap-1">
         <Label>Tracking modules</Label>
         <p className="text-xs text-muted-foreground">
-          Turning one on creates the databases it needs and syncs into them.
-          Turning one off stops syncing it — nothing is removed from Notion.
+          Turning one off stops the writes; nothing is removed from Notion.
         </p>
       </div>
       {MODULE_ROWS.map((row) => (
@@ -920,12 +915,12 @@ function StartDateSection({ startDate }: { startDate?: string }) {
       </div>
       <p className="text-xs text-muted-foreground">
         {!dirty
-          ? "Save alone only changes what future syncs pick up. Re-backfill replays your Plaid history from this date; rows already in Notion are updated, not duplicated."
+          ? "Save changes future syncs only; re-backfill replays history from this date, updating rows in place."
           : !startDate
-            ? "No start date is set yet, so syncs cover everything Plaid returns. Saving one narrows what future syncs write."
+            ? "No start date yet, so syncs cover everything Plaid returns."
             : earlier
-              ? `Earlier than ${startDate}, which only reaches further back on a re-backfill: Plaid otherwise sends nothing but what changed since the last sync.`
-              : `Later than ${startDate}. Everything already in Notion stays — new syncs just stop adding items dated before ${value}.`}
+              ? `Reaching further back than ${startDate} needs the re-backfill.`
+              : `Later than ${startDate}. What is in Notion stays.`}
       </p>
     </div>
   );
@@ -940,9 +935,6 @@ function RecentSyncs() {
     <Card>
       <CardHeader>
         <CardTitle>Recent syncs</CardTitle>
-        <CardDescription>
-          What Finny has written to these databases lately.
-        </CardDescription>
       </CardHeader>
       <CardContent>
         <ul className="flex flex-col gap-2">
