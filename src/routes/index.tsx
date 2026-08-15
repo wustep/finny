@@ -188,8 +188,7 @@ function NoDestinationBanner() {
             Your banks are connected but nothing is syncing yet
           </p>
           <p className="text-sm text-muted-foreground">
-            Pick the Notion page Finny should build its databases in — the first
-            sync starts straight after.
+            Pick a Notion page and the first sync starts straight after.
           </p>
         </div>
         <Button asChild>
@@ -224,8 +223,7 @@ function GettingStarted({
   const steps = [
     {
       title: "Connect a bank",
-      detail:
-        "Plaid handles the sign-in. Finny only ever reads what your bank shares.",
+      detail: "Plaid handles the sign-in; Finny only ever reads.",
       done: hasBank,
       action: (
         <Button size="sm" onClick={onAddBank} disabled={addingBank}>
@@ -235,8 +233,7 @@ function GettingStarted({
     },
     {
       title: "Connect Notion and create the databases",
-      detail:
-        "Choose the page Finny should build its databases inside, and which modules you want.",
+      detail: "Pick the page to build the databases in, and what to track.",
       done: hasDestination,
       action: (
         <Button size="sm" asChild>
@@ -253,8 +250,8 @@ function GettingStarted({
       title: "First sync",
       detail:
         hasBank && hasDestination
-          ? "Running now — the connection above shows how far it has got."
-          : "Starts on its own as soon as the first two are done.",
+          ? "Running now — the card above shows how far it has got."
+          : "Starts on its own once the first two are done.",
       done: hasSynced,
       action: null,
     },
@@ -466,8 +463,8 @@ function RenameAccountDialog({
           <DialogHeader>
             <DialogTitle>Rename account</DialogTitle>
             <DialogDescription>
-              This name is used in the Notion Accounts database. Leave it
-              empty to go back to the name from your bank.
+              Used in the Notion Accounts database. Empty goes back to your
+              bank's name.
             </DialogDescription>
           </DialogHeader>
           <div className="flex flex-col gap-2 py-4">
@@ -545,9 +542,8 @@ function LiveSyncProgress({
         </p>
         {firstSync ? (
           <p className="text-xs text-muted-foreground">
-            A first sync walks up to two years of history, and Notion accepts
-            about three writes a second, so this can take a while. It keeps
-            going whether or not this page is open.
+            A first sync walks up to two years of history — this takes a while,
+            and keeps going whether or not this page is open.
           </p>
         ) : null}
       </div>
@@ -606,13 +602,10 @@ function ConnectionCard({
       <CardHeader>
         <div className="flex items-center gap-3">
           {connection.institutionLogo ? (
-            // Always on white, in either theme: bank logos are transparent
-            // PNGs and plenty of them are drawn in black, which on a dark
-            // card is an empty square.
             <img
               src={connection.institutionLogo}
               alt=""
-              className="size-8 rounded bg-white p-0.5"
+              className="size-8 rounded"
             />
           ) : (
             <div className="flex size-8 items-center justify-center rounded bg-muted">
@@ -671,9 +664,7 @@ function ConnectionCard({
                   {problem.detail}
                 </p>
                 <p className="text-xs text-muted-foreground">
-                  Nothing from this bank reaches Notion until it's
-                  reconnected. Banks that sign you in through their own site
-                  expire every few months, so this is routine.
+                  Nothing reaches Notion until it's reconnected.
                   {connection.errorCode ? (
                     <>
                       {" "}
@@ -740,17 +731,22 @@ function ConnectionCard({
                   void toggleAccountSync({
                     accountId: account.id as Id<"accounts">,
                     enabled,
-                  }).catch(() => toast.error("Failed to update account"))
+                  })
+                    // Said here rather than in a footnote nobody reads: it is
+                    // only news at the moment the switch moves.
+                    .then(() =>
+                      toast.success(
+                        enabled
+                          ? "Syncing — the next run fills in the history it missed"
+                          : "Paused — rows already in Notion stay put",
+                      ),
+                    )
+                    .catch(() => toast.error("Failed to update account"))
                 }
               />
             </li>
           ))}
         </ul>
-        <p className="mt-4 text-xs text-muted-foreground">
-          Switching an account off pauses its sync — rows already in Notion
-          stay put, but nothing new is added while it's off. Switch it back on
-          and the next sync fills in the history it missed.
-        </p>
       </CardContent>
 
       <RenameAccountDialog
@@ -765,8 +761,8 @@ function ConnectionCard({
               Remove {connection.institutionName}?
             </DialogTitle>
             <DialogDescription>
-              Finny will disconnect from Plaid and stop syncing these accounts.
-              Data already synced to Notion stays in Notion.
+              Syncing stops and the token is deleted. Rows already in Notion
+              stay.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>

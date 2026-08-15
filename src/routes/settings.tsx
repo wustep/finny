@@ -1,5 +1,5 @@
 import { useAuthActions } from "@convex-dev/auth/react";
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { useAction, useMutation, useQuery } from "convex/react";
 import { Trash2, Unplug } from "lucide-react";
 import { useState } from "react";
@@ -201,24 +201,9 @@ function DisconnectBanksRow({ count }: { count?: number }) {
         onConfirm={handleDisconnect}
       >
         <p>
-          Finny asks Plaid to remove each Item, which ends Plaid's access to
-          those accounts, and then deletes the access tokens and account
-          metadata it was holding. Syncing stops immediately.
-        </p>
-        <p>
-          Rows already in your Notion databases stay exactly as they are —
-          Finny never deletes from your workspace, it just stops updating
-          them. Linking a bank again later starts a fresh connection.
-        </p>
-        <p>
-          Plaid does not refund production Item slots when an Item is deleted,
-          so this frees no capacity on the Plaid plan; a later relink consumes
-          a new Item.
-        </p>
-        <p>
-          If Plaid rejects one of the removals, Finny still deletes its own
-          copy of that token and names the bank so you can check it in the
-          Plaid dashboard.
+          Ends Plaid's access to these banks and deletes their tokens; syncing
+          stops now. Everything already in Notion stays. Relinking later uses
+          a new Plaid Item — production slots are not refunded.
         </p>
       </ConfirmDialog>
     </div>
@@ -277,16 +262,11 @@ function DisconnectNotionRow({
         onConfirm={handleDisconnect}
       >
         <p>
-          Your pages, databases, and every row already synced stay in Notion.
-          Finny drops the stored token and its map of which databases it
-          created, so connecting again builds a fresh set of databases even in
-          the same workspace — the old ones are left where they are.
-        </p>
-        <p>
-          Notion's API has no endpoint for revoking a token, so dropping our
-          copy is all Finny can do from here. To cut the integration off from
-          Notion's side as well, remove Finny under Settings → My connections
-          in your Notion workspace.
+          Everything already synced stays in Notion. Finny drops the token and
+          forgets which databases it made, so connecting again builds a second
+          set — use Reconnect on the Notion page if you only need a fresh
+          token. To cut the integration off from Notion's side too, remove
+          Finny under Settings → My connections there.
         </p>
       </ConfirmDialog>
     </div>
@@ -368,24 +348,19 @@ function DangerZoneCard() {
         onConfirm={() => void handleDelete()}
       >
         <p>
-          Finny asks Plaid to revoke every bank connection, then deletes
-          everything it holds about you: your profile, Plaid and Notion access
-          tokens, account and destination configuration, the map of provider
-          IDs to Notion pages, sync run logs, and your sign-in sessions. There
-          is no undo and no grace period.
+          This revokes every bank at Plaid and deletes everything Finny stores
+          about you — tokens, configuration, and the map that keeps Notion rows
+          in sync. There is no undo.
         </p>
         <p className="text-foreground">
-          Everything already synced to Notion stays in Notion — it is your
-          data in your workspace, and Finny never deletes from it. The page map
-          goes with your account, so if you ever sign up again and sync to the
-          same page, every row will be created a second time: you will have
-          duplicates unless you clear the old databases yourself first.
+          Rows already in Notion are yours and stay. The page map goes with
+          your account, so syncing to the same page from a new account would
+          create every row a second time.
         </p>
         <p>
-          Two things survive: access-password attempt records, which are keyed
-          by IP address rather than by account and are kept to limit abuse, and
-          encrypted infrastructure backups, which expire on the hosting
-          provider's own rotation schedule.
+          <Link to="/policy" className="underline underline-offset-4">
+            What survives and why
+          </Link>
         </p>
         <div className="flex flex-col gap-2 pt-1">
           <Label htmlFor="confirm-delete" className="text-foreground">
