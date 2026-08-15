@@ -66,6 +66,7 @@ import {
   accountProperties,
   balanceForNotion,
   investmentTransactionProperties,
+  recurringStreamProperties,
   ruleTransaction,
   transactionIcon,
   transactionProperties,
@@ -658,7 +659,12 @@ export const runForConnection = internalAction({
         });
       }
 
-      // 5. Hand off to the transaction chain, catching up any account that
+      // 5. Recurring streams
+      if (notion.modules.recurring && databases.recurring) {
+        await syncRecurring(ctx, { context, runId, accountPages });
+      }
+
+      // 6. Hand off to the transaction chain, catching up any account that
       //    was switched back on first.
       await scheduleNextStage(ctx, { context, runId, completed: [] });
     } catch (error) {
@@ -1565,7 +1571,8 @@ type MapKind =
   | "holding"
   | "investmentTransaction"
   | "category"
-  | "balanceSnapshot";
+  | "balanceSnapshot"
+  | "recurringStream";
 
 // The Notion property each database keeps the provider id in. Used to adopt
 // a row a previous attempt already created rather than making a second one.
@@ -1579,6 +1586,7 @@ const ID_PROPERTY: Partial<Record<MapKind, string>> = {
   security: "ID",
   investmentTransaction: "Transaction ID",
   category: "ID",
+  recurringStream: "ID",
 };
 
 // Reserve the map entry for a key, then create its Notion page, then write
@@ -2070,6 +2078,127 @@ async function syncSecurities(
     }
   }
   return pages;
+}
+
+// Plaid works out which transactions form a recurring stream and hands back
+// one row per subscription, salary, or standing order — so this is a database
+// Finny can offer without computing anything, and without keeping anything: a
+// stream's amounts go straight to Notion like every other figure here.
+//
+// Streams are few (tens, not thousands) and Plaid returns them all at once, so
+// this is one pass in stage 1 rather than a self-rescheduling chain. Nothing
+// is ever archived: a cancelled subscription becomes `is_active: false` and
+// stays, which is more useful than deleting it.
+async function syncRecurring(
+  ctx: ActionCtx,
+  input: {
+    context: SyncContext;
+    runId: Id<"syncRuns">;
+    accountPages: Record<string, string>;
+  },
+): Promise<void> {
+  const { connection, notion, accounts } = input.context;
+  const databases = notion.databases!;
+  const databaseId = databases.recurring;
+  if (!databaseId) {
+    return;
+  }
+  const token = notion.accessToken;
+  const userId = connection.userId;
+  const enabled = accounts.filter((account) => account.syncEnabled);
+  if (enabled.length === 0) {
+    return;
+  }
+
+  let response;
+  try {
+    response = await plaidClient(
+      connection.plaidEnv ?? "production",
+    ).transactionsRecurringGet({
+      access_token: connection.accessToken,
+      account_ids: enabled.map((account) => account.plaidAccountId),
+    });
+  } catch (error: any) {
+    // Recurring needs enough transaction history to find a pattern, so a
+    // freshly linked Item legitimately has none of this yet. Optional, like
+    // holdings — but a broken Item is still the caller's problem.
+    console.log("recurring streams unavailable", plaidErrorInfo(error).message);
+    if (itemIsBroken(error)) {
+      throw error;
+    }
+    return;
+  }
+
+  const categoryPages = databases.categories
+    ? await ctx.runQuery(internal.syncData.getAllMapEntries, {
+        userId,
+        kind: "category",
+      })
+    : {};
+  const hasCategoryRelation = Boolean(databases.categories);
+  const streams = [
+    ...response.data.inflow_streams.map(
+      (stream) => ({ stream, direction: "Inflow" as const }),
+    ),
+    ...response.data.outflow_streams.map(
+      (stream) => ({ stream, direction: "Outflow" as const }),
+    ),
+  ];
+
+  const mapped = await ctx.runQuery(internal.syncData.getMapEntries, {
+    userId,
+    kind: "recurringStream",
+    providerIds: streams.map((entry) => entry.stream.stream_id),
+  });
+
+  const stats = { added: 0, modified: 0, removed: 0 };
+  for (const { stream, direction } of streams) {
+    const accountPage = input.accountPages[stream.account_id];
+    if (!accountPage) {
+      continue;
+    }
+    const properties = recurringStreamProperties(
+      stream,
+      direction,
+      accountPage,
+      // The stream's own category, not one a rule chose: rules run per
+      // transaction, and a stream is not one.
+      categoryPages[stream.personal_finance_category?.detailed ?? ""] ?? null,
+      hasCategoryRelation,
+    );
+    try {
+      const existing = mapped[stream.stream_id];
+      if (existing) {
+        await updatePage(token, existing, properties);
+        stats.modified++;
+        continue;
+      }
+      const claimed = await claimAndCreatePage(ctx, {
+        userId,
+        kind: "recurringStream",
+        providerId: stream.stream_id,
+        token,
+        databaseId,
+        properties,
+        accountId: stream.account_id,
+      });
+      if (!claimed) {
+        console.error("recurring claim never resolved", stream.stream_id);
+        continue;
+      }
+      if (!claimed.created) {
+        await updatePage(token, claimed.pageId, properties);
+      }
+      stats.added++;
+    } catch (error) {
+      console.error("failed to sync recurring stream", stream.stream_id, error);
+    }
+  }
+
+  await ctx.runMutation(internal.syncData.addRunStats, {
+    runId: input.runId,
+    ...stats,
+  });
 }
 
 async function syncHoldings(

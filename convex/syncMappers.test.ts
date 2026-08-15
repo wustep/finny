@@ -11,6 +11,7 @@ import type {
 import { describe, expect, it } from "vitest";
 import {
   accountProperties,
+  recurringStreamProperties,
   balanceForNotion,
   investmentTransactionProperties,
   transactionProperties,
@@ -276,4 +277,74 @@ describe("currency", () => {
     );
   });
 
+});
+
+describe("recurringStreamProperties", () => {
+  const stream = {
+    account_id: "acct-1",
+    stream_id: "stream-1",
+    description: "NETFLIX.COM",
+    merchant_name: "Netflix",
+    first_date: "2024-01-14",
+    last_date: "2026-08-14",
+    predicted_next_date: "2026-09-14",
+    frequency: "MONTHLY",
+    average_amount: { amount: 15.49 },
+    last_amount: { amount: 17.99 },
+    is_active: true,
+    status: "MATURE",
+    personal_finance_category: { detailed: "ENTERTAINMENT_TV_AND_MOVIES" },
+  } as any;
+
+  it("flips the sign the same way a transaction does", () => {
+    // Plaid's positive is money out; the Notion column is the other way
+    // round, and Direction carries what the sign used to have to imply.
+    const props = recurringStreamProperties(stream, "Outflow", "page-a", null, false);
+    expect(props["Average Amount"]).toEqual({ number: -15.49 });
+    expect(props["Last Amount"]).toEqual({ number: -17.99 });
+    expect(props.Direction).toEqual({ select: { name: "Outflow" } });
+  });
+
+  it("prefers the merchant name and title-cases the enums", () => {
+    const props = recurringStreamProperties(stream, "Outflow", "page-a", null, false);
+    expect(props.Stream).toMatchObject({
+      title: [{ text: { content: "Netflix" } }],
+    });
+    expect(props.Frequency).toEqual({ select: { name: "Monthly" } });
+    expect(props.Status).toEqual({ select: { name: "Mature" } });
+  });
+
+  it("falls back to the bank's description when there is no merchant", () => {
+    const props = recurringStreamProperties(
+      { ...stream, merchant_name: null },
+      "Outflow",
+      "page-a",
+      null,
+      false,
+    );
+    expect(props.Stream).toMatchObject({
+      title: [{ text: { content: "NETFLIX.COM" } }],
+    });
+  });
+
+  it("omits the Category relation when Spending never built Categories", () => {
+    // Writing a property the database does not have is a 400 for that row.
+    expect(
+      recurringStreamProperties(stream, "Outflow", "page-a", "page-cat", false),
+    ).not.toHaveProperty("Category");
+    expect(
+      recurringStreamProperties(stream, "Outflow", "page-a", "page-cat", true),
+    ).toMatchObject({ Category: { relation: [{ id: "page-cat" }] } });
+  });
+
+  it("leaves a missing next date empty rather than inventing one", () => {
+    const props = recurringStreamProperties(
+      { ...stream, predicted_next_date: null },
+      "Inflow",
+      "page-a",
+      null,
+      false,
+    );
+    expect(props["Predicted Next Date"]).toEqual({ date: null });
+  });
 });

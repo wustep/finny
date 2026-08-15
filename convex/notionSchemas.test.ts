@@ -25,6 +25,8 @@ test("every relation between Finny's databases is discovered", () => {
       "holdings.Security -> securities",
       "investmentTransactions.Related Account -> accounts",
       "investmentTransactions.Related Security -> securities",
+      "recurring.Account -> accounts",
+      "recurring.Category -> categories",
       "transactions.Account -> accounts",
       "transactions.Category -> categories",
     ].sort(),
