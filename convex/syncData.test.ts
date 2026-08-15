@@ -392,3 +392,102 @@ test("the daily sweep schedules every connection across batched passes", async (
   // The stagger carries into the continuation rather than restarting at zero.
   expect(continuations[0].args[0]).toMatchObject({ delayMs: 100 * 15 * 1000 });
 });
+
+// convex-test keeps _creationTime monotonically increasing per test, so a row
+// can only be given an old one if nothing has been inserted since. Every
+// fixture below therefore starts in the past and works forwards.
+async function atTime<T>(when: number, work: () => Promise<T>): Promise<T> {
+  vi.useFakeTimers();
+  vi.setSystemTime(when);
+  try {
+    return await work();
+  } finally {
+    vi.useRealTimers();
+  }
+}
+
+test("pruneHistory drops finished runs past retention and keeps live ones", async () => {
+  const t = convexTest(schema, modules);
+  const OLD = Date.now() - 31 * 24 * 60 * 60 * 1000;
+
+  const old = await atTime(OLD, async () =>
+    t.run(async (ctx) => {
+      const userId = await ctx.db.insert("users", { email: "old@example.com" });
+      const finished = await ctx.db.insert("syncRuns", {
+        userId,
+        trigger: "cron",
+        status: "success",
+        startedAt: OLD,
+        finishedAt: OLD,
+      });
+      // Still claiming to run. Whether that is a corpse is sweepStuckRuns'
+      // call, not this one's, however old the row is.
+      const running = await ctx.db.insert("syncRuns", {
+        userId,
+        trigger: "cron",
+        status: "running",
+        startedAt: OLD,
+      });
+      return { userId, finished, running };
+    }),
+  );
+
+  const recent = await t.run(async (ctx) =>
+    ctx.db.insert("syncRuns", {
+      userId: old.userId,
+      trigger: "manual",
+      status: "success",
+      startedAt: Date.now(),
+      finishedAt: Date.now(),
+    }),
+  );
+
+  expect(await t.mutation(internal.syncData.pruneHistory, {})).toMatchObject({
+    runs: 1,
+  });
+
+  const left = await t.run(async (ctx) =>
+    ctx.db
+      .query("syncRuns")
+      .withIndex("by_user", (q) => q.eq("userId", old.userId))
+      .collect(),
+  );
+  expect(left.map((run) => run._id).sort()).toEqual(
+    [old.running, recent].sort(),
+  );
+});
+
+test("pruneHistory clears OAuth states left behind by abandoned flows", async () => {
+  const t = convexTest(schema, modules);
+
+  const userId = await atTime(Date.now() - 2 * 60 * 60 * 1000, async () =>
+    t.run(async (ctx) => {
+      const userId = await ctx.db.insert("users", {
+        email: "abandoned@example.com",
+      });
+      await ctx.db.insert("notionOauthStates", {
+        userId,
+        state: "abandoned",
+        createdAt: Date.now(),
+      });
+      return userId;
+    }),
+  );
+
+  await t.run(async (ctx) => {
+    await ctx.db.insert("notionOauthStates", {
+      userId,
+      state: "in-flight",
+      createdAt: Date.now(),
+    });
+  });
+
+  expect(await t.mutation(internal.syncData.pruneHistory, {})).toMatchObject({
+    oauthStates: 1,
+  });
+
+  const left = await t.run(async (ctx) =>
+    ctx.db.query("notionOauthStates").collect(),
+  );
+  expect(left.map((row) => row.state)).toEqual(["in-flight"]);
+});

@@ -797,7 +797,7 @@ export const backfillMapScopes = internalMutation({
   },
 });
 
-// ---------- daily cron sweep ----------
+// ---------- stuck run sweep ----------
 
 // A run only leaves "running" through finishRun, which every exit path of
 // the chain calls. An action that dies hard — killed mid-hop, a deploy in
@@ -856,6 +856,68 @@ export const sweepStuckRuns = internalMutation({
   },
 });
 
+// ---------- retention ----------
+
+// How long a finished run stays readable. The UI shows the last ten and the
+// value of an older one is forensic, so this is generous; what it rules out is
+// a table that grows by (connections × triggers) a day forever, which is a
+// cost and a scan the app gets nothing back for.
+const RUN_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+
+// An OAuth state is consumed by the callback that redeems it, and expires
+// after fifteen minutes (OAUTH_STATE_TTL_MS in notion.ts). A row still here an
+// hour later belongs to a flow the user abandoned, and is dead weight the
+// account-deletion scan has to page through.
+const OAUTH_STATE_RETENTION_MS = 60 * 60 * 1000;
+
+// Rows one retention pass deletes, per table. Bounded so the daily sweep stays
+// inside one transaction; a backlog drains over consecutive days.
+const RETENTION_BATCH = 500;
+
+// Delete finished sync runs and abandoned OAuth states that are past their
+// retention window. Both tables are append-only in normal operation, so
+// without this they only ever grow.
+//
+// Creation time is the cursor, which is what keeps the read bounded: taking
+// the oldest RETENTION_BATCH rows under the cutoff never scans the live ones.
+// A run still saying "running" is left alone whatever its age — that is
+// sweepStuckRuns' call to make, and it runs first.
+export const pruneHistory = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const now = Date.now();
+
+    const runs = await ctx.db
+      .query("syncRuns")
+      .withIndex("by_creation_time", (q) =>
+        q.lt("_creationTime", now - RUN_RETENTION_MS),
+      )
+      .take(RETENTION_BATCH);
+    let deletedRuns = 0;
+    for (const run of runs) {
+      if (run.status === "running") {
+        continue;
+      }
+      await ctx.db.delete(run._id);
+      deletedRuns++;
+    }
+
+    const states = await ctx.db
+      .query("notionOauthStates")
+      .withIndex("by_creation_time", (q) =>
+        q.lt("_creationTime", now - OAUTH_STATE_RETENTION_MS),
+      )
+      .take(RETENTION_BATCH);
+    for (const state of states) {
+      await ctx.db.delete(state._id);
+    }
+
+    return { runs: deletedRuns, oauthStates: states.length };
+  },
+});
+
+// ---------- daily cron sweep ----------
+
 // Connections one sweep pass schedules. The sweep is the one place that walks
 // every user's connections, so it cannot read the table in one go — a pass
 // takes a batch and hands the rest to a continuation.
@@ -874,12 +936,19 @@ export const sweep = internalMutation({
   },
   handler: async (ctx, args) => {
     if (args.after === undefined) {
-      // Subtransaction: a failure closing out stale runs rolls back on its
-      // own and still leaves the day's syncs scheduled.
+      // Subtransactions: a failure in either housekeeping step rolls back on
+      // its own and still leaves the day's syncs scheduled. Stale runs are
+      // closed out before history is pruned, so a run this sweep just failed
+      // is never also a run it deletes.
       try {
         await ctx.runMutation(internal.syncData.sweepStuckRuns, {});
       } catch (error) {
         console.error("stuck run sweep failed", error);
+      }
+      try {
+        await ctx.runMutation(internal.syncData.pruneHistory, {});
+      } catch (error) {
+        console.error("history prune failed", error);
       }
     }
     const connections = await ctx.db

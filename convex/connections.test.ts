@@ -411,3 +411,50 @@ test("markReconnected needs the access password, then clears the error", async (
   expect(connection?.status).toBe("active");
   expect(connection?.errorCode).toBeUndefined();
 });
+
+test("markItemBroken flags a connection a sync found broken", async () => {
+  const { t, alice } = await twoUsers();
+  const connectionId = await t.mutation(internal.connections.saveConnection, {
+    userId: alice,
+    plaidItemId: "item_broken",
+    accessToken: "access-alice",
+    institutionName: "Alice Bank",
+    accounts: [ACCOUNT],
+  });
+
+  await t.mutation(internal.connections.markItemBroken, {
+    connectionId,
+    errorCode: "ITEM_LOGIN_REQUIRED",
+  });
+
+  const connection = await t.run(async (ctx) => ctx.db.get(connectionId));
+  expect(connection).toMatchObject({
+    status: "error",
+    errorCode: "ITEM_LOGIN_REQUIRED",
+  });
+});
+
+test("markItemBroken keeps the first error code rather than overwriting it", async () => {
+  const { t, alice } = await twoUsers();
+  const connectionId = await t.mutation(internal.connections.saveConnection, {
+    userId: alice,
+    plaidItemId: "item_broken_twice",
+    accessToken: "access-alice",
+    institutionName: "Alice Bank",
+    accounts: [ACCOUNT],
+  });
+
+  await t.mutation(internal.connections.markItemBroken, {
+    connectionId,
+    errorCode: "ITEM_LOGIN_REQUIRED",
+  });
+  // Every later stage of the same run hits the same wall; the first code is
+  // the one that explains it.
+  await t.mutation(internal.connections.markItemBroken, {
+    connectionId,
+    errorCode: "PRODUCTS_NOT_READY",
+  });
+
+  const connection = await t.run(async (ctx) => ctx.db.get(connectionId));
+  expect(connection?.errorCode).toBe("ITEM_LOGIN_REQUIRED");
+});
