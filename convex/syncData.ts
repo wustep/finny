@@ -271,6 +271,33 @@ export const clearMapEntriesOfKind = internalMutation({
   },
 });
 
+// The first page of a user's mapped rows, for a teardown that archives them
+// in Notion before forgetting them.
+//
+// Deliberately unordered and always "the first N": the caller deletes each
+// page as it finishes with it, so the next call returns the next ones. Every
+// kind is in scope here — this is the one read that legitimately spans them,
+// because it is bounded by the take rather than by the range.
+export const getMapPage = internalQuery({
+  args: { userId: v.id("users"), limit: v.number() },
+  handler: async (ctx, args) => {
+    const rows = await ctx.db
+      .query("notionPageMap")
+      .withIndex("by_user_kind_provider", (q) => q.eq("userId", args.userId))
+      .take(Math.min(args.limit, 200));
+    return rows.map((row) => ({ id: row._id, notionPageId: row.notionPageId }));
+  },
+});
+
+export const deleteMapRows = internalMutation({
+  args: { ids: v.array(v.id("notionPageMap")) },
+  handler: async (ctx, args) => {
+    for (const id of args.ids) {
+      await ctx.db.delete(id);
+    }
+  },
+});
+
 // Rewind every connection's transactions/sync cursor so the next run replays
 // the full history rather than only what has changed since last time.
 export const clearCursors = internalMutation({
