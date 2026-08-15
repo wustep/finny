@@ -5,37 +5,71 @@ import { v } from "convex/values";
 // A text match a rule condition can ask for. `contains` and `equals` ignore
 // case; `regex` is a JavaScript regular expression, compiled defensively by
 // the engine (an invalid one matches nothing rather than throwing).
-export const ruleTextConditionValidator = v.object({
-  op: v.union(v.literal("contains"), v.literal("equals"), v.literal("regex")),
-  value: v.string(),
-});
+const textOpValidator = v.union(
+  v.literal("contains"),
+  v.literal("equals"),
+  v.literal("regex"),
+);
 
 // Compared against Plaid's amount, where positive means money left the
 // account. Notion shows the same transaction with the sign flipped, which the
 // Rules page spells out next to the field.
-export const ruleAmountConditionValidator = v.object({
-  op: v.union(
-    v.literal("lt"),
-    v.literal("lte"),
-    v.literal("gt"),
-    v.literal("gte"),
-    v.literal("eq"),
-  ),
-  value: v.number(),
-});
+const amountOpValidator = v.union(
+  v.literal("lt"),
+  v.literal("lte"),
+  v.literal("gt"),
+  v.literal("gte"),
+  v.literal("eq"),
+);
 
-// Conditions AND together; a rule needs at least one (enforced in rules.ts,
-// and again by the engine, because a rule that asks nothing plus a hide
-// outcome empties the Transactions database).
-export const ruleConditionsValidator = v.object({
-  // Plaid's enriched merchant name, falling back to the raw description —
-  // the same string the Notion title uses.
-  merchant: v.optional(ruleTextConditionValidator),
-  // The bank's own string, as synced to Original Description.
-  description: v.optional(ruleTextConditionValidator),
-  amount: v.optional(ruleAmountConditionValidator),
+// One thing a rule asks about a transaction. A rule holds a list of these and
+// they AND together; several values inside one condition OR. See
+// rulesEngine.ts for why the expressiveness stops there.
+export const ruleConditionValidator = v.union(
+  v.object({
+    kind: v.literal("text"),
+    // `merchant` is Plaid's cleaned name falling back to the raw description
+    // — the same string the Notion title uses. `description` is the bank's
+    // own, as synced to Original Description.
+    field: v.union(v.literal("merchant"), v.literal("description")),
+    op: textOpValidator,
+    values: v.array(v.string()),
+    negate: v.optional(v.boolean()),
+  }),
+  v.object({
+    kind: v.literal("amount"),
+    op: amountOpValidator,
+    value: v.number(),
+  }),
+  v.object({
+    kind: v.literal("account"),
+    accountIds: v.array(v.id("accounts")),
+  }),
+  v.object({
+    kind: v.literal("category"),
+    // A Plaid personal finance category: a primary group id matches
+    // everything under it, a detailed id matches only itself.
+    categoryIds: v.array(v.string()),
+    negate: v.optional(v.boolean()),
+  }),
+  v.object({ kind: v.literal("pending"), value: v.boolean() }),
+);
+
+// The shape conditions were stored in before they became a list: one slot per
+// field. Still accepted on read so no deploy ordering has to be got right —
+// rules.ts normalises it, and rules.migrateConditions rewrites rows at rest.
+// Writes only ever produce the list. Remove this once no rows are left.
+const legacyRuleConditionsValidator = v.object({
+  merchant: v.optional(v.object({ op: textOpValidator, value: v.string() })),
+  description: v.optional(v.object({ op: textOpValidator, value: v.string() })),
+  amount: v.optional(v.object({ op: amountOpValidator, value: v.number() })),
   accountId: v.optional(v.id("accounts")),
 });
+
+export const ruleConditionsValidator = v.union(
+  v.array(ruleConditionValidator),
+  legacyRuleConditionsValidator,
+);
 
 // What a matching rule changes about the Notion row. At least one is
 // required; all of them apply together.

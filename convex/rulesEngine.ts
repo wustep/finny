@@ -14,6 +14,19 @@
 // recategorise and rename at once, and a rule cannot be half-overridden by
 // the one below it.
 //
+// That one-rule-per-row semantics is not a simplification, it is the only
+// auditable option here: Finny stores no transactions, so the app can never
+// show you after the fact which rules touched a row. A row's fate has to be
+// explained by exactly one rule, and the ordered list on the Rules page is
+// then the whole truth table.
+//
+// A rule's conditions are a list, ANDed. Several values inside one text or
+// category condition are ORed — which is the shape OR actually takes in
+// practice ("any of these merchants") — and a range is simply two amount
+// conditions. There is no nesting and no OR across different fields; two
+// rules with the same outcomes say that, and a rule that needs parentheses is
+// a rule nobody can predict.
+//
 // Money sign: `amount` is Plaid's, where positive means money left the
 // account and negative means money came in (a refund, a deposit). Notion
 // shows the same transaction with the sign flipped (see syncMappers.ts), so
@@ -24,27 +37,45 @@ import { titleCase } from "./syncMappers";
 
 export type TextOp = "contains" | "equals" | "regex";
 export type AmountOp = "lt" | "lte" | "gt" | "gte" | "eq";
+export type TextField = "merchant" | "description";
 
-export interface TextCondition {
-  op: TextOp;
-  value: string;
-}
-
-export interface AmountCondition {
-  op: AmountOp;
-  value: number;
-}
-
-// Conditions AND together: every one present has to hold. A rule with no
-// conditions at all matches nothing — see `matches`.
-export interface RuleConditions {
-  merchant?: TextCondition;
-  description?: TextCondition;
-  amount?: AmountCondition;
-  // Convex `Id<"accounts">` at the call site; a plain string here to keep
-  // this module independent of the data model.
-  accountId?: string;
-}
+// One thing a rule asks about a transaction.
+//
+// A list of these, rather than a record with a slot per field, is what makes
+// the rule set expressive without becoming a query builder. Two consequences
+// fall out for free:
+//
+//   - a range is two amount conditions, so there is no `between` operator and
+//     no second value field to design around;
+//   - "any of these merchants" is one text condition with several values,
+//     which is the shape OR actually takes in practice — and it stops three
+//     near-identical rules being the only way to say it.
+//
+// Deliberately absent: groups, nesting, and OR across different fields. The
+// moment a rule needs parentheses nobody can predict what it does, and two
+// rules with the same outcomes already say the rare cross-field OR.
+export type Condition =
+  | {
+      kind: "text";
+      field: TextField;
+      op: TextOp;
+      // Any one matching satisfies the condition.
+      values: string[];
+      // "matches none of" rather than "matches one of".
+      negate?: boolean;
+    }
+  | { kind: "amount"; op: AmountOp; value: number }
+  // Convex `Id<"accounts">` at the call site; plain strings here to keep this
+  // module independent of the data model.
+  | { kind: "account"; accountIds: string[] }
+  | {
+      kind: "category";
+      // Plaid personal finance categories. A primary id (FOOD_AND_DRINK)
+      // matches everything under it; a detailed one matches only itself.
+      categoryIds: string[];
+      negate?: boolean;
+    }
+  | { kind: "pending"; value: boolean };
 
 export interface RuleOutcomes {
   // A Plaid personal finance category, e.g. GENERAL_MERCHANDISE_ELECTRONICS.
@@ -58,7 +89,8 @@ export interface Rule {
   id: string;
   priority: number;
   enabled: boolean;
-  conditions: RuleConditions;
+  // ANDed. An empty list matches nothing — see `matches`.
+  conditions: Condition[];
   outcomes: RuleOutcomes;
 }
 
@@ -69,10 +101,66 @@ export interface RuleTransaction {
   description?: string | null;
   amount: number;
   accountId?: string;
+  // The detailed personal finance category Plaid assigned, before any rule
+  // has had a say.
+  category?: string | null;
+  pending?: boolean;
 }
 
 export interface RuleMatch extends RuleOutcomes {
   ruleId: string;
+}
+
+// How rules were stored before conditions became a list: one optional slot
+// per field, which is why a rule could never ask about two merchants or a
+// range. Rows in this shape are read through `normalizeConditions` rather
+// than migrated in place first, so no deploy ordering has to be got right;
+// `rules.migrateConditions` then tidies them at rest.
+export interface LegacyRuleConditions {
+  merchant?: { op: TextOp; value: string };
+  description?: { op: TextOp; value: string };
+  amount?: { op: AmountOp; value: number };
+  accountId?: string;
+}
+
+export function isLegacyConditions(
+  stored: LegacyRuleConditions | Condition[],
+): stored is LegacyRuleConditions {
+  return !Array.isArray(stored);
+}
+
+// A stored rule's conditions as the engine and the UI want them, whichever
+// shape they are on disk. Mechanical: every legacy slot is one condition with
+// a single value.
+export function normalizeConditions(
+  stored: LegacyRuleConditions | Condition[],
+): Condition[] {
+  if (!isLegacyConditions(stored)) {
+    return stored;
+  }
+  const conditions: Condition[] = [];
+  for (const field of ["merchant", "description"] as const) {
+    const legacy = stored[field];
+    if (legacy) {
+      conditions.push({
+        kind: "text",
+        field,
+        op: legacy.op,
+        values: [legacy.value],
+      });
+    }
+  }
+  if (stored.amount) {
+    conditions.push({
+      kind: "amount",
+      op: stored.amount.op,
+      value: stored.amount.value,
+    });
+  }
+  if (stored.accountId) {
+    conditions.push({ kind: "account", accountIds: [stored.accountId] });
+  }
+  return conditions;
 }
 
 // Longest pattern a rule may carry. The regex runs inside a sync action
@@ -111,77 +199,98 @@ export function orderRules(rules: Rule[]): Rule[] {
   );
 }
 
-function matches(conditions: RuleConditions, txn: RuleTransaction): boolean {
-  let asked = 0;
-  if (conditions.merchant) {
-    asked++;
-    if (!matchesText(conditions.merchant, txn.merchant)) {
-      return false;
-    }
-  }
-  if (conditions.description) {
-    asked++;
-    if (!matchesText(conditions.description, txn.description)) {
-      return false;
-    }
-  }
-  if (conditions.amount) {
-    asked++;
-    if (!matchesAmount(conditions.amount, txn.amount)) {
-      return false;
-    }
-  }
-  if (conditions.accountId) {
-    asked++;
-    if (conditions.accountId !== txn.accountId) {
-      return false;
-    }
-  }
+export function matches(
+  conditions: Condition[],
+  txn: RuleTransaction,
+): boolean {
   // A rule that asks nothing would otherwise match every transaction, which
   // with a hide outcome empties the Transactions database. Writes reject an
-  // empty condition set (convex/rules.ts); this is the second lock on it.
-  return asked > 0;
+  // empty condition list (convex/rules.ts); this is the second lock on it.
+  if (conditions.length === 0) {
+    return false;
+  }
+  return conditions.every((condition) => matchesOne(condition, txn));
+}
+
+function matchesOne(condition: Condition, txn: RuleTransaction): boolean {
+  switch (condition.kind) {
+    case "text": {
+      const value = condition.field === "merchant" ? txn.merchant : txn.description;
+      const hit = condition.values.some((needle) =>
+        matchesText(condition.op, needle, value),
+      );
+      return condition.negate ? !hit : hit;
+    }
+    case "amount":
+      return matchesAmount(condition.op, condition.value, txn.amount);
+    case "account":
+      return (
+        txn.accountId !== undefined &&
+        condition.accountIds.includes(txn.accountId)
+      );
+    case "category": {
+      const hit = matchesCategory(condition.categoryIds, txn.category);
+      return condition.negate ? !hit : hit;
+    }
+    case "pending":
+      return (txn.pending ?? false) === condition.value;
+  }
+}
+
+// A rule may name a whole primary group or one detailed category. Naming the
+// group is the useful case — "anything Plaid filed under Travel" — and it
+// keeps working when Plaid adds a detailed category to that group.
+function matchesCategory(
+  categoryIds: string[],
+  category: string | null | undefined,
+): boolean {
+  if (typeof category !== "string" || category === "") {
+    return false;
+  }
+  const primary = pfcPrimary(category);
+  return categoryIds.some((id) => id === category || id === primary);
 }
 
 function matchesText(
-  condition: TextCondition,
+  op: TextOp,
+  needle: string,
   value: string | null | undefined,
 ): boolean {
   if (typeof value !== "string") {
     return false;
   }
   const subject = value.trim();
-  const needle = condition.value.trim();
-  if (subject === "" || needle === "") {
+  const wanted = needle.trim();
+  if (subject === "" || wanted === "") {
     return false;
   }
-  switch (condition.op) {
+  switch (op) {
     case "contains":
-      return subject.toLowerCase().includes(needle.toLowerCase());
+      return subject.toLowerCase().includes(wanted.toLowerCase());
     case "equals":
-      return subject.toLowerCase() === needle.toLowerCase();
+      return subject.toLowerCase() === wanted.toLowerCase();
     case "regex": {
-      const pattern = compilePattern(needle);
+      const pattern = compilePattern(wanted);
       return pattern ? pattern.test(subject) : false;
     }
   }
 }
 
-function matchesAmount(condition: AmountCondition, amount: number): boolean {
-  if (!Number.isFinite(condition.value) || !Number.isFinite(amount)) {
+function matchesAmount(op: AmountOp, value: number, amount: number): boolean {
+  if (!Number.isFinite(value) || !Number.isFinite(amount)) {
     return false;
   }
-  switch (condition.op) {
+  switch (op) {
     case "lt":
-      return amount < condition.value;
+      return amount < value;
     case "lte":
-      return amount <= condition.value;
+      return amount <= value;
     case "gt":
-      return amount > condition.value;
+      return amount > value;
     case "gte":
-      return amount >= condition.value;
+      return amount >= value;
     case "eq":
-      return Math.abs(amount - condition.value) < AMOUNT_EPSILON;
+      return Math.abs(amount - value) < AMOUNT_EPSILON;
   }
 }
 
@@ -403,6 +512,13 @@ export function pfcPrimary(detailed: string): string | undefined {
 
 export function isPfcCategory(detailed: string): boolean {
   return PFC_PRIMARY_BY_DETAILED.has(detailed);
+}
+
+// A primary group id, e.g. FOOD_AND_DRINK. A category *condition* may name
+// one of these to mean everything under it; a category *outcome* may not,
+// because a Notion row has to land in one category, not a group.
+export function isPfcPrimary(primary: string): boolean {
+  return PFC_TAXONOMY[primary] !== undefined;
 }
 
 // "FOOD_AND_DRINK_COFFEE" -> "Coffee", the same name the Notion Categories

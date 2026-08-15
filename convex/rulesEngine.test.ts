@@ -1,11 +1,13 @@
 import { describe, expect, test } from "vitest";
 import {
   evaluate,
+  isPfcPrimary,
+  normalizeConditions,
   isPfcCategory,
   pfcLabel,
   pfcPrimary,
+  type Condition,
   type Rule,
-  type RuleConditions,
   type RuleOutcomes,
   type RuleTransaction,
 } from "./rulesEngine";
@@ -13,7 +15,7 @@ import {
 let nextId = 0;
 
 function rule(
-  conditions: RuleConditions,
+  conditions: Condition[],
   outcomes: RuleOutcomes = { hide: true },
   overrides: Partial<Rule> = {},
 ): Rule {
@@ -35,53 +37,71 @@ function txn(overrides: Partial<RuleTransaction> = {}): RuleTransaction {
     description: "SQ *BLUE BOTTLE COFFEE 123",
     amount: 6.25,
     accountId: "account_1",
+    category: "FOOD_AND_DRINK_COFFEE",
+    pending: false,
     ...overrides,
   };
 }
 
+// Shorthands, so the tests below read as what they are testing rather than as
+// object literals.
+const merchant = (
+  op: "contains" | "equals" | "regex",
+  ...values: string[]
+): Condition => ({ kind: "text", field: "merchant", op, values });
+
+const description = (
+  op: "contains" | "equals" | "regex",
+  ...values: string[]
+): Condition => ({ kind: "text", field: "description", op, values });
+
+const amount = (
+  op: "lt" | "lte" | "gt" | "gte" | "eq",
+  value: number,
+): Condition => ({ kind: "amount", op, value });
+
 describe("text conditions", () => {
   test("contains is case-insensitive and matches anywhere", () => {
     expect(
-      evaluate([rule({ merchant: { op: "contains", value: "blue bottle" } })], txn()),
+      evaluate([rule([merchant("contains", "blue bottle")])], txn()),
     ).toMatchObject({ hide: true });
     expect(
-      evaluate([rule({ merchant: { op: "contains", value: "COFFEE" } })], txn()),
+      evaluate([rule([merchant("contains", "COFFEE")])], txn()),
     ).not.toBeNull();
     expect(
-      evaluate([rule({ merchant: { op: "contains", value: "starbucks" } })], txn()),
+      evaluate([rule([merchant("contains", "starbucks")])], txn()),
     ).toBeNull();
   });
 
   test("equals compares the whole value, ignoring case and outer spaces", () => {
     expect(
       evaluate(
-        [rule({ merchant: { op: "equals", value: "  blue bottle coffee " } })],
+        [rule([merchant("equals", "  blue bottle coffee ")])],
         txn(),
       ),
     ).not.toBeNull();
     expect(
-      evaluate([rule({ merchant: { op: "equals", value: "Blue Bottle" } })], txn()),
+      evaluate([rule([merchant("equals", "Blue Bottle")])], txn()),
     ).toBeNull();
   });
 
   test("regex matches case-insensitively", () => {
     expect(
-      evaluate([rule({ description: { op: "regex", value: "^SQ \\*" } })], txn()),
+      evaluate([rule([description("regex", "^SQ \\*")])], txn()),
     ).not.toBeNull();
     expect(
-      evaluate([rule({ description: { op: "regex", value: "^sq \\*blue" } })], txn()),
+      evaluate([rule([description("regex", "^sq \\*blue")])], txn()),
     ).not.toBeNull();
     expect(
-      evaluate([rule({ description: { op: "regex", value: "^AMZN" } })], txn()),
+      evaluate([rule([description("regex", "^AMZN")])], txn()),
     ).toBeNull();
   });
 
   test("an invalid regex makes its rule match nothing instead of throwing", () => {
-    const broken = rule({ merchant: { op: "regex", value: "coffee(" } });
-    const fallback = rule(
-      { merchant: { op: "contains", value: "coffee" } },
-      { categoryId: "FOOD_AND_DRINK_COFFEE" },
-    );
+    const broken = rule([merchant("regex", "coffee(")]);
+    const fallback = rule([merchant("contains", "coffee")], {
+      categoryId: "FOOD_AND_DRINK_COFFEE",
+    });
     expect(() => evaluate([broken], txn())).not.toThrow();
     expect(evaluate([broken], txn())).toBeNull();
     // The broken rule is first by priority, but a rule that cannot match
@@ -92,7 +112,7 @@ describe("text conditions", () => {
   });
 
   test("a missing or empty field does not match", () => {
-    const contains = rule({ merchant: { op: "contains", value: "coffee" } });
+    const contains = rule([merchant("contains", "coffee")]);
     expect(evaluate([contains], txn({ merchant: null }))).toBeNull();
     expect(evaluate([contains], txn({ merchant: undefined }))).toBeNull();
     expect(evaluate([contains], txn({ merchant: "   " }))).toBeNull();
@@ -100,7 +120,7 @@ describe("text conditions", () => {
 
   test("an empty pattern does not match everything", () => {
     expect(
-      evaluate([rule({ merchant: { op: "contains", value: "  " } })], txn()),
+      evaluate([rule([merchant("contains", "  ")])], txn()),
     ).toBeNull();
   });
 });
@@ -113,7 +133,7 @@ describe("amount conditions", () => {
       op: "lt" | "lte" | "gt" | "gte" | "eq",
       value: number,
       transaction = spent,
-    ) => evaluate([rule({ amount: { op, value } })], transaction) !== null;
+    ) => evaluate([rule([amount(op, value)])], transaction) !== null;
 
     expect(check("gt", 100)).toBe(true);
     expect(check("gt", 120)).toBe(false);
@@ -131,21 +151,21 @@ describe("amount conditions", () => {
 
   test("a non-finite amount matches nothing", () => {
     expect(
-      evaluate([rule({ amount: { op: "gt", value: 10 } })], txn({ amount: NaN })),
+      evaluate([rule([amount("gt", 10)])], txn({ amount: NaN })),
     ).toBeNull();
     expect(
-      evaluate([rule({ amount: { op: "gt", value: NaN } })], txn()),
+      evaluate([rule([amount("gt", NaN)])], txn()),
     ).toBeNull();
   });
 });
 
 describe("condition combination", () => {
   test("every condition in a rule has to hold", () => {
-    const conditions: RuleConditions = {
-      merchant: { op: "contains", value: "coffee" },
-      amount: { op: "gt", value: 5 },
-      accountId: "account_1",
-    };
+    const conditions: Condition[] = [
+      merchant("contains", "coffee"),
+      amount("gt", 5),
+      { kind: "account", accountIds: ["account_1"] },
+    ];
     expect(evaluate([rule(conditions)], txn())).not.toBeNull();
     expect(evaluate([rule(conditions)], txn({ amount: 3 }))).toBeNull();
     expect(evaluate([rule(conditions)], txn({ accountId: "account_2" }))).toBeNull();
@@ -153,26 +173,26 @@ describe("condition combination", () => {
   });
 
   test("an account condition needs the transaction's account", () => {
-    const onAccount = rule({ accountId: "account_1" });
+    const onAccount = rule([{ kind: "account", accountIds: ["account_1"] }]);
     expect(evaluate([onAccount], txn())).not.toBeNull();
     expect(evaluate([onAccount], txn({ accountId: undefined }))).toBeNull();
   });
 
   test("a rule with no conditions matches nothing", () => {
     // Otherwise a rule saved empty would hide every transaction the user has.
-    expect(evaluate([rule({}, { hide: true })], txn())).toBeNull();
+    expect(evaluate([rule([], { hide: true })], txn())).toBeNull();
   });
 });
 
 describe("rule ordering", () => {
   test("the first matching rule wins outright and applies all its outcomes", () => {
     const first = rule(
-      { merchant: { op: "contains", value: "coffee" } },
+      [merchant("contains", "coffee")],
       { categoryId: "FOOD_AND_DRINK_COFFEE", rename: "Coffee" },
       { priority: 1 },
     );
     const second = rule(
-      { merchant: { op: "contains", value: "blue bottle" } },
+      [merchant("contains", "blue bottle")],
       { categoryId: "FOOD_AND_DRINK_RESTAURANT", hide: true },
       { priority: 2 },
     );
@@ -188,19 +208,19 @@ describe("rule ordering", () => {
   });
 
   test("priority order decides, not the order rules arrive in", () => {
-    const low = rule({ merchant: { op: "contains", value: "coffee" } }, { rename: "Low" }, { priority: 10 });
-    const high = rule({ merchant: { op: "contains", value: "coffee" } }, { rename: "High" }, { priority: 2 });
+    const low = rule([merchant("contains", "coffee")], { rename: "Low" }, { priority: 10 });
+    const high = rule([merchant("contains", "coffee")], { rename: "High" }, { priority: 2 });
     expect(evaluate([low, high], txn())).toMatchObject({ rename: "High" });
   });
 
   test("disabled rules are skipped", () => {
     const off = rule(
-      { merchant: { op: "contains", value: "coffee" } },
+      [merchant("contains", "coffee")],
       { hide: true },
       { priority: 1, enabled: false },
     );
     const on = rule(
-      { merchant: { op: "contains", value: "coffee" } },
+      [merchant("contains", "coffee")],
       { rename: "Coffee" },
       { priority: 2 },
     );
@@ -234,5 +254,145 @@ describe("Plaid category taxonomy", () => {
     expect(isPfcCategory("RENT_AND_UTILITIES_RENT")).toBe(true);
     expect(isPfcCategory("rent_and_utilities_rent")).toBe(false);
     expect(isPfcCategory("")).toBe(false);
+  });
+});
+
+describe("several values in one condition", () => {
+  test("any one of them satisfies it", () => {
+    const anyOf = rule([merchant("contains", "amzn", "amazon", "whole foods")]);
+    expect(evaluate([anyOf], txn({ merchant: "AMZN Mktp US" }))).not.toBeNull();
+    expect(evaluate([anyOf], txn({ merchant: "Amazon.com" }))).not.toBeNull();
+    expect(evaluate([anyOf], txn({ merchant: "Whole Foods" }))).not.toBeNull();
+    expect(evaluate([anyOf], txn({ merchant: "Target" }))).toBeNull();
+  });
+
+  test("negation is none of them, not each of them", () => {
+    const noneOf: Condition = {
+      kind: "text",
+      field: "merchant",
+      op: "contains",
+      values: ["amzn", "amazon"],
+      negate: true,
+    };
+    expect(evaluate([rule([noneOf])], txn({ merchant: "Target" }))).not.toBeNull();
+    expect(evaluate([rule([noneOf])], txn({ merchant: "AMZN Mktp" }))).toBeNull();
+    expect(evaluate([rule([noneOf])], txn({ merchant: "Amazon.com" }))).toBeNull();
+  });
+
+  test("an empty value list matches nothing, negated or not", () => {
+    // Writes reject this (convex/rules.ts drops emptied conditions); the
+    // engine must not turn it into "matches everything" regardless.
+    const empty: Condition = {
+      kind: "text",
+      field: "merchant",
+      op: "contains",
+      values: [],
+    };
+    expect(evaluate([rule([empty])], txn())).toBeNull();
+  });
+});
+
+describe("a range is two conditions", () => {
+  test("both bounds have to hold", () => {
+    const between = rule([amount("gte", 10), amount("lte", 50)]);
+    expect(evaluate([between], txn({ amount: 25 }))).not.toBeNull();
+    expect(evaluate([between], txn({ amount: 10 }))).not.toBeNull();
+    expect(evaluate([between], txn({ amount: 50 }))).not.toBeNull();
+    expect(evaluate([between], txn({ amount: 9.99 }))).toBeNull();
+    expect(evaluate([between], txn({ amount: 50.01 }))).toBeNull();
+  });
+});
+
+describe("category conditions", () => {
+  const inCoffee: Condition = {
+    kind: "category",
+    categoryIds: ["FOOD_AND_DRINK_COFFEE"],
+  };
+  const inAnyFood: Condition = {
+    kind: "category",
+    categoryIds: ["FOOD_AND_DRINK"],
+  };
+
+  test("a detailed category matches only itself", () => {
+    expect(evaluate([rule([inCoffee])], txn())).not.toBeNull();
+    expect(
+      evaluate([rule([inCoffee])], txn({ category: "FOOD_AND_DRINK_GROCERIES" })),
+    ).toBeNull();
+  });
+
+  test("a primary group matches everything under it", () => {
+    expect(evaluate([rule([inAnyFood])], txn())).not.toBeNull();
+    expect(
+      evaluate([rule([inAnyFood])], txn({ category: "FOOD_AND_DRINK_GROCERIES" })),
+    ).not.toBeNull();
+    expect(
+      evaluate([rule([inAnyFood])], txn({ category: "TRAVEL_FLIGHTS" })),
+    ).toBeNull();
+  });
+
+  test("a transaction Plaid did not categorise matches nothing", () => {
+    expect(evaluate([rule([inCoffee])], txn({ category: null }))).toBeNull();
+    expect(evaluate([rule([inCoffee])], txn({ category: undefined }))).toBeNull();
+    // And negation does not turn "no category" into a match either way round
+    // by accident — it simply did not match, so "is not" holds.
+    expect(
+      evaluate([rule([{ ...inCoffee, negate: true }])], txn({ category: null })),
+    ).not.toBeNull();
+  });
+
+  test("primary ids are recognisable as groups", () => {
+    expect(isPfcPrimary("FOOD_AND_DRINK")).toBe(true);
+    expect(isPfcPrimary("FOOD_AND_DRINK_COFFEE")).toBe(false);
+    expect(isPfcPrimary("NOT_A_GROUP")).toBe(false);
+  });
+});
+
+describe("pending conditions", () => {
+  test("they compare against the transaction's pending flag", () => {
+    const whilePending: Condition = { kind: "pending", value: true };
+    const oncePosted: Condition = { kind: "pending", value: false };
+    expect(evaluate([rule([whilePending])], txn({ pending: true }))).not.toBeNull();
+    expect(evaluate([rule([whilePending])], txn({ pending: false }))).toBeNull();
+    expect(evaluate([rule([oncePosted])], txn({ pending: false }))).not.toBeNull();
+    // Absent is treated as posted, which is what a transaction with no flag is.
+    expect(evaluate([rule([oncePosted])], txn({ pending: undefined }))).not.toBeNull();
+  });
+});
+
+describe("reading rules stored in the old shape", () => {
+  test("every slot becomes one condition", () => {
+    expect(
+      normalizeConditions({
+        merchant: { op: "contains", value: "blue bottle" },
+        description: { op: "regex", value: "^SQ" },
+        amount: { op: "gt", value: 5 },
+        accountId: "account_1",
+      }),
+    ).toEqual([
+      { kind: "text", field: "merchant", op: "contains", values: ["blue bottle"] },
+      { kind: "text", field: "description", op: "regex", values: ["^SQ"] },
+      { kind: "amount", op: "gt", value: 5 },
+      { kind: "account", accountIds: ["account_1"] },
+    ]);
+  });
+
+  test("a rule already in the new shape is left alone", () => {
+    const conditions: Condition[] = [merchant("contains", "coffee")];
+    expect(normalizeConditions(conditions)).toBe(conditions);
+  });
+
+  test("an old rule keeps matching exactly what it did", () => {
+    const legacy = normalizeConditions({
+      merchant: { op: "contains", value: "blue bottle" },
+      amount: { op: "gt", value: 5 },
+    });
+    expect(evaluate([rule(legacy)], txn())).not.toBeNull();
+    expect(evaluate([rule(legacy)], txn({ amount: 3 }))).toBeNull();
+    expect(evaluate([rule(legacy)], txn({ merchant: "Peet's" }))).toBeNull();
+  });
+
+  test("an empty old record still matches nothing", () => {
+    expect(normalizeConditions({})).toEqual([]);
+    expect(evaluate([rule(normalizeConditions({}))], txn())).toBeNull();
   });
 });

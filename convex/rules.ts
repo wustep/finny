@@ -5,9 +5,11 @@
 // keeps their priorities in order, and refuses ones that cannot mean anything.
 
 import { getAuthUserId } from "@convex-dev/auth/server";
-import { v } from "convex/values";
+import { v, type Infer } from "convex/values";
+import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import {
+  internalMutation,
   internalQuery,
   mutation,
   query,
@@ -16,15 +18,27 @@ import {
 import {
   MAX_PATTERN_LENGTH,
   compilePattern,
+  isLegacyConditions,
   isPfcCategory,
+  isPfcPrimary,
+  normalizeConditions,
+  type Condition,
   type Rule,
 } from "./rulesEngine";
-import { ruleConditionsValidator, ruleOutcomesValidator } from "./schema";
+import { ruleConditionValidator, ruleOutcomesValidator } from "./schema";
 
-// The engine's condition/outcome types keep ids as plain strings so it stays
+// The engine's condition types keep ids as plain strings so it stays
 // independent of the data model; stored rules use the real `Id<"accounts">`.
-type StoredConditions = Doc<"rules">["conditions"];
 type StoredOutcomes = Doc<"rules">["outcomes"];
+type StoredCondition = Infer<typeof ruleConditionValidator>;
+
+// The engine keeps account ids as plain strings, on purpose — it is pure and
+// knows nothing about the data model. The table stores branded ids, and every
+// account id that reaches here has been through ctx.db.get, so it is one.
+// One named cast at that seam beats one at every write.
+function asStored(conditions: Condition[]): StoredCondition[] {
+  return conditions as StoredCondition[];
+}
 
 // Every enabled rule is loaded once per batch of transactions and evaluated
 // against each of them, so the set has to stay small enough to read in one
@@ -64,7 +78,7 @@ export const listEnabledInternal = internalQuery({
         id: rule._id,
         priority: rule.priority,
         enabled: rule.enabled,
-        conditions: rule.conditions,
+        conditions: normalizeConditions(rule.conditions),
         outcomes: rule.outcomes,
       }));
   },
@@ -73,7 +87,7 @@ export const listEnabledInternal = internalQuery({
 export const create = mutation({
   args: {
     name: v.string(),
-    conditions: ruleConditionsValidator,
+    conditions: v.array(ruleConditionValidator),
     outcomes: ruleOutcomesValidator,
   },
   handler: async (ctx, args): Promise<Id<"rules">> => {
@@ -100,7 +114,7 @@ export const create = mutation({
       name,
       priority: priority + 1,
       enabled: true,
-      conditions,
+      conditions: asStored(conditions),
       outcomes,
     });
   },
@@ -111,7 +125,7 @@ export const update = mutation({
     ruleId: v.id("rules"),
     name: v.optional(v.string()),
     enabled: v.optional(v.boolean()),
-    conditions: v.optional(ruleConditionsValidator),
+    conditions: v.optional(v.array(ruleConditionValidator)),
     outcomes: v.optional(ruleOutcomesValidator),
   },
   handler: async (ctx, args) => {
@@ -120,12 +134,15 @@ export const update = mutation({
     // could not express "drop the amount condition".
     const validated = await validateRule(ctx, userId, {
       name: args.name ?? rule.name,
-      conditions: args.conditions ?? rule.conditions,
+      // A rule edited without touching its conditions is also a rule whose
+      // legacy conditions get rewritten, which is the cheapest migration
+      // there is.
+      conditions: args.conditions ?? normalizeConditions(rule.conditions),
       outcomes: args.outcomes ?? rule.outcomes,
     });
     await ctx.db.patch(rule._id, {
       name: validated.name,
-      conditions: validated.conditions,
+      conditions: asStored(validated.conditions),
       outcomes: validated.outcomes,
       enabled: args.enabled ?? rule.enabled,
     });
@@ -169,13 +186,15 @@ export const move = mutation({
 
 // ---------- helpers ----------
 
+// Rules leave this module in one shape whatever they are on disk, so neither
+// the UI nor the engine has to know the old one existed.
 function toClientRule(rule: Doc<"rules">) {
   return {
     id: rule._id,
     name: rule.name,
     priority: rule.priority,
     enabled: rule.enabled,
-    conditions: rule.conditions,
+    conditions: normalizeConditions(rule.conditions),
     outcomes: rule.outcomes,
   };
 }
@@ -202,6 +221,14 @@ async function requireRule(
   return { userId, rule };
 }
 
+// Conditions one rule may carry. Enough for anything anyone writes by hand,
+// low enough that evaluating every rule against every transaction of a batch
+// stays trivial.
+const MAX_CONDITIONS = 10;
+
+// Values one text or category condition may OR together.
+const MAX_CONDITION_VALUES = 20;
+
 // Reject a rule that cannot do what it says before it reaches the sync, where
 // the only symptom would be transactions quietly not matching it.
 async function validateRule(
@@ -209,42 +236,31 @@ async function validateRule(
   userId: Id<"users">,
   input: {
     name: string;
-    conditions: StoredConditions;
+    conditions: Condition[];
     outcomes: StoredOutcomes;
   },
 ): Promise<{
   name: string;
-  conditions: StoredConditions;
+  conditions: Condition[];
   outcomes: StoredOutcomes;
 }> {
   const name = input.name.trim().slice(0, MAX_NAME_LENGTH);
   if (!name) {
     throw new Error("Give the rule a name");
   }
+  if (input.conditions.length > MAX_CONDITIONS) {
+    throw new Error(`A rule is limited to ${MAX_CONDITIONS} conditions`);
+  }
 
-  const conditions: StoredConditions = {};
-  const merchant = textCondition(input.conditions.merchant);
-  if (merchant) {
-    conditions.merchant = merchant;
-  }
-  const description = textCondition(input.conditions.description);
-  if (description) {
-    conditions.description = description;
-  }
-  if (input.conditions.amount) {
-    if (!Number.isFinite(input.conditions.amount.value)) {
-      throw new Error("The amount to compare against has to be a number");
+  const conditions: Condition[] = [];
+  for (const condition of input.conditions) {
+    const checked = await validateCondition(ctx, userId, condition);
+    // An emptied-out condition is how the UI says "I removed this one".
+    if (checked) {
+      conditions.push(checked);
     }
-    conditions.amount = input.conditions.amount;
   }
-  if (input.conditions.accountId) {
-    const account = await ctx.db.get(input.conditions.accountId);
-    if (!account || account.userId !== userId) {
-      throw new Error("Account not found");
-    }
-    conditions.accountId = account._id;
-  }
-  if (Object.keys(conditions).length === 0) {
+  if (conditions.length === 0) {
     // A rule with nothing to match on would apply to every transaction.
     throw new Error("A rule needs at least one condition");
   }
@@ -270,30 +286,133 @@ async function validateRule(
   return { name, conditions, outcomes };
 }
 
-function textCondition(
-  condition: { op: "contains" | "equals" | "regex"; value: string } | undefined,
-) {
-  if (!condition) {
-    return undefined;
+async function validateCondition(
+  ctx: MutationCtx,
+  userId: Id<"users">,
+  condition: Condition,
+): Promise<Condition | null> {
+  switch (condition.kind) {
+    case "text": {
+      const values = textValues(condition.op, condition.values);
+      return values.length === 0
+        ? null
+        : { ...condition, values: values.slice(0, MAX_CONDITION_VALUES) };
+    }
+    case "amount":
+      if (!Number.isFinite(condition.value)) {
+        throw new Error("The amount to compare against has to be a number");
+      }
+      return condition;
+    case "account": {
+      const accountIds: Id<"accounts">[] = [];
+      for (const accountId of condition.accountIds.slice(
+        0,
+        MAX_CONDITION_VALUES,
+      )) {
+        // A plain string off the wire until this lookup says otherwise — the
+        // get is what makes it an id, and an account of this user's.
+        const account = await ctx.db.get(accountId as Id<"accounts">);
+        if (!account || account.userId !== userId) {
+          throw new Error("Account not found");
+        }
+        accountIds.push(account._id);
+      }
+      return accountIds.length === 0 ? null : { ...condition, accountIds };
+    }
+    case "category": {
+      const categoryIds = condition.categoryIds
+        .slice(0, MAX_CONDITION_VALUES)
+        .filter((id) => id !== "");
+      for (const categoryId of categoryIds) {
+        // Either a whole primary group or one detailed category; both are
+        // things the engine knows how to match.
+        if (!isPfcCategory(categoryId) && !isPfcPrimary(categoryId)) {
+          throw new Error(`Unknown category ${categoryId}`);
+        }
+      }
+      return categoryIds.length === 0 ? null : { ...condition, categoryIds };
+    }
+    case "pending":
+      return condition;
   }
-  const value = condition.value.trim();
-  if (!value) {
-    // An empty value is how the UI says "no condition here".
-    return undefined;
-  }
-  if (value.length > MAX_VALUE_LENGTH) {
-    throw new Error(
-      `Keep the text to match under ${MAX_VALUE_LENGTH} characters`,
-    );
-  }
-  if (condition.op === "regex" && !compilePattern(value)) {
-    // The engine treats an uncompilable pattern as never matching, which as a
-    // saved rule is indistinguishable from a rule that is simply wrong.
-    throw new Error(
-      value.length > MAX_PATTERN_LENGTH
-        ? "That regular expression is too long"
-        : "That is not a valid regular expression",
-    );
-  }
-  return { op: condition.op, value };
 }
+
+// The values of one text condition, cleaned. An empty list is how the UI says
+// the condition was removed.
+function textValues(op: "contains" | "equals" | "regex", values: string[]) {
+  const cleaned: string[] = [];
+  for (const raw of values) {
+    const value = raw.trim();
+    if (!value) {
+      continue;
+    }
+    if (value.length > MAX_VALUE_LENGTH) {
+      throw new Error(
+        `Keep the text to match under ${MAX_VALUE_LENGTH} characters`,
+      );
+    }
+    if (op === "regex" && !compilePattern(value)) {
+      // The engine treats an uncompilable pattern as never matching, which as
+      // a saved rule is indistinguishable from a rule that is simply wrong.
+      throw new Error(
+        value.length > MAX_PATTERN_LENGTH
+          ? "That regular expression is too long"
+          : `"${value}" is not a valid regular expression`,
+      );
+    }
+    if (!cleaned.includes(value)) {
+      cleaned.push(value);
+    }
+  }
+  return cleaned;
+}
+
+// ---------- one-off: rewrite legacy conditions ----------
+
+// Rules one pass rewrites. There are at most MAX_RULES per user, so this is
+// only batched at all because the table spans every user.
+const MIGRATE_BATCH = 200;
+
+// Rewrite rules still storing conditions as the old one-slot-per-field record.
+//
+// Nothing depends on this having run — reads normalise (see toClientRule and
+// listEnabledInternal), which is what makes the deploy order a non-question.
+// It exists so the legacy branch of the validator can eventually be deleted.
+// Idempotent: a rule already holding a list is skipped.
+//
+//   npx convex run rules:migrateConditions '{}'
+export const migrateConditions = internalMutation({
+  args: {
+    after: v.optional(v.number()),
+    migrated: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const rules = await ctx.db
+      .query("rules")
+      .withIndex("by_creation_time", (q) =>
+        q.gt("_creationTime", args.after ?? 0),
+      )
+      .take(MIGRATE_BATCH);
+
+    let migrated = args.migrated ?? 0;
+    for (const rule of rules) {
+      if (!isLegacyConditions(rule.conditions)) {
+        continue;
+      }
+      await ctx.db.patch(rule._id, {
+        conditions: asStored(normalizeConditions(rule.conditions)),
+      });
+      migrated++;
+    }
+
+    if (rules.length === MIGRATE_BATCH) {
+      await ctx.scheduler.runAfter(0, internal.rules.migrateConditions, {
+        after: rules[rules.length - 1]._creationTime,
+        migrated,
+      });
+      return { done: false, migrated };
+    }
+    console.log(`migrateConditions finished: rewrote ${migrated} rule(s)`);
+    return { done: true, migrated };
+  },
+});
