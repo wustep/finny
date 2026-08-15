@@ -606,10 +606,13 @@ function ConnectionCard({
       <CardHeader>
         <div className="flex items-center gap-3">
           {connection.institutionLogo ? (
+            // Always on white, in either theme: bank logos are transparent
+            // PNGs and plenty of them are drawn in black, which on a dark
+            // card is an empty square.
             <img
               src={connection.institutionLogo}
               alt=""
-              className="size-8 rounded"
+              className="size-8 rounded bg-white p-0.5"
             />
           ) : (
             <div className="flex size-8 items-center justify-center rounded bg-muted">

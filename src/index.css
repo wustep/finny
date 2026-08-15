@@ -3,6 +3,11 @@
 @custom-variant dark (&:is(.dark *));
 
 :root {
+  /* Native controls — date inputs, select menus, scrollbars — pick their own
+     colours from this and nothing else. Without it they follow the OS, so
+     forcing light on a dark machine gives you a light app with black
+     dropdowns. */
+  color-scheme: light;
   --radius: 0.625rem;
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);
@@ -33,6 +38,7 @@
 }
 
 .dark {
+  color-scheme: dark;
   --background: oklch(0.145 0 0);
   --foreground: oklch(0.985 0 0);
   --card: oklch(0.205 0 0);
