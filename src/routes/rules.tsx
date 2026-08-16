@@ -31,6 +31,7 @@ import {
   type TextField,
   type TextOp,
 } from "../../convex/rulesEngine";
+import { DATABASE_EMOJI } from "../../convex/notionSchemas";
 import {
   FILTERS,
   TITLE_FORMATS,
@@ -384,7 +385,9 @@ function TitleFormatRow({
 
   return (
     <div className="flex flex-col gap-2">
-      <Label htmlFor={`format-${spec.key}`}>{spec.label}</Label>
+      <Label htmlFor={`format-${spec.key}`}>
+        <span aria-hidden>{DATABASE_EMOJI[spec.key]}</span> {spec.label}
+      </Label>
       <div className="flex flex-wrap items-center gap-2">
         <Input
           id={`format-${spec.key}`}
