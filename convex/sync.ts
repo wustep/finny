@@ -932,13 +932,24 @@ export const transactionsBatch = internalAction({
         // to a snapshot Plaid has discarded, so they are not resumable; the
         // pages they covered are already in Notion and will be updated in
         // place on the way back through.
+        //
+        // Unless the sequence began where we already are — the first page of
+        // the walk is the one being refused. Then there is nothing earlier
+        // recorded to go back to, and the stored position is itself one Plaid
+        // will not take, which is exactly how a connection gets stuck for
+        // good. The only position left is the beginning of the Item.
+        const stuck = sequenceStart === connection.transactionsCursor;
         await ctx.runMutation(internal.syncData.rewindCursor, {
           connectionId: connection._id,
-          cursor: sequenceStart,
+          cursor: stuck ? undefined : sequenceStart,
         });
         console.log(
-          `transactions changed mid-walk, restarting the sequence ` +
-            `(${restarts} of ${MAX_PAGINATION_RESTARTS})`,
+          stuck
+            ? `transactions cursor refused at the start of the walk; ` +
+                `replaying this Item from the beginning ` +
+                `(${restarts} of ${MAX_PAGINATION_RESTARTS})`
+            : `transactions changed mid-walk, restarting the sequence ` +
+                `(${restarts} of ${MAX_PAGINATION_RESTARTS})`,
         );
         await ctx.scheduler.runAfter(
           // Backing off properly: an Item busy enough to mutate mid-walk is
