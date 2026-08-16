@@ -36,6 +36,13 @@ longer there:
 
 Add a stage action to `sync.ts`; add anything a stage *uses* to one of these.
 
+Those four are testable in a way `sync.ts` is not — it is `"use node"`, which
+convex-test cannot load. `syncTestCtx.ts` gives them a fake `ActionCtx` that
+records the order of every runQuery/runMutation and a fetch stub that records
+every Notion request, which is how the claim protocol, the pending -> posted
+rekey and hide-and-unmap are covered. Assert on the *order*: claim, create,
+map is the invariant, and every duplicate-row bug is a violation of it.
+
 - One run per connection, held by a lease on the connection
   (`syncLockExpiresAt` / `activeRunId`): `syncData.beginRun` takes it, every
   hop heartbeats it, `syncData.finishRun` releases it — which is why it sits
