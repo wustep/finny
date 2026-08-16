@@ -13,28 +13,32 @@
      Chroma 0 is the colour of nothing decided; a hint of it reads as chosen,
      and it is far below the threshold anyone would call the UI teal. */
   --background: oklch(1 0 0);
-  --foreground: oklch(0.16 0.01 220);
+  --foreground: oklch(0.16 0.012 265);
   --card: oklch(1 0 0);
-  --card-foreground: oklch(0.16 0.01 220);
+  --card-foreground: oklch(0.16 0.012 265);
   --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.16 0.01 220);
-  /* The one colour in the app. Deep enough for white text at 7:1, far enough
-     from the destructive red that the two are never confused, and the right
-     register for a thing whose whole job is reconciling numbers. */
-  --primary: oklch(0.47 0.086 205);
-  --primary-foreground: oklch(0.99 0.005 220);
-  --secondary: oklch(0.97 0.004 220);
-  --secondary-foreground: oklch(0.22 0.012 220);
-  --muted: oklch(0.97 0.004 220);
-  --muted-foreground: oklch(0.54 0.014 220);
-  --accent: oklch(0.96 0.008 205);
-  --accent-foreground: oklch(0.3 0.05 205);
+  --popover-foreground: oklch(0.16 0.012 265);
+  /* The one colour in the app. Committed rather than tentative: the first
+     attempt sat at chroma 0.086, which is low enough to read as dust on a
+     grey rather than as a decision. White text clears 6.9:1 on it, and it is
+     nowhere near the destructive red. */
+  --primary: oklch(0.47 0.19 265);
+  --primary-foreground: oklch(0.99 0.004 265);
+  --secondary: oklch(0.97 0.004 265);
+  --secondary-foreground: oklch(0.22 0.014 265);
+  --muted: oklch(0.97 0.004 265);
+  --muted-foreground: oklch(0.53 0.016 265);
+  --accent: oklch(0.96 0.014 265);
+  --accent-foreground: oklch(0.34 0.1 265);
   --destructive: oklch(0.577 0.245 27.325);
   /* Alpha in light mode: a border that tints the surface under it recedes,
      where a solid grey of the same value sits on top of it. */
-  --border: oklch(0 0 0 / 8%);
-  --input: oklch(0 0 0 / 12%);
-  --ring: oklch(0.6 0.07 205);
+  /* Quiet and neutral, so a hint never competes with a primary button. */
+  --tooltip: oklch(0.22 0.014 265);
+  --tooltip-foreground: oklch(0.97 0.004 265);
+  --border: oklch(0 0 0 / 9%);
+  --input: oklch(0 0 0 / 13%);
+  --ring: oklch(0.55 0.16 265);
   --sidebar: oklch(0.985 0 0);
   --sidebar-foreground: oklch(0.145 0 0);
   --sidebar-primary: oklch(0.205 0 0);
@@ -47,30 +51,33 @@
 
 .dark {
   color-scheme: dark;
-  --background: oklch(0.15 0.008 220);
-  --foreground: oklch(0.97 0.004 220);
+  --background: oklch(0.145 0.012 265);
+  --foreground: oklch(0.97 0.005 265);
   /* The canvas stays the brightest surface: dark mode keeps the layering of
      light mode rather than inverting it. */
-  --card: oklch(0.205 0.009 220);
-  --card-foreground: oklch(0.97 0.004 220);
-  --popover: oklch(0.215 0.009 220);
-  --popover-foreground: oklch(0.97 0.004 220);
-  /* Lighter and less saturated than its light-mode twin. Carried over at full
-     chroma it would vibrate against the dark ground. */
-  --primary: oklch(0.74 0.088 200);
-  --primary-foreground: oklch(0.18 0.02 205);
-  --secondary: oklch(0.27 0.01 220);
-  --secondary-foreground: oklch(0.97 0.004 220);
-  --muted: oklch(0.27 0.01 220);
-  --muted-foreground: oklch(0.71 0.012 220);
-  --accent: oklch(0.29 0.02 205);
-  --accent-foreground: oklch(0.9 0.04 200);
+  --card: oklch(0.205 0.014 265);
+  --card-foreground: oklch(0.97 0.005 265);
+  --popover: oklch(0.225 0.015 265);
+  --popover-foreground: oklch(0.97 0.005 265);
+  /* Lighter and a little less saturated than its light-mode twin: carried
+     over at full chroma it would vibrate against the dark ground. Dark ink
+     rides on it at 7.6:1. */
+  --primary: oklch(0.72 0.13 262);
+  --primary-foreground: oklch(0.17 0.03 265);
+  --secondary: oklch(0.27 0.014 265);
+  --secondary-foreground: oklch(0.97 0.005 265);
+  --muted: oklch(0.27 0.014 265);
+  --muted-foreground: oklch(0.72 0.016 265);
+  --accent: oklch(0.3 0.035 265);
+  --accent-foreground: oklch(0.9 0.06 262);
   --destructive: oklch(0.704 0.191 22.216);
   /* And solid in dark mode, which is the other way round for the same
      reason: white at 10% over a dark surface reads as a glow. */
-  --border: oklch(0.269 0 0);
-  --input: oklch(0.32 0 0);
-  --ring: oklch(0.55 0.06 205);
+  --tooltip: oklch(0.32 0.015 265);
+  --tooltip-foreground: oklch(0.98 0.005 265);
+  --border: oklch(0.28 0.012 265);
+  --input: oklch(0.33 0.014 265);
+  --ring: oklch(0.6 0.13 262);
   --sidebar: oklch(0.205 0 0);
   --sidebar-foreground: oklch(0.985 0 0);
   --sidebar-primary: oklch(0.488 0.243 264.376);
@@ -101,6 +108,8 @@
   --color-accent: var(--accent);
   --color-accent-foreground: var(--accent-foreground);
   --color-destructive: var(--destructive);
+  --color-tooltip: var(--tooltip);
+  --color-tooltip-foreground: var(--tooltip-foreground);
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);

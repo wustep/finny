@@ -255,7 +255,7 @@ function NotionPage() {
         <Skeleton className="h-48 w-full" />
       ) : !status.connected ? (
         <Card>
-          <CardHeader className="items-center text-center">
+          <CardHeader className="justify-items-center text-center">
             <CardTitle>Not connected</CardTitle>
             <CardDescription>
               Grant access to the page Finny should build its databases in.

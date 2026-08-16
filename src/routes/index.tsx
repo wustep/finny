@@ -148,7 +148,7 @@ function AccountsPage() {
         // The checklist already asks for a bank, with the same button.
         showChecklist ? null : (
           <Card>
-            <CardHeader className="items-center text-center">
+            <CardHeader className="justify-items-center text-center">
               <div className="mx-auto mb-2 flex size-12 items-center justify-center rounded-full bg-muted">
                 <Landmark className="size-6 text-muted-foreground" />
               </div>

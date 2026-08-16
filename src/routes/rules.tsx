@@ -62,6 +62,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
@@ -192,48 +193,61 @@ function RulesPage() {
   );
 
   return (
-    <div className="mx-auto flex w-full max-w-3xl flex-col gap-6">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Rules</h1>
-          <p className="text-sm text-muted-foreground">
-            Applied as each transaction syncs. Every rule that matches has a
-            say; where two set the same thing, the higher one wins.{" "}
-            <Hint label="How rules work" className="ml-0.5 align-middle">
-              <p className="mb-2">
-                Multi-select values are the exception — those add up across
-                every rule that adds them. Keeping a row out of Notion is a
-                latch: one rule is enough.
-              </p>
-              <p>
-                Rows already in Notion take a new rule the next time that
-                transaction syncs — when your bank changes it, or when you
-                re-backfill from the Notion page. Editing a Finny-owned
-                property in Notion does not stick; properties you add yourself
-                are never touched.
-              </p>
-            </Hint>
-          </p>
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          {rules && rules.length > 0 ? <ApplyToHistory /> : null}
-          <Button onClick={() => setEditing("new")}>
-            <Plus /> New rule
-          </Button>
-        </div>
+    <div className="mx-auto flex w-full max-w-3xl flex-col gap-10">
+      <div>
+        <h1 className="text-2xl font-semibold tracking-tight">Customise</h1>
+        <p className="text-sm text-muted-foreground">
+          What Finny writes into Notion, and what it calls it.
+        </p>
       </div>
 
-      {rules === undefined ? (
-        <Skeleton className="h-40 w-full" />
-      ) : rules.length === 0 ? (
-        <EmptyState onCreate={() => setEditing("new")} />
-      ) : (
-        <RuleList
-          rules={rules}
-          accounts={accounts}
-          onEdit={(rule) => setEditing(rule)}
-        />
-      )}
+      {/* Two things at the same level, because neither is part of the other:
+          a rule changes particular transactions, a title names every row in a
+          database. A page called "Rules" with a "Titles" card inside it
+          implied a relationship that is not there. */}
+      <section className="flex flex-col gap-4">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h2 className="flex items-center gap-1.5 text-lg font-semibold tracking-tight">
+              Rules
+              <Hint label="How rules work">
+                <p className="mb-2">
+                  Every rule that matches has a say; where two set the same
+                  thing, the higher one wins. Multi-select values are the
+                  exception — those add up across every rule that adds them,
+                  and keeping a row out of Notion is a latch: one rule is
+                  enough.
+                </p>
+                <p>
+                  Editing a Finny-owned property in Notion does not stick;
+                  properties you add yourself are never touched.
+                </p>
+              </Hint>
+            </h2>
+            <p className="text-sm text-muted-foreground">
+              Change particular transactions as they sync.
+            </p>
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            {rules && rules.length > 0 ? <ApplyToHistory /> : null}
+            <Button onClick={() => setEditing("new")}>
+              <Plus /> New rule
+            </Button>
+          </div>
+        </div>
+
+        {rules === undefined ? (
+          <Skeleton className="h-40 w-full" />
+        ) : rules.length === 0 ? (
+          <EmptyState onCreate={() => setEditing("new")} />
+        ) : (
+          <RuleList
+            rules={rules}
+            accounts={accounts}
+            onEdit={(rule) => setEditing(rule)}
+          />
+        )}
+      </section>
 
       <TitleFormats />
 
@@ -328,25 +342,26 @@ function TitleFormats() {
     return null;
   }
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Titles</CardTitle>
-        <CardDescription>
-          What each row is called in Notion. A change here only affects rows
-          that sync from now on; to rename the rows already in Notion, use
-          Apply to history at the top of this page.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-5">
-        {available.map((spec) => (
-          <TitleFormatRow
-            key={spec.key}
-            spec={spec}
-            saved={titleFormats?.[spec.key] ?? ""}
-          />
-        ))}
-      </CardContent>
-    </Card>
+    <section className="flex flex-col gap-4">
+      <div>
+        <h2 className="text-lg font-semibold tracking-tight">Titles</h2>
+        <p className="text-sm text-muted-foreground">
+          Name every row in a database. Takes effect on the next sync — to
+          rename rows already in Notion, use Apply to history.
+        </p>
+      </div>
+      <Card>
+        <CardContent className="flex flex-col gap-6">
+          {available.map((spec) => (
+            <TitleFormatRow
+              key={spec.key}
+              spec={spec}
+              saved={titleFormats?.[spec.key] ?? ""}
+            />
+          ))}
+        </CardContent>
+      </Card>
+    </section>
   );
 }
 
@@ -480,7 +495,7 @@ function TitleFormatRow({
 function EmptyState({ onCreate }: { onCreate: () => void }) {
   return (
     <Card>
-      <CardHeader className="items-center text-center">
+      <CardHeader className="justify-items-center text-center">
         <div className="mx-auto mb-2 flex size-12 items-center justify-center rounded-full bg-muted">
           <Wand2 className="size-6 text-muted-foreground" />
         </div>
@@ -607,24 +622,6 @@ function RuleItem({
       </div>
 
       <div className="flex items-center gap-1">
-        <Button
-          variant="ghost"
-          size="icon"
-          aria-label={`Move "${rule.name}" up`}
-          disabled={first}
-          onClick={() => handleMove("up")}
-        >
-          <ChevronUp />
-        </Button>
-        <Button
-          variant="ghost"
-          size="icon"
-          aria-label={`Move "${rule.name}" down`}
-          disabled={last}
-          onClick={() => handleMove("down")}
-        >
-          <ChevronDown />
-        </Button>
         <Switch
           checked={rule.enabled}
           aria-label={`Enable "${rule.name}"`}
@@ -647,6 +644,17 @@ function RuleItem({
             <DropdownMenuItem onClick={handleDuplicate}>
               <Copy /> Duplicate
             </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem disabled={first} onClick={() => handleMove("up")}>
+              <ChevronUp /> Move up
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              disabled={last}
+              onClick={() => handleMove("down")}
+            >
+              <ChevronDown /> Move down
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
             <DropdownMenuItem
               variant="destructive"
               onClick={() => setConfirmDelete(true)}

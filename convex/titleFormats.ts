@@ -20,8 +20,8 @@
 
 export interface TitleToken {
   name: string;
-  // Shown under the input, so it says what the token is rather than repeating
-  // its name back.
+  // Read on its own in a tooltip, so it is a sentence rather than a fragment
+  // waiting for a label to complete it.
   describes: string;
 }
 
@@ -50,12 +50,12 @@ export const TITLE_FORMATS: TitleFormatSpec[] = [
     key: "transactions",
     label: "Transactions",
     tokens: [
-      { name: "merchant", describes: "Plaid's cleaned merchant name" },
-      { name: "description", describes: "the raw string from your bank" },
-      { name: "amount", describes: "as shown in Notion, so outflows are negative" },
-      { name: "date", describes: "YYYY-MM-DD" },
-      { name: "account", describes: "the account's name in Notion" },
-      { name: "category", describes: "e.g. Coffee" },
+      { name: "merchant", describes: "Plaid's cleaned-up merchant name." },
+      { name: "description", describes: "The raw description your bank sent." },
+      { name: "amount", describes: "The amount, signed as Notion shows it: money out is negative." },
+      { name: "date", describes: "The date, as 2026-08-14." },
+      { name: "account", describes: "The account's name, as it appears in Notion." },
+      { name: "category", describes: "The category, such as Coffee." },
     ],
     defaultTemplate: "{merchant}",
     example: {
@@ -71,14 +71,14 @@ export const TITLE_FORMATS: TitleFormatSpec[] = [
     key: "investmentTransactions",
     label: "Investment Transactions",
     tokens: [
-      { name: "name", describes: "what Plaid called it" },
-      { name: "type", describes: "buy, sell, cash, fee, transfer" },
-      { name: "subtype", describes: "e.g. buy, dividend, contribution" },
-      { name: "security", describes: "ticker, or the security's name" },
-      { name: "amount", describes: "as shown in Notion" },
-      { name: "quantity", describes: "units traded" },
-      { name: "date", describes: "YYYY-MM-DD" },
-      { name: "account", describes: "the account's name in Notion" },
+      { name: "name", describes: "Whatever Plaid called this transaction." },
+      { name: "type", describes: "One of buy, sell, cash, fee or transfer." },
+      { name: "subtype", describes: "The subtype, such as Dividend or Contribution." },
+      { name: "security", describes: "The ticker, falling back to the security's name." },
+      { name: "amount", describes: "The amount, signed as Notion shows it." },
+      { name: "quantity", describes: "How many units were traded." },
+      { name: "date", describes: "The date, as 2026-08-14." },
+      { name: "account", describes: "The account's name, as it appears in Notion." },
     ],
     defaultTemplate: "{name}",
     example: {
@@ -96,9 +96,9 @@ export const TITLE_FORMATS: TitleFormatSpec[] = [
     key: "holdings",
     label: "Holdings",
     tokens: [
-      { name: "security", describes: "ticker, or the security's name" },
-      { name: "quantity", describes: "units held" },
-      { name: "account", describes: "the account's name in Notion" },
+      { name: "security", describes: "The ticker, falling back to the security's name." },
+      { name: "quantity", describes: "How many units you hold." },
+      { name: "account", describes: "The account's name, as it appears in Notion." },
     ],
     defaultTemplate: "{security} Holding",
     example: {
@@ -111,9 +111,9 @@ export const TITLE_FORMATS: TitleFormatSpec[] = [
     key: "balanceHistory",
     label: "Balance History",
     tokens: [
-      { name: "date", describes: "YYYY-MM-DD" },
-      { name: "account", describes: "the account's name in Notion" },
-      { name: "balance", describes: "the balance that day" },
+      { name: "date", describes: "The date, as 2026-08-14." },
+      { name: "account", describes: "The account's name, as it appears in Notion." },
+      { name: "balance", describes: "The balance recorded that day." },
     ],
     defaultTemplate: "{date} · {account}",
     example: {
@@ -126,11 +126,11 @@ export const TITLE_FORMATS: TitleFormatSpec[] = [
     key: "recurring",
     label: "Recurring",
     tokens: [
-      { name: "merchant", describes: "the merchant, or the bank's description" },
-      { name: "frequency", describes: "e.g. Monthly" },
-      { name: "direction", describes: "Inflow or Outflow" },
-      { name: "amount", describes: "the average, as shown in Notion" },
-      { name: "account", describes: "the account's name in Notion" },
+      { name: "merchant", describes: "The merchant, falling back to the bank's description." },
+      { name: "frequency", describes: "How often it recurs, such as Monthly." },
+      { name: "direction", describes: "Whether money comes in or goes out." },
+      { name: "amount", describes: "The average amount, signed as Notion shows it." },
+      { name: "account", describes: "The account's name, as it appears in Notion." },
     ],
     defaultTemplate: "{merchant}",
     example: {
@@ -161,11 +161,15 @@ export const MAX_TEMPLATE_LENGTH = 200;
 export const FILTERS: TitleToken[] = [
   {
     name: "money",
-    describes: "1,200.00 with the row's own currency symbol — {amount.money}",
+    describes:
+      "Formats a number as money, in the row's own currency: {amount.money} gives $1,200.00.",
   },
-  { name: "abs", describes: "drops the minus sign — {amount.abs}" },
-  { name: "upper", describes: "UPPERCASE — {merchant.upper}" },
-  { name: "lower", describes: "lowercase — {merchant.lower}" },
+  {
+    name: "abs",
+    describes: "Drops the minus sign, so {amount.abs} turns −40 into 40.",
+  },
+  { name: "upper", describes: "Uppercases the text: {merchant.upper}." },
+  { name: "lower", describes: "Lowercases the text: {merchant.lower}." },
 ];
 
 const FILTER_NAMES = new Set(FILTERS.map((filter) => filter.name));

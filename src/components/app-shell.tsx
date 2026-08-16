@@ -20,7 +20,7 @@ import {
 const navItems = [
   { to: "/", label: "Accounts", icon: Landmark, exact: true },
   { to: "/notion", label: "Notion", icon: NotionGlyph, exact: false },
-  { to: "/rules", label: "Rules", icon: Wand2, exact: false },
+  { to: "/rules", label: "Customise", icon: Wand2, exact: false },
   { to: "/settings", label: "Settings", icon: Settings, exact: false },
 ] as const;
 
