@@ -17,7 +17,7 @@ import {
   X,
 } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
-import { toast } from "sonner";
+import { toast } from "@/lib/notify";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 import {
@@ -71,6 +71,11 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 
@@ -407,28 +412,45 @@ function TitleFormatRow({
         ) : null}
       </div>
       <div className="flex flex-wrap items-center gap-1.5">
+        <span className="text-xs text-muted-foreground">Insert</span>
         {spec.tokens.map((token) => (
-          <button
-            key={token.name}
-            type="button"
-            title={token.describes}
-            className="rounded border px-1.5 py-0.5 font-mono text-xs text-muted-foreground transition-colors hover:text-foreground"
-            onClick={() => setValue((current) => `${current}{${token.name}}`)}
-          >
-            {`{${token.name}}`}
-          </button>
+          <Tooltip key={token.name}>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                className="rounded border px-1.5 py-0.5 font-mono text-xs text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground"
+                onClick={() =>
+                  setValue((current) => `${current}{${token.name}}`)
+                }
+              >
+                {`{${token.name}}`}
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>{token.describes}</TooltipContent>
+          </Tooltip>
         ))}
-        <span className="text-xs text-muted-foreground">
-          and, on the end of any of them
-        </span>
+        <span className="ml-1 text-xs text-muted-foreground">then</span>
         {FILTERS.map((filter) => (
-          <span
-            key={filter.name}
-            title={filter.describes}
-            className="rounded border border-dashed px-1.5 py-0.5 font-mono text-xs text-muted-foreground"
-          >
-            {`.${filter.name}`}
-          </span>
+          <Tooltip key={filter.name}>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                className="rounded border border-dashed px-1.5 py-0.5 font-mono text-xs text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground"
+                onClick={() =>
+                  // Appends to whatever token the template ends with, which is
+                  // where a filter goes.
+                  setValue((current) =>
+                    current.trimEnd().endsWith("}")
+                      ? `${current.trimEnd().slice(0, -1)}.${filter.name}}`
+                      : current,
+                  )
+                }
+              >
+                {`.${filter.name}`}
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>{filter.describes}</TooltipContent>
+          </Tooltip>
         ))}
       </div>
       <p className="text-xs text-muted-foreground">

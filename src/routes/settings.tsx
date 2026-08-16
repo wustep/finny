@@ -3,7 +3,7 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useAction, useMutation, useQuery } from "convex/react";
 import { Trash2, Unplug } from "lucide-react";
 import { useState } from "react";
-import { toast } from "sonner";
+import { toast } from "@/lib/notify";
 import { api } from "../../convex/_generated/api";
 import { connectionCount } from "@/lib/plural";
 import { Button } from "@/components/ui/button";

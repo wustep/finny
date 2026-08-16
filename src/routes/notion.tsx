@@ -10,7 +10,7 @@ import {
   Wrench,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { toast } from "sonner";
+import { toast } from "@/lib/notify";
 import { api } from "../../convex/_generated/api";
 import { DATABASE_EMOJI } from "../../convex/notionSchemas";
 import { connectionCount } from "@/lib/plural";

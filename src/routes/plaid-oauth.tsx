@@ -2,7 +2,7 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useAction, useMutation } from "convex/react";
 import { useEffect, useMemo } from "react";
 import { usePlaidLink } from "react-plaid-link";
-import { toast } from "sonner";
+import { toast } from "@/lib/notify";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 import {

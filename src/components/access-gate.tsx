@@ -2,7 +2,7 @@ import { useAuthToken } from "@convex-dev/auth/react";
 import { useQuery } from "convex/react";
 import { KeyRound } from "lucide-react";
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
-import { toast } from "sonner";
+import { toast } from "@/lib/notify";
 import { api } from "../../convex/_generated/api";
 import { Button } from "@/components/ui/button";
 import {

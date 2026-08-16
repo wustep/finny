@@ -42,7 +42,9 @@ function CardDescription({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
       data-slot="card-description"
-      className={cn("text-sm text-muted-foreground", className)}
+      // Capped at a readable measure: the page containers are wide enough to
+      // run a sentence past a hundred characters, which is exhausting.
+      className={cn("max-w-prose text-sm text-muted-foreground", className)}
       {...props}
     />
   )

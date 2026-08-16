@@ -138,7 +138,9 @@ function DialogDescription({
   return (
     <DialogPrimitive.Description
       data-slot="dialog-description"
-      className={cn("text-sm text-muted-foreground", className)}
+      // Capped at a readable measure: the page containers are wide enough to
+      // run a sentence past a hundred characters, which is exhausting.
+      className={cn("max-w-prose text-sm text-muted-foreground", className)}
       {...props}
     />
   )

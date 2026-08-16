@@ -2,6 +2,7 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useAction, useMutation, useQuery } from "convex/react";
 import {
   ArrowRight,
+  ChevronRight,
   CircleCheck,
   Landmark,
   MoreHorizontal,
@@ -13,7 +14,7 @@ import {
   Wrench,
 } from "lucide-react";
 import { useEffect, useState, type FormEvent } from "react";
-import { toast } from "sonner";
+import { toast } from "@/lib/notify";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 import { usePlaidConnect } from "@/components/plaid-link";
@@ -409,13 +410,17 @@ function SyncRunRow({ run }: { run: RunData }) {
       {run.error ? (
         <button
           type="button"
-          title={run.error}
+          aria-expanded={expanded}
           onClick={() => setExpanded((open) => !open)}
-          className={`text-left text-xs text-destructive ${
-            expanded ? "" : "line-clamp-2"
-          }`}
+          className="flex cursor-pointer items-start gap-1 text-left text-xs text-destructive"
         >
-          {run.error}
+          <ChevronRight
+            aria-hidden
+            className={`mt-0.5 size-3 shrink-0 transition-transform duration-150 ${
+              expanded ? "rotate-90" : ""
+            }`}
+          />
+          <span className={expanded ? "" : "line-clamp-2"}>{run.error}</span>
         </button>
       ) : null}
     </li>

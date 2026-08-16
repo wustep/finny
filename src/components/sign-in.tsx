@@ -1,7 +1,7 @@
 import { useAuthActions } from "@convex-dev/auth/react";
 import { Loader2, Wrench } from "lucide-react";
 import { useState } from "react";
-import { toast } from "sonner";
+import { toast } from "@/lib/notify";
 import { AppIcon } from "@/components/app-icon";
 import { Button } from "@/components/ui/button";
 import {
