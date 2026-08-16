@@ -160,7 +160,7 @@ function Hint({
         <button
           type="button"
           aria-label={label}
-          className={`inline-flex text-muted-foreground transition-colors hover:text-foreground ${className ?? ""}`}
+          className={`-m-2 inline-flex p-2 text-muted-foreground transition-colors hover:text-foreground ${className ?? ""}`}
         >
           <Info className="size-3.5" />
         </button>
@@ -1624,7 +1624,7 @@ function Chips<T extends string>({
             type="button"
             aria-label={`Remove ${label(value)}`}
             onClick={() => onRemove(value)}
-            className="text-muted-foreground transition-colors hover:text-foreground"
+            className="-m-2 p-2 text-muted-foreground transition-colors hover:text-foreground"
           >
             <X className="size-3" />
           </button>

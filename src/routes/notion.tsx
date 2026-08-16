@@ -1041,7 +1041,7 @@ function RecentSyncs() {
                 {run.institutionName}
                 <span className="text-muted-foreground"> · {run.trigger}</span>
               </span>
-              <span className="text-xs text-muted-foreground">
+              <span className="text-xs tabular-nums text-muted-foreground">
                 {new Date(run.startedAt).toLocaleString()}
               </span>
             </li>

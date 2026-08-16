@@ -24,8 +24,10 @@
   --accent: oklch(0.97 0 0);
   --accent-foreground: oklch(0.205 0 0);
   --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
+  /* Alpha in light mode: a border that tints the surface under it recedes,
+     where a solid grey of the same value sits on top of it. */
+  --border: oklch(0 0 0 / 8%);
+  --input: oklch(0 0 0 / 12%);
   --ring: oklch(0.708 0 0);
   --sidebar: oklch(0.985 0 0);
   --sidebar-foreground: oklch(0.145 0 0);
@@ -54,8 +56,10 @@
   --accent: oklch(0.269 0 0);
   --accent-foreground: oklch(0.985 0 0);
   --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
+  /* And solid in dark mode, which is the other way round for the same
+     reason: white at 10% over a dark surface reads as a glow. */
+  --border: oklch(0.269 0 0);
+  --input: oklch(0.32 0 0);
   --ring: oklch(0.556 0 0);
   --sidebar: oklch(0.205 0 0);
   --sidebar-foreground: oklch(0.985 0 0);
@@ -100,11 +104,41 @@
   --color-sidebar-ring: var(--sidebar-ring);
 }
 
+@theme inline {
+  /* Three shadows at different blurs rather than one big drop: a single
+     shadow reads as a sticker, layered ones read as something above a
+     surface. */
+  --shadow-xs: 0 1px 1px oklch(0 0 0 / 4%), 0 1px 2px oklch(0 0 0 / 4%);
+  --shadow-sm:
+    0 1px 1px oklch(0 0 0 / 4%), 0 2px 4px oklch(0 0 0 / 4%),
+    0 4px 8px oklch(0 0 0 / 4%);
+  --shadow-md:
+    0 1px 2px oklch(0 0 0 / 5%), 0 4px 8px oklch(0 0 0 / 5%),
+    0 8px 16px oklch(0 0 0 / 5%);
+  --shadow-lg:
+    0 2px 4px oklch(0 0 0 / 6%), 0 8px 16px oklch(0 0 0 / 6%),
+    0 16px 32px oklch(0 0 0 / 8%);
+}
+
 @layer base {
   * {
     @apply border-border outline-ring/50;
   }
   body {
     @apply bg-background text-foreground;
+  }
+
+  /* Movement is decoration here — a spinner, a dialog scaling in — and for
+     some people it is a symptom. Nothing in this app needs motion to be
+     understood, so there is nothing to preserve when it is switched off. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
   }
 }

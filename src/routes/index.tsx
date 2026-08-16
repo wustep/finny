@@ -390,13 +390,19 @@ function SyncRunRow({ run }: { run: RunData }) {
           {run.institutionName}
           <span className="text-muted-foreground"> · {run.trigger}</span>
           {summary ? (
-            <span className="text-muted-foreground"> · {summary}</span>
+            <span className="tabular-nums text-muted-foreground">
+              {" "}
+              · {summary}
+            </span>
           ) : null}
           {duration ? (
-            <span className="text-muted-foreground"> · {duration}</span>
+            <span className="tabular-nums text-muted-foreground">
+              {" "}
+              · {duration}
+            </span>
           ) : null}
         </span>
-        <span className="text-xs text-muted-foreground">
+        <span className="text-xs tabular-nums text-muted-foreground">
           {new Date(run.startedAt).toLocaleString()}
         </span>
       </div>
