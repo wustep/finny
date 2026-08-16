@@ -55,22 +55,6 @@ export const ruleConditionValidator = v.union(
   v.object({ kind: v.literal("pending"), value: v.boolean() }),
 );
 
-// The shape conditions were stored in before they became a list: one slot per
-// field. Still accepted on read so no deploy ordering has to be got right —
-// rules.ts normalises it, and rules.migrateConditions rewrites rows at rest.
-// Writes only ever produce the list. Remove this once no rows are left.
-const legacyRuleConditionsValidator = v.object({
-  merchant: v.optional(v.object({ op: textOpValidator, value: v.string() })),
-  description: v.optional(v.object({ op: textOpValidator, value: v.string() })),
-  amount: v.optional(v.object({ op: amountOpValidator, value: v.number() })),
-  accountId: v.optional(v.id("accounts")),
-});
-
-export const ruleConditionsValidator = v.union(
-  v.array(ruleConditionValidator),
-  legacyRuleConditionsValidator,
-);
-
 // One thing a rule does to a transaction it matched. A list of these, for the
 // same reason the conditions are one: a fixed record could only hold the
 // effects someone thought of first.
@@ -97,21 +81,6 @@ export const ruleActionValidator = v.union(
   // exists (see upsertTransaction in sync.ts).
   v.object({ kind: v.literal("hide") }),
 );
-
-// The shape effects were stored in before they became a list. Still accepted
-// on read so no deploy ordering has to be got right — rules.ts normalises it,
-// and rules.migrateConditions rewrites rows at rest. Remove once none remain.
-export const ruleOutcomesValidator = v.object({
-  // A Plaid personal finance category, e.g. GENERAL_MERCHANDISE_ELECTRONICS,
-  // replacing the one Plaid assigned. Validated against the taxonomy in
-  // rulesEngine.ts on write.
-  categoryId: v.optional(v.string()),
-  // Replaces the Notion title; Original Description is left alone.
-  rename: v.optional(v.string()),
-  // No Notion row: skip the create, and archive + unmap a row that already
-  // exists (see upsertTransaction in sync.ts).
-  hide: v.optional(v.boolean()),
-});
 
 // Config and sync bookkeeping only — no financial data (amounts, merchants,
 // balances, dates of transactions) is ever stored here. See PLAN.md.
@@ -348,12 +317,8 @@ export default defineSchema({
     // has no unique indexes.
     priority: v.number(),
     enabled: v.boolean(),
-    conditions: ruleConditionsValidator,
-    // Exactly one of these is set on any row: `actions` on everything written
-    // from now on, `outcomes` on rules that predate the list. Reads normalise
-    // (see rules.ts), so nothing downstream knows the old shape existed.
-    actions: v.optional(v.array(ruleActionValidator)),
-    outcomes: v.optional(ruleOutcomesValidator),
+    conditions: v.array(ruleConditionValidator),
+    actions: v.array(ruleActionValidator),
   }).index("by_user_priority", ["userId", "priority"]),
 
   syncRuns: defineTable({

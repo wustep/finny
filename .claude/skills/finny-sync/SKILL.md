@@ -168,13 +168,6 @@ and retries 429/409/5xx with jittered exponential backoff, honouring
   from tags: Notion refuses them inside an option name.
 - A category *condition* may name a primary group; a category *action* may
   not. A row lands in one category, not a group of them.
-- Rules written before either list existed are still on disk in the old
-  shapes: conditions as a one-slot-per-field record, effects in `outcomes`.
-  Nothing has to be migrated first — `rules.ts` normalises on read
-  (`normalizeConditions` / `normalizeActions`), so the engine and the UI only
-  ever see lists, and `rules.migrateConditions` tidies rows at rest. Writes
-  only ever produce lists, and clear `outcomes` so no read has to guess which
-  field is authoritative.
 - `rules.applyToHistory` is the only way a rule reaches rows that already
   exist: there is nothing stored to re-run against, so it rewinds the Plaid
   cursors and replays through the sync, where the rules live.

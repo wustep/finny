@@ -9,7 +9,6 @@ import { v, type Infer } from "convex/values";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import {
-  internalMutation,
   internalQuery,
   mutation,
   query,
@@ -18,11 +17,8 @@ import {
 import {
   MAX_PATTERN_LENGTH,
   compilePattern,
-  isLegacyConditions,
   isPfcCategory,
   isPfcPrimary,
-  normalizeActions,
-  normalizeConditions,
   type Action,
   type Condition,
   type Rule,
@@ -85,8 +81,8 @@ export const listEnabledInternal = internalQuery({
         id: rule._id,
         priority: rule.priority,
         enabled: rule.enabled,
-        conditions: normalizeConditions(rule.conditions),
-        actions: normalizeActions(rule.actions ?? rule.outcomes),
+        conditions: rule.conditions,
+        actions: rule.actions,
       }));
   },
 });
@@ -142,20 +138,14 @@ export const update = mutation({
     // could not express "drop the amount condition".
     const validated = await validateRule(ctx, userId, {
       name: args.name ?? rule.name,
-      // A rule edited without touching its conditions is also a rule whose
-      // legacy conditions get rewritten, which is the cheapest migration
-      // there is.
-      conditions: args.conditions ?? normalizeConditions(rule.conditions),
-      actions: args.actions ?? normalizeActions(rule.actions ?? rule.outcomes),
+      conditions: args.conditions ?? rule.conditions,
+      actions: args.actions ?? rule.actions,
     });
     await ensureTagColumn(ctx, userId, validated.actions);
     await ctx.db.patch(rule._id, {
       name: validated.name,
       conditions: asStored(validated.conditions),
       actions: asStoredActions(validated.actions),
-      // A rule saved from here is a rule in the new shape; leaving the old
-      // field behind would make every later read ambiguous.
-      outcomes: undefined,
       enabled: args.enabled ?? rule.enabled,
     });
   },
@@ -240,8 +230,8 @@ function toClientRule(rule: Doc<"rules">) {
     name: rule.name,
     priority: rule.priority,
     enabled: rule.enabled,
-    conditions: normalizeConditions(rule.conditions),
-    actions: normalizeActions(rule.actions ?? rule.outcomes),
+    conditions: rule.conditions,
+    actions: rule.actions,
   };
 }
 
@@ -462,64 +452,3 @@ async function ensureTagColumn(
     userId,
   });
 }
-
-// ---------- one-off: rewrite rules into the list shapes ----------
-
-// Rules one pass rewrites. There are at most MAX_RULES per user, so this is
-// only batched at all because the table spans every user.
-const MIGRATE_BATCH = 200;
-
-// Rewrite rules still holding the old shapes: conditions as a record with one
-// slot per field, effects as a record with one field per effect.
-//
-// Nothing depends on this having run — reads normalise (see toClientRule and
-// listEnabledInternal), which is what makes the deploy order a non-question.
-// It exists so the legacy branches of the validator can eventually be deleted.
-// Idempotent: a rule already holding both lists is skipped.
-//
-//   npx convex run rules:migrateConditions '{}'
-export const migrateConditions = internalMutation({
-  args: {
-    after: v.optional(v.number()),
-    migrated: v.optional(v.number()),
-  },
-  handler: async (ctx, args) => {
-    const rules = await ctx.db
-      .query("rules")
-      .withIndex("by_creation_time", (q) =>
-        q.gt("_creationTime", args.after ?? 0),
-      )
-      .take(MIGRATE_BATCH);
-
-    let migrated = args.migrated ?? 0;
-    for (const rule of rules) {
-      const staleConditions = isLegacyConditions(rule.conditions);
-      const staleActions = rule.actions === undefined;
-      if (!staleConditions && !staleActions) {
-        continue;
-      }
-      await ctx.db.patch(rule._id, {
-        ...(staleConditions
-          ? { conditions: asStored(normalizeConditions(rule.conditions)) }
-          : {}),
-        ...(staleActions
-          ? {
-              actions: asStoredActions(normalizeActions(rule.outcomes)),
-              outcomes: undefined,
-            }
-          : {}),
-      });
-      migrated++;
-    }
-
-    if (rules.length === MIGRATE_BATCH) {
-      await ctx.scheduler.runAfter(0, internal.rules.migrateConditions, {
-        after: rules[rules.length - 1]._creationTime,
-        migrated,
-      });
-      return { done: false, migrated };
-    }
-    console.log(`migrateConditions finished: rewrote ${migrated} rule(s)`);
-    return { done: true, migrated };
-  },
-});

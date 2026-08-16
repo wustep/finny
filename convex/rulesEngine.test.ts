@@ -2,8 +2,6 @@ import { describe, expect, test } from "vitest";
 import {
   evaluate,
   isPfcPrimary,
-  normalizeActions,
-  normalizeConditions,
   isPfcCategory,
   pfcLabel,
   pfcPrimary,
@@ -368,44 +366,6 @@ describe("pending conditions", () => {
   });
 });
 
-describe("reading rules stored in the old shape", () => {
-  test("every slot becomes one condition", () => {
-    expect(
-      normalizeConditions({
-        merchant: { op: "contains", value: "blue bottle" },
-        description: { op: "regex", value: "^SQ" },
-        amount: { op: "gt", value: 5 },
-        accountId: "account_1",
-      }),
-    ).toEqual([
-      { kind: "text", field: "merchant", op: "contains", values: ["blue bottle"] },
-      { kind: "text", field: "description", op: "regex", values: ["^SQ"] },
-      { kind: "amount", op: "gt", value: 5 },
-      { kind: "account", accountIds: ["account_1"] },
-    ]);
-  });
-
-  test("a rule already in the new shape is left alone", () => {
-    const conditions: Condition[] = [merchant("contains", "coffee")];
-    expect(normalizeConditions(conditions)).toBe(conditions);
-  });
-
-  test("an old rule keeps matching exactly what it did", () => {
-    const legacy = normalizeConditions({
-      merchant: { op: "contains", value: "blue bottle" },
-      amount: { op: "gt", value: 5 },
-    });
-    expect(evaluate([rule(legacy)], txn())).not.toBeNull();
-    expect(evaluate([rule(legacy)], txn({ amount: 3 }))).toBeNull();
-    expect(evaluate([rule(legacy)], txn({ merchant: "Peet's" }))).toBeNull();
-  });
-
-  test("an empty old record still matches nothing", () => {
-    expect(normalizeConditions({})).toEqual([]);
-    expect(evaluate([rule(normalizeConditions({}))], txn())).toBeNull();
-  });
-});
-
 describe("actions", () => {
   const coffee = txn();
 
@@ -486,41 +446,5 @@ describe("actions", () => {
     // Writes refuse this; the engine must not invent an effect for it.
     const match = evaluate([rule([merchant("contains", "blue bottle")], [])], coffee);
     expect(match).toEqual({ ruleId: expect.any(String), tags: [], hide: false });
-  });
-});
-
-describe("reading rules whose effects predate the action list", () => {
-  test("every old field becomes one action, in a fixed order", () => {
-    expect(
-      normalizeActions({
-        categoryId: "FOOD_AND_DRINK_COFFEE",
-        rename: "Coffee",
-        hide: true,
-      }),
-    ).toEqual([
-      { kind: "setCategory", categoryId: "FOOD_AND_DRINK_COFFEE" },
-      { kind: "rename", value: "Coffee" },
-      { kind: "hide" },
-    ]);
-  });
-
-  test("a rule already in the new shape is left alone", () => {
-    const actions: Action[] = [{ kind: "hide" }];
-    expect(normalizeActions(actions)).toBe(actions);
-  });
-
-  test("an absent or empty record is no actions", () => {
-    expect(normalizeActions(undefined)).toEqual([]);
-    expect(normalizeActions({})).toEqual([]);
-    // hide: false is not an action, which is what made the old shape
-    // ambiguous in the first place.
-    expect(normalizeActions({ hide: false })).toEqual([]);
-  });
-
-  test("an old rule still does exactly what it did", () => {
-    const legacy = normalizeActions({ categoryId: "FOOD_AND_DRINK_COFFEE" });
-    expect(
-      evaluate([rule([merchant("contains", "blue bottle")], legacy)], txn()),
-    ).toMatchObject({ categoryId: "FOOD_AND_DRINK_COFFEE", hide: false });
   });
 });

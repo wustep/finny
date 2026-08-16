@@ -273,81 +273,6 @@ test("the sync reads only the caller's enabled rules, in priority order", async 
   expect(bobs).toHaveLength(1);
 });
 
-test("a rule stored in the old shape is read, evaluated, and edited as a list", async () => {
-  const { asAlice, t, alice } = await twoUsers();
-  const accountId = await accountFor(t, alice);
-  // Written straight to the table, the way a rule saved before conditions
-  // became a list still sits there today.
-  const ruleId = await t.run(async (ctx) =>
-    ctx.db.insert("rules", {
-      userId: alice,
-      name: "Legacy coffee",
-      priority: 1,
-      enabled: true,
-      conditions: {
-        merchant: { op: "contains", value: "blue bottle" },
-        amount: { op: "gt", value: 5 },
-        accountId,
-      },
-      actions: [{ kind: "setCategory", categoryId: "FOOD_AND_DRINK_COFFEE" }],
-    }),
-  );
-
-  // The client sees a list; nothing on the page knows the old shape existed.
-  const [listed] = await asAlice.query(api.rules.list);
-  expect(listed.conditions).toEqual([
-    { kind: "text", field: "merchant", op: "contains", values: ["blue bottle"] },
-    { kind: "amount", op: "gt", value: 5 },
-    { kind: "account", accountIds: [accountId] },
-  ]);
-
-  // So does the sync.
-  const [forSync] = await t.query(internal.rules.listEnabledInternal, {
-    userId: alice,
-  });
-  expect(forSync.conditions).toHaveLength(3);
-
-  // And editing something else about it rewrites the conditions on the way
-  // past, which is the cheapest migration there is.
-  await asAlice.mutation(api.rules.update, { ruleId, name: "Renamed" });
-  const stored = await t.run(async (ctx) => ctx.db.get(ruleId));
-  expect(Array.isArray(stored?.conditions)).toBe(true);
-});
-
-test("migrateConditions rewrites old rules and leaves new ones alone", async () => {
-  const { asAlice, t, alice } = await twoUsers();
-  const untouched = await asAlice.mutation(api.rules.create, COFFEE);
-  const legacy = await t.run(async (ctx) =>
-    ctx.db.insert("rules", {
-      userId: alice,
-      name: "Legacy",
-      priority: 2,
-      enabled: true,
-      conditions: { merchant: { op: "contains", value: "amzn" } },
-      actions: [{ kind: "hide" }],
-    }),
-  );
-
-  expect(await t.mutation(internal.rules.migrateConditions, {})).toMatchObject({
-    done: true,
-    migrated: 1,
-  });
-
-  const rows = await t.run(async (ctx) => ({
-    legacy: await ctx.db.get(legacy),
-    untouched: await ctx.db.get(untouched),
-  }));
-  expect(rows.legacy?.conditions).toEqual([
-    { kind: "text", field: "merchant", op: "contains", values: ["amzn"] },
-  ]);
-  expect(rows.untouched?.conditions).toEqual(COFFEE.conditions);
-
-  // Idempotent: running it again finds nothing left to do.
-  expect(await t.mutation(internal.rules.migrateConditions, {})).toMatchObject({
-    migrated: 0,
-  });
-});
-
 test("a condition emptied by the UI is dropped rather than saved", async () => {
   const { asAlice } = await twoUsers();
   const ruleId = await asAlice.mutation(api.rules.create, {
@@ -418,38 +343,6 @@ test("a rule is capped at ten conditions", async () => {
       })),
     }),
   ).rejects.toThrow("limited to 10 conditions");
-});
-
-test("a rule stored with the old outcomes reads as actions", async () => {
-  const { asAlice, t, alice } = await twoUsers();
-  const ruleId = await t.run(async (ctx) =>
-    ctx.db.insert("rules", {
-      userId: alice,
-      name: "Legacy",
-      priority: 1,
-      enabled: true,
-      conditions: { merchant: { op: "contains", value: "amzn" } },
-      outcomes: { categoryId: "GENERAL_MERCHANDISE_ELECTRONICS", hide: true },
-    }),
-  );
-
-  const [listed] = await asAlice.query(api.rules.list);
-  expect(listed.actions).toEqual([
-    { kind: "setCategory", categoryId: "GENERAL_MERCHANDISE_ELECTRONICS" },
-    { kind: "hide" },
-  ]);
-
-  const [forSync] = await t.query(internal.rules.listEnabledInternal, {
-    userId: alice,
-  });
-  expect(forSync.actions).toHaveLength(2);
-
-  // Saving it moves it to the new field and takes the old one away, or every
-  // later read would have to guess which is authoritative.
-  await asAlice.mutation(api.rules.update, { ruleId, name: "Renamed" });
-  const stored = await t.run(async (ctx) => ctx.db.get(ruleId));
-  expect(stored?.actions).toHaveLength(2);
-  expect(stored?.outcomes).toBeUndefined();
 });
 
 test("tags are cleaned, de-duplicated, and stripped of commas", async () => {

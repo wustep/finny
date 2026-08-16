@@ -1036,27 +1036,29 @@ const RETENTION_BATCH = 500;
 // without this they only ever grow.
 //
 // Creation time is the cursor, which is what keeps the read bounded: taking
-// the oldest RETENTION_BATCH rows under the cutoff never scans the live ones.
-// A run still saying "running" is left alone whatever its age — that is
-// sweepStuckRuns' call to make, and it runs first.
+// the oldest rows under the cutoff never scan the live ones.
+//
+// Runs are read per finished status rather than by age alone: a run still
+// saying "running" is sweepStuckRuns' call to make, not this one's, and read
+// by age it would sit at the head of the range being skipped by every pass
+// for ever — eating the batch it was excluded from.
 export const pruneHistory = internalMutation({
   args: {},
   handler: async (ctx) => {
     const now = Date.now();
 
-    const runs = await ctx.db
-      .query("syncRuns")
-      .withIndex("by_creation_time", (q) =>
-        q.lt("_creationTime", now - RUN_RETENTION_MS),
-      )
-      .take(RETENTION_BATCH);
     let deletedRuns = 0;
-    for (const run of runs) {
-      if (run.status === "running") {
-        continue;
+    for (const status of ["success", "error"] as const) {
+      const runs = await ctx.db
+        .query("syncRuns")
+        .withIndex("by_status_and_startedAt", (q) =>
+          q.eq("status", status).lt("startedAt", now - RUN_RETENTION_MS),
+        )
+        .take(Math.floor(RETENTION_BATCH / 2));
+      for (const run of runs) {
+        await ctx.db.delete(run._id);
+        deletedRuns++;
       }
-      await ctx.db.delete(run._id);
-      deletedRuns++;
     }
 
     const states = await ctx.db
