@@ -112,7 +112,7 @@ export const create = mutation({
       0,
     );
 
-    await ensureTagColumn(ctx, userId, actions);
+    await refreshUserColumns(ctx, userId, actions);
     return await ctx.db.insert("rules", {
       userId,
       name,
@@ -141,7 +141,7 @@ export const update = mutation({
       conditions: args.conditions ?? rule.conditions,
       actions: args.actions ?? rule.actions,
     });
-    await ensureTagColumn(ctx, userId, validated.actions);
+    await refreshUserColumns(ctx, userId, validated.actions);
     await ctx.db.patch(rule._id, {
       name: validated.name,
       conditions: asStored(validated.conditions),
@@ -270,7 +270,6 @@ const MAX_CONDITION_VALUES = 20;
 // something a person can read.
 const MAX_ACTIONS = 10;
 const MAX_TAGS = 20;
-const MAX_TAG_LENGTH = 60;
 
 // Reject a rule that cannot do what it says before it reaches the sync, where
 // the only symptom would be transactions quietly not matching it.
@@ -311,9 +310,18 @@ async function validateRule(
     throw new Error("A rule needs at least one condition");
   }
 
+  // The user's own columns on the Transactions database, which are the only
+  // properties a rule may write. Read once: a rule is capped at ten actions
+  // and this is one query for all of them.
+  const notion = await ctx.db
+    .query("notionConnections")
+    .withIndex("by_user", (q) => q.eq("userId", userId))
+    .unique();
+  const manual = notion?.manualProperties?.transactions ?? [];
+
   const actions: Action[] = [];
   for (const action of input.actions) {
-    const checked = validateAction(action);
+    const checked = validateAction(action, manual);
     if (checked) {
       actions.push(checked);
     }
@@ -325,7 +333,19 @@ async function validateRule(
   return { name, conditions, actions };
 }
 
-function validateAction(action: Action): Action | null {
+// Notion's name for each value shape a rule can write, so a property that has
+// since been retyped is caught here rather than 400-ing every row.
+const PROPERTY_TYPE_FOR: Record<string, string> = {
+  select: "select",
+  status: "status",
+  multiSelect: "multi_select",
+  checkbox: "checkbox",
+};
+
+function validateAction(
+  action: Action,
+  manual: Array<{ name: string; type: string; options?: string[] }>,
+): Action | null {
   switch (action.kind) {
     case "setCategory":
       if (!isPfcCategory(action.categoryId)) {
@@ -338,17 +358,48 @@ function validateAction(action: Action): Action | null {
       const value = action.value.trim().slice(0, MAX_VALUE_LENGTH);
       return value ? { kind: "rename", value } : null;
     }
-    case "addTags": {
-      const tags: string[] = [];
-      for (const raw of action.tags.slice(0, MAX_TAGS)) {
-        // Notion rejects a multi-select option containing a comma, so it is
-        // refused here rather than silently mangled on the way out.
-        const tag = raw.trim().replaceAll(",", " ").slice(0, MAX_TAG_LENGTH);
-        if (tag && !tags.includes(tag)) {
-          tags.push(tag);
-        }
+    case "setProperty": {
+      const property = manual.find((entry) => entry.name === action.property);
+      if (!property) {
+        throw new Error(
+          `Your Transactions database has no "${action.property}" column`,
+        );
       }
-      return tags.length ? { kind: "addTags", tags } : null;
+      const wanted = PROPERTY_TYPE_FOR[action.value.type];
+      if (property.type !== wanted) {
+        // The column was retyped in Notion after the rule was written.
+        throw new Error(
+          `"${action.property}" is a ${property.type} now, not a ${wanted}`,
+        );
+      }
+      // An option the property does not define would either be refused by
+      // Notion or quietly added to their database. Neither is what someone
+      // meant by picking from a list.
+      const allowed = new Set(property.options ?? []);
+      const check = (option: string) => {
+        if (!allowed.has(option)) {
+          throw new Error(`"${action.property}" has no option "${option}"`);
+        }
+      };
+      if (action.value.type === "select" || action.value.type === "status") {
+        if (!action.value.option) {
+          return null;
+        }
+        check(action.value.option);
+        return action;
+      }
+      if (action.value.type === "multiSelect") {
+        const options = [
+          ...new Set(action.value.options.slice(0, MAX_TAGS).filter(Boolean)),
+        ];
+        for (const option of options) {
+          check(option);
+        }
+        return options.length
+          ? { ...action, value: { type: "multiSelect", options } }
+          : null;
+      }
+      return action;
     }
     case "hide":
       return action;
@@ -436,19 +487,19 @@ function textValues(op: "contains" | "equals" | "regex", values: string[]) {
   return cleaned;
 }
 
-// A rule that tags needs somewhere to put them, and a Transactions database
-// built before tags existed has no such column — writing to one that is not
-// there fails the whole row. Saving the rule is the moment to add it: it is
-// when the column is first needed, and when a failure is explainable.
-async function ensureTagColumn(
+// A rule that writes one of the user's own columns is a good moment to re-read
+// which columns those are: they may have added one in Notion a minute ago, and
+// this list is what the next save is validated against.
+async function refreshUserColumns(
   ctx: MutationCtx,
   userId: Id<"users">,
   actions: Action[],
 ): Promise<void> {
-  if (!actions.some((action) => action.kind === "addTags")) {
+  if (!actions.some((action) => action.kind === "setProperty")) {
     return;
   }
-  await ctx.scheduler.runAfter(0, internal.notion.ensureDatabaseColumns, {
+  await ctx.scheduler.runAfter(0, internal.notion.refreshManualProperties, {
     userId,
+    keys: ["transactions"],
   });
 }

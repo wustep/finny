@@ -75,7 +75,7 @@ export async function upsertTransaction(
     input.accountPage,
     await input.ensureCategory(txn, decision?.categoryId),
     decision?.rename,
-    decision?.tags,
+    decision?.properties,
     input.titleFormats,
     {
       account: input.accountName,

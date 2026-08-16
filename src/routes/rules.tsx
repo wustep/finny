@@ -26,6 +26,7 @@ import {
   isPfcPrimary,
   type Action,
   type AmountOp,
+  type PropertyValue,
   type Condition,
   type TextField,
   type TextOp,
@@ -683,10 +684,10 @@ function ActionBadge({ action }: { action: Action }) {
       );
     case "rename":
       return <Badge variant="secondary">Title: {action.value}</Badge>;
-    case "addTags":
+    case "setProperty":
       return (
         <Badge variant="secondary">
-          <Tag /> {action.tags.join(", ")}
+          <Tag /> {action.property}: {propertyValueLabel(action.value)}
         </Badge>
       );
     case "hide":
@@ -695,6 +696,18 @@ function ActionBadge({ action }: { action: Action }) {
           <EyeOff /> Kept out of Notion
         </Badge>
       );
+  }
+}
+
+function propertyValueLabel(value: PropertyValue): string {
+  switch (value.type) {
+    case "select":
+    case "status":
+      return value.option;
+    case "multiSelect":
+      return value.options.join(", ");
+    case "checkbox":
+      return value.checked ? "checked" : "unchecked";
   }
 }
 
@@ -838,7 +851,14 @@ const ACTION_KINDS: Array<{ label: string; make: () => Action }> = [
     make: () => ({ kind: "setCategory", categoryId: "" }),
   },
   { label: "Rename it", make: () => ({ kind: "rename", value: "" }) },
-  { label: "Add tags", make: () => ({ kind: "addTags", tags: [] }) },
+  {
+    label: "Set one of your properties",
+    make: () => ({
+      kind: "setProperty",
+      property: "",
+      value: { type: "select", option: "" },
+    }),
+  },
   { label: "Keep it out of Notion", make: () => ({ kind: "hide" }) },
 ];
 
@@ -1104,21 +1124,9 @@ function ActionFields({
           </Hint>
         </>
       );
-    case "addTags":
+    case "setProperty":
       return (
-        <>
-          <span className="text-sm">Tags</span>
-          <Hint label="About tags">
-            Added to the Tags column on Transactions, never removed — only one
-            rule wins per transaction, so what it took away would be anyone's
-            guess. Finny adds the column the first time you save a rule that
-            needs it.
-          </Hint>
-          <TagInput
-            tags={action.tags}
-            onChange={(tags) => onChange({ kind: "addTags", tags })}
-          />
-        </>
+        <PropertyAction action={action} onChange={onChange} />
       );
     case "hide":
       return (
@@ -1135,57 +1143,163 @@ function ActionFields({
   }
 }
 
-// Tags are typed one at a time and shown as chips. Enter and comma both
-// commit — comma because it is the habit, even though Notion refuses a comma
-// inside an option name, which is why it is a separator here rather than
-// something that could end up in a tag.
-function TagInput({
-  tags,
+// A rule writing one of the user's own columns. Finny does not create these
+// and does not know them in advance — they are read back from the database
+// (notion.refreshManualProperties), which is what makes this an offer rather
+// than an imposition.
+function PropertyAction({
+  action,
   onChange,
 }: {
-  tags: string[];
-  onChange: (tags: string[]) => void;
+  action: Extract<Action, { kind: "setProperty" }>;
+  onChange: (action: Action) => void;
 }) {
-  const [draft, setDraft] = useState("");
+  const status = useQuery(api.notion.getStatus);
+  const available =
+    (status?.connected ? status.manualProperties?.transactions : undefined) ??
+    [];
+  const usable = available.filter((property) =>
+    ["select", "status", "multi_select", "checkbox"].includes(property.type),
+  );
+  const chosen = usable.find((property) => property.name === action.property);
 
-  const commit = (value: string) => {
-    const tag = value.trim();
-    if (tag && !tags.includes(tag)) {
-      onChange([...tags, tag]);
-    }
-    setDraft("");
+  // Picking a property decides the shape of the value, so the two change
+  // together rather than leaving a select's option sitting on a checkbox.
+  const pick = (name: string) => {
+    const property = usable.find((entry) => entry.name === name);
+    const value: PropertyValue =
+      property?.type === "multi_select"
+        ? { type: "multiSelect", options: [] }
+        : property?.type === "checkbox"
+          ? { type: "checkbox", checked: true }
+          : property?.type === "status"
+            ? { type: "status", option: "" }
+            : { type: "select", option: "" };
+    onChange({ kind: "setProperty", property: name, value });
   };
 
+  if (usable.length === 0) {
+    return (
+      <span className="text-sm text-muted-foreground">
+        Add a select, status, multi-select or checkbox column to your Notion
+        Transactions database, then check the destination page — Finny will
+        offer it here.
+      </span>
+    );
+  }
+
+  return (
+    <>
+      <span className="text-sm">Set</span>
+      <select
+        aria-label="Property to set"
+        className={`${selectClass} w-48`}
+        value={action.property}
+        onChange={(event) => pick(event.target.value)}
+      >
+        <option value="">Pick a column…</option>
+        {usable.map((property) => (
+          <option key={property.name} value={property.name}>
+            {property.name}
+          </option>
+        ))}
+      </select>
+      <Hint label="About your own properties">
+        Columns you added to the Transactions database yourself. Finny leaves
+        them alone unless a rule like this one writes to them.
+      </Hint>
+      {chosen && action.value.type === "checkbox" ? (
+        <select
+          aria-label="Checkbox value"
+          className={`${selectClass} w-32`}
+          value={action.value.checked ? "checked" : "unchecked"}
+          onChange={(event) =>
+            onChange({
+              ...action,
+              value: {
+                type: "checkbox",
+                checked: event.target.value === "checked",
+              },
+            })
+          }
+        >
+          <option value="checked">checked</option>
+          <option value="unchecked">unchecked</option>
+        </select>
+      ) : null}
+      {chosen &&
+      (action.value.type === "select" || action.value.type === "status") ? (
+        <select
+          aria-label="Option to set"
+          className={`${selectClass} flex-1`}
+          value={action.value.option}
+          onChange={(event) =>
+            onChange({
+              ...action,
+              value: {
+                type: action.value.type as "select" | "status",
+                option: event.target.value,
+              },
+            })
+          }
+        >
+          <option value="">Pick an option…</option>
+          {(chosen.options ?? []).map((option) => (
+            <option key={option} value={option}>
+              {option}
+            </option>
+          ))}
+        </select>
+      ) : null}
+      {chosen && action.value.type === "multiSelect" ? (
+        <OptionPicker
+          all={chosen.options ?? []}
+          chosen={action.value.options}
+          onChange={(options) =>
+            onChange({ ...action, value: { type: "multiSelect", options } })
+          }
+        />
+      ) : null}
+    </>
+  );
+}
+
+// Multi-select, as chips plus a picker of the options the column defines. Only
+// the ones it defines: a free-text box here would quietly add options to
+// someone's database on the next sync.
+function OptionPicker({
+  all,
+  chosen,
+  onChange,
+}: {
+  all: string[];
+  chosen: string[];
+  onChange: (options: string[]) => void;
+}) {
   return (
     <div className="flex w-full flex-col gap-1.5">
       <Chips
-        values={tags}
-        label={(tag) => tag}
-        onRemove={(tag) => onChange(tags.filter((existing) => existing !== tag))}
+        values={chosen}
+        label={(option) => option}
+        onRemove={(option) =>
+          onChange(chosen.filter((existing) => existing !== option))
+        }
       />
-      <Input
-        aria-label="Add a tag"
-        placeholder="Type a tag, then Enter"
-        value={draft}
-        onChange={(event) => {
-          const value = event.target.value;
-          if (value.includes(",")) {
-            commit(value.replace(",", ""));
-            return;
-          }
-          setDraft(value);
-        }}
-        onBlur={() => commit(draft)}
-        onKeyDown={(event) => {
-          if (event.key === "Enter") {
-            event.preventDefault();
-            commit(draft);
-          }
-          if (event.key === "Backspace" && !draft && tags.length) {
-            onChange(tags.slice(0, -1));
-          }
-        }}
-      />
+      <select
+        aria-label="Add an option"
+        className={`${selectClass} w-full`}
+        value=""
+        onChange={(event) => onChange([...chosen, event.target.value])}
+      >
+        <option value="">Add an option…</option>
+        {all
+          .filter((option) => !chosen.includes(option))
+          .map((option) => (
+            <option key={option} value={option}>
+              {option}
+            </option>
+          ))}
+      </select>
     </div>
   );
 }
@@ -1613,12 +1727,23 @@ function buildRule(
         actions.push({ kind: "rename", value });
         break;
       }
-      case "addTags":
-        if (action.tags.length === 0) {
-          return { error: "Add a tag, or remove that action" };
+      case "setProperty": {
+        if (!action.property) {
+          return { error: "Pick a column to set, or remove that action" };
+        }
+        const value = action.value;
+        if (
+          (value.type === "select" || value.type === "status") &&
+          !value.option
+        ) {
+          return { error: `Pick an option for ${action.property}` };
+        }
+        if (value.type === "multiSelect" && value.options.length === 0) {
+          return { error: `Pick at least one option for ${action.property}` };
         }
         actions.push(action);
         break;
+      }
       case "hide":
         actions.push(action);
         break;

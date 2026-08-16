@@ -176,10 +176,6 @@ export const DATABASE_SPECS: DatabaseSpec[] = [
       Amount: dollar,
       Date: date,
       Pending: { checkbox: {} },
-      // Written only by a rule's addTags action. Options are created by Notion
-      // as they are used, so the property starts empty and stays whatever the
-      // user's rules make of it.
-      Tags: { multi_select: { options: [] } },
     }),
   },
   {
@@ -327,6 +323,12 @@ export const MAP_KINDS_BY_DATABASE: Record<string, string[]> = {
 
 export const SPEC_BY_KEY: Record<string, DatabaseSpec> = Object.fromEntries(
   DATABASE_SPECS.map((spec) => [spec.key, spec]),
+);
+
+// The icon each database was created with, so the app can show a database the
+// way Notion does rather than as a bare name.
+export const DATABASE_EMOJI: Record<string, string> = Object.fromEntries(
+  DATABASE_SPECS.map((spec) => [spec.key, spec.emoji]),
 );
 
 // The Notion property type each spec asks for, as property name -> type

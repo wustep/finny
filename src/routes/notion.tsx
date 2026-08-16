@@ -12,6 +12,7 @@ import {
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { api } from "../../convex/_generated/api";
+import { DATABASE_EMOJI } from "../../convex/notionSchemas";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -566,6 +567,10 @@ function DestinationCard({
     modules: Modules;
     startDate?: string;
     databases?: Record<string, string>;
+    manualProperties?: Record<
+      string,
+      Array<{ name: string; type: string; options?: string[] }>
+    >;
   };
   health: Health | null;
   databaseStates: DatabaseState[] | null;
@@ -640,6 +645,7 @@ function DestinationCard({
             databases={databases}
             parentPageId={status.parentPageId}
             states={databaseStates}
+            manualProperties={status.manualProperties}
             onRechecked={onCheck}
           />
 
@@ -735,12 +741,20 @@ function DatabaseSection({
   databases,
   parentPageId,
   states,
+  manualProperties,
   onRechecked,
 }: {
   databases: Record<string, string>;
   parentPageId?: string;
   // Checked by the page, so the status line and this list can never disagree.
   states: DatabaseState[] | null;
+  // The columns on each database that Finny did not create. Shown because the
+  // interesting thing about them is that they are yours: Finny leaves them
+  // alone unless a rule writes one.
+  manualProperties?: Record<
+    string,
+    Array<{ name: string; type: string; options?: string[] }>
+  >;
   onRechecked: () => void;
 }) {
   const repairDatabases = useAction(api.notion.repairDatabases);
@@ -807,11 +821,20 @@ function DatabaseSection({
                 rel="noreferrer"
                 className="inline-flex items-center gap-1.5 text-sm underline-offset-4 hover:underline"
               >
+                <span aria-hidden>{DATABASE_EMOJI[key]}</span>
                 {DATABASE_LABELS[key] ?? key}
                 <ExternalLink className="size-3.5 text-muted-foreground" />
               </a>
               {detail ? (
                 <span className="text-xs text-muted-foreground">{detail}</span>
+              ) : null}
+              {(manualProperties?.[key]?.length ?? 0) > 0 ? (
+                <span className="w-full text-xs text-muted-foreground">
+                  Yours:{" "}
+                  {manualProperties![key]
+                    .map((property) => `${property.name} (${property.type})`)
+                    .join(", ")}
+                </span>
               ) : null}
             </li>
           );

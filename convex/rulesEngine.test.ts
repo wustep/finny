@@ -207,7 +207,7 @@ describe("rule ordering", () => {
       ruleId: first.id,
       categoryId: "FOOD_AND_DRINK_COFFEE",
       rename: "Coffee",
-      tags: [],
+      properties: {},
       hide: false,
     });
     // Nothing leaks in from the rule below it.
@@ -377,7 +377,11 @@ describe("actions", () => {
           [
             { kind: "setCategory", categoryId: "FOOD_AND_DRINK_COFFEE" },
             { kind: "rename", value: "Coffee" },
-            { kind: "addTags", tags: ["Treat"] },
+            {
+              kind: "setProperty",
+              property: "Review",
+              value: { type: "select", option: "Treat" },
+            },
           ],
         ),
       ],
@@ -386,25 +390,63 @@ describe("actions", () => {
     expect(match).toMatchObject({
       categoryId: "FOOD_AND_DRINK_COFFEE",
       rename: "Coffee",
-      tags: ["Treat"],
+      properties: { Review: { type: "select", option: "Treat" } },
       hide: false,
     });
   });
 
-  test("tags accumulate across actions and never repeat", () => {
+  test("multi-select values accumulate across actions and never repeat", () => {
     const match = evaluate(
       [
         rule(
           [merchant("contains", "blue bottle")],
           [
-            { kind: "addTags", tags: ["Treat", "Coffee"] },
-            { kind: "addTags", tags: ["Coffee", "Weekly"] },
+            {
+              kind: "setProperty",
+              property: "Labels",
+              value: { type: "multiSelect", options: ["Treat", "Coffee"] },
+            },
+            {
+              kind: "setProperty",
+              property: "Labels",
+              value: { type: "multiSelect", options: ["Coffee", "Weekly"] },
+            },
           ],
         ),
       ],
       coffee,
     );
-    expect(match?.tags).toEqual(["Treat", "Coffee", "Weekly"]);
+    expect(match?.properties.Labels).toEqual({
+      type: "multiSelect",
+      options: ["Treat", "Coffee", "Weekly"],
+    });
+  });
+
+  test("every other property shape is last-wins", () => {
+    const match = evaluate(
+      [
+        rule(
+          [merchant("contains", "blue bottle")],
+          [
+            {
+              kind: "setProperty",
+              property: "Review",
+              value: { type: "select", option: "First" },
+            },
+            {
+              kind: "setProperty",
+              property: "Review",
+              value: { type: "select", option: "Second" },
+            },
+          ],
+        ),
+      ],
+      coffee,
+    );
+    expect(match?.properties.Review).toEqual({
+      type: "select",
+      option: "Second",
+    });
   });
 
   test("the last of a colliding pair wins, so a rule reads top to bottom", () => {
@@ -445,6 +487,10 @@ describe("actions", () => {
   test("a rule with no actions resolves to doing nothing", () => {
     // Writes refuse this; the engine must not invent an effect for it.
     const match = evaluate([rule([merchant("contains", "blue bottle")], [])], coffee);
-    expect(match).toEqual({ ruleId: expect.any(String), tags: [], hide: false });
+    expect(match).toEqual({
+      ruleId: expect.any(String),
+      properties: {},
+      hide: false,
+    });
   });
 });

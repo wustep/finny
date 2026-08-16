@@ -81,6 +81,16 @@ export type Condition =
     }
   | { kind: "pending"; value: boolean };
 
+// What a rule writes into one of the user's own properties. One shape per
+// Notion property type, because each is a different thing to write and
+// pretending otherwise only moves the switch somewhere less obvious.
+export type PropertyValue =
+  | { type: "select"; option: string }
+  | { type: "status"; option: string }
+  // Added to, never replaced wholesale — see the resolution in applyActions.
+  | { type: "multiSelect"; options: string[] }
+  | { type: "checkbox"; checked: boolean };
+
 // One thing a rule does to the transaction it matched.
 //
 // A list, for the same reason the conditions are: the fixed record could only
@@ -97,9 +107,15 @@ export type Action =
   | { kind: "setCategory"; categoryId: string }
   // Replaces the Notion title. Original Description keeps the bank's string.
   | { kind: "rename"; value: string }
-  // Adds to the Tags multi-select. Never removes: two rules cannot both be
-  // the winner, so the only thing a rule can be sure of is what it adds.
-  | { kind: "addTags"; tags: string[] }
+  // Writes a property the user added to the Transactions database themselves
+  // — their own select, status, multi-select or checkbox. Finny does not
+  // create these; it finds them (see notion.refreshManualProperties), which
+  // is what makes this better than owning a Tags column nobody asked for.
+  | {
+      kind: "setProperty";
+      property: string;
+      value: PropertyValue;
+    }
   // No Notion row at all. Anything after it still applies to nothing.
   | { kind: "hide" };
 
@@ -133,12 +149,15 @@ export interface RuleMatch {
   ruleId: string;
   categoryId?: string;
   rename?: string;
-  tags: string[];
+  // The user's own properties this rule sets, by property name. Resolved
+  // values, not actions: the sync writes these and never learns that action
+  // kinds exist.
+  properties: Record<string, PropertyValue>;
   hide: boolean;
 }
 
 export function applyActions(ruleId: string, actions: Action[]): RuleMatch {
-  const match: RuleMatch = { ruleId, tags: [], hide: false };
+  const match: RuleMatch = { ruleId, properties: {}, hide: false };
   for (const action of actions) {
     switch (action.kind) {
       case "setCategory":
@@ -147,13 +166,28 @@ export function applyActions(ruleId: string, actions: Action[]): RuleMatch {
       case "rename":
         match.rename = action.value;
         break;
-      case "addTags":
-        for (const tag of action.tags) {
-          if (!match.tags.includes(tag)) {
-            match.tags.push(tag);
-          }
+      case "setProperty": {
+        const existing = match.properties[action.property];
+        // Two multi-select actions on one property add up; everything else
+        // is last-wins, like the rename above it.
+        if (
+          existing?.type === "multiSelect" &&
+          action.value.type === "multiSelect"
+        ) {
+          match.properties[action.property] = {
+            type: "multiSelect",
+            options: [
+              ...existing.options,
+              ...action.value.options.filter(
+                (option) => !existing.options.includes(option),
+              ),
+            ],
+          };
+          break;
         }
+        match.properties[action.property] = action.value;
         break;
+      }
       case "hide":
         match.hide = true;
         break;

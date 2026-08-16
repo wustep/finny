@@ -96,6 +96,7 @@ export const getStatus = query({
       startDate: connection.startDate,
       databases: connection.databases,
       titleFormats: connection.titleFormats,
+      manualProperties: connection.manualProperties,
     };
   },
 });
@@ -795,6 +796,101 @@ async function inspectDatabase(
   return { key, state: "damaged", missingProperties, wrongTypeProperties };
 }
 
+// The properties on a database that Finny did not put there.
+//
+// Everything in the spec is Finny's and gets overwritten on every sync; what
+// is left is the user's, and is never touched — unless they point a rule at
+// it, which is what this list exists to make possible.
+function manualPropertiesOf(key: string, data: any): ManualProperty[] {
+  const spec = SPEC_BY_KEY[key];
+  const owned = new Set(spec ? Object.keys(propertyTypes(spec)) : []);
+  return Object.entries((data?.properties ?? {}) as Record<string, any>)
+    .filter(([name, property]) => !owned.has(name) && property?.type !== "title")
+    .map(([name, property]) => ({
+      name,
+      type: String(property.type),
+      options: (property[property.type]?.options as any[] | undefined)?.map(
+        (option) => String(option.name),
+      ),
+    }));
+}
+
+export interface ManualProperty {
+  name: string;
+  type: string;
+  options?: string[];
+}
+
+// Re-read which columns are the user's, so the Rules page can offer them and
+// the destination page can show them.
+//
+// Cheap enough to run on every sync for the one database rules write to, and
+// run for all of them by the destination check. A column added in Notion this
+// morning is therefore usable in a rule this afternoon without anyone having
+// to tell Finny about it.
+export const refreshManualProperties = internalAction({
+  args: { userId: v.id("users"), keys: v.optional(v.array(v.string())) },
+  handler: async (ctx, args) => {
+    try {
+      const connection = await ctx.runQuery(
+        internal.notion.getConnectionInternal,
+        { userId: args.userId },
+      );
+      if (!connection?.databases) {
+        return;
+      }
+      const found: Record<string, ManualProperty[]> = {
+        ...(connection.manualProperties ?? {}),
+      };
+      for (const [key, databaseId] of Object.entries(connection.databases)) {
+        if (args.keys && !args.keys.includes(key)) {
+          continue;
+        }
+        const data = await notionFetch(
+          connection.accessToken,
+          `/databases/${databaseId}`,
+        );
+        found[key] = manualPropertiesOf(key, data);
+      }
+      await ctx.runMutation(internal.notion.saveManualProperties, {
+        userId: args.userId,
+        manualProperties: found,
+      });
+    } catch (error) {
+      // Knowing about someone's own columns is a convenience; a sync does not
+      // fail because Notion would not list them.
+      console.error("could not refresh manual properties", error);
+    }
+  },
+});
+
+export const saveManualProperties = internalMutation({
+  args: {
+    userId: v.id("users"),
+    manualProperties: v.record(
+      v.string(),
+      v.array(
+        v.object({
+          name: v.string(),
+          type: v.string(),
+          options: v.optional(v.array(v.string())),
+        }),
+      ),
+    ),
+  },
+  handler: async (ctx, args) => {
+    const connection = await ctx.db
+      .query("notionConnections")
+      .withIndex("by_user", (q) => q.eq("userId", args.userId))
+      .unique();
+    if (connection) {
+      await ctx.db.patch(connection._id, {
+        manualProperties: args.manualProperties,
+      });
+    }
+  },
+});
+
 // Ask Notion about every database Finny has recorded.
 //
 // One request each, so it is an action the destination page runs on demand
@@ -818,6 +914,10 @@ export const checkDatabases = action({
     for (const [key, databaseId] of Object.entries(connection.databases)) {
       results.push(await inspectDatabase(connection.accessToken, key, databaseId));
     }
+    // The check is already reading every database, so this costs nothing.
+    await ctx.scheduler.runAfter(0, internal.notion.refreshManualProperties, {
+      userId,
+    });
     return results;
   },
 });

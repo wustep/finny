@@ -167,12 +167,17 @@ and retries 429/409/5xx with jittered exponential backoff, honouring
 - `evaluate` returns a resolved `RuleMatch` (categoryId / rename / tags / hide)
   rather than the action list, so the sync never learns about action kinds.
   Colliding actions resolve last-wins; tags accumulate; hide is a latch.
-- `addTags` writes the Tags multi-select on Transactions. A database built
-  before Tags existed has no such column and writing to one that is not there
-  fails the whole row — so `transactionProperties` omits Tags when there are
-  none, and saving a rule with an addTags action schedules
-  `notion.ensureTransactionColumns` to add the column. Commas are stripped
-  from tags: Notion refuses them inside an option name.
+- `setProperty` writes one of the *user's own* columns — a select, status,
+  multi-select or checkbox they added to Transactions themselves. Finny never
+  creates these: `notion.refreshManualProperties` reads back everything on a
+  database that is not in its spec and stores it on
+  `notionConnections.manualProperties`, refreshed by the destination check and
+  by every sync (transactions only, one request). Writes are validated against
+  that list — the column must exist, its type must still match, and the value
+  must be an option the column defines, since anything else would either be
+  refused by Notion or quietly added to someone's database. Nothing is written
+  speculatively: a property a rule did not set never appears in the payload,
+  because writing a column that is not there fails the whole row.
 - A category *condition* may name a primary group; a category *action* may
   not. A row lands in one category, not a group of them.
 - `rules.applyToHistory` is the only way a rule reaches rows that already

@@ -382,6 +382,15 @@ export const runForConnection = internalAction({
           userId: connection.userId,
         });
       }
+      // One request, so the Rules page always knows about a column added in
+      // Notion since the last sync — and so a rule pointed at one that has
+      // since been deleted stops being written.
+      if (notion.databases?.transactions) {
+        await ctx.runAction(internal.notion.refreshManualProperties, {
+          userId: connection.userId,
+          keys: ["transactions"],
+        });
+      }
 
       const client = plaidClient(connection.plaidEnv ?? "production");
       const databases = notion.databases!;
@@ -827,10 +836,28 @@ async function scheduleNextStage(
 
 // ---------- stage 2: transactions (self-rescheduling) ----------
 
+// Plaid rejects a page of transactions/sync when the Item's data changed
+// underneath the pagination, and asks for the walk to be restarted from the
+// last cursor that was committed. That is exactly what the stored cursor is —
+// it only ever moves after a page has been fully written to Notion — so a
+// restart is a fresh call, not a recovery.
+//
+// Expected rather than exceptional: a busy Item mutates while a two-year
+// backfill is walking it. It used to surface as a failed run and a five
+// minute wait for the retry.
+const MUTATION_DURING_PAGINATION = "TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION";
+
+// Restarts one run will do before giving up and letting it fail properly. An
+// Item mutating faster than a page can be written is a real condition, and
+// somebody has to stop.
+const MAX_PAGINATION_RESTARTS = 5;
+
 export const transactionsBatch = internalAction({
   args: {
     connectionId: v.id("bankConnections"),
     runId: v.id("syncRuns"),
+    // How many times this run has been sent back to the start of the walk.
+    restarts: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
     const context = await loadContext(ctx, args.connectionId);
@@ -856,12 +883,41 @@ export const transactionsBatch = internalAction({
 
     try {
       const client = plaidClient(connection.plaidEnv ?? "production");
-      const response = await client.transactionsSync({
-        access_token: connection.accessToken,
-        cursor: connection.transactionsCursor,
-        count: TXN_BATCH_SIZE,
-        options: { include_original_description: true },
-      });
+      let response;
+      try {
+        response = await client.transactionsSync({
+          access_token: connection.accessToken,
+          cursor: connection.transactionsCursor,
+          count: TXN_BATCH_SIZE,
+          options: { include_original_description: true },
+        });
+      } catch (error: any) {
+        if (plaidErrorInfo(error).code !== MUTATION_DURING_PAGINATION) {
+          throw error;
+        }
+        const restarts = (args.restarts ?? 0) + 1;
+        if (restarts > MAX_PAGINATION_RESTARTS) {
+          throw error;
+        }
+        // Start the walk again from the committed cursor. Nothing is lost:
+        // the cursor is behind every page that reached Notion, and the page
+        // map makes anything replayed an update rather than a duplicate.
+        console.log(
+          `transactions changed mid-walk, restarting (${restarts} of ${MAX_PAGINATION_RESTARTS})`,
+        );
+        await ctx.scheduler.runAfter(
+          // A moment, so the restart is not straight back into the same
+          // write that caused it.
+          restarts * 2000,
+          internal.sync.transactionsBatch,
+          {
+            connectionId: connection._id,
+            runId: args.runId,
+            restarts,
+          },
+        );
+        return;
+      }
       const { added, modified, removed, next_cursor, has_more } = response.data;
 
       const enabledIds = new Set(
@@ -1047,6 +1103,7 @@ export const transactionsBatch = internalAction({
         await ctx.scheduler.runAfter(0, internal.sync.transactionsBatch, {
           connectionId: connection._id,
           runId: args.runId,
+          restarts: args.restarts,
         });
       } else if (
         notion.modules.investments &&

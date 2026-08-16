@@ -37,6 +37,26 @@ async function twoUsers() {
   };
 }
 
+// A destination whose Transactions database has the given columns of the
+// user's own. What refreshManualProperties would have discovered.
+async function withColumns(
+  t: Awaited<ReturnType<typeof twoUsers>>["t"],
+  userId: Id<"users">,
+  columns: Array<{ name: string; type: string; options?: string[] }>,
+) {
+  await t.run(async (ctx) => {
+    await ctx.db.insert("notionConnections", {
+      userId,
+      accessToken: "notion-token",
+      workspaceId: "ws",
+      botId: "bot",
+      modules: { balances: true, spending: true, investments: false },
+      databases: { transactions: "db-txn" },
+      manualProperties: { transactions: columns },
+    });
+  });
+}
+
 async function accountFor(
   t: Awaited<ReturnType<typeof twoUsers>>["t"],
   userId: Id<"users">,
@@ -345,18 +365,75 @@ test("a rule is capped at ten conditions", async () => {
   ).rejects.toThrow("limited to 10 conditions");
 });
 
-test("tags are cleaned, de-duplicated, and stripped of commas", async () => {
-  const { asAlice } = await twoUsers();
+test("a rule can only set a column the database actually has", async () => {
+  const { asAlice, alice, t } = await twoUsers();
+  await withColumns(t, alice, [
+    { name: "Review", type: "select", options: ["Yes", "No"] },
+  ]);
+
+  await expect(
+    asAlice.mutation(api.rules.create, {
+      ...COFFEE,
+      actions: [
+        {
+          kind: "setProperty",
+          property: "Nonexistent",
+          value: { type: "select", option: "Yes" },
+        },
+      ],
+    }),
+  ).rejects.toThrow(/no "Nonexistent" column/);
+
+  // And only an option that column defines: anything else would either be
+  // refused by Notion or quietly added to their database.
+  await expect(
+    asAlice.mutation(api.rules.create, {
+      ...COFFEE,
+      actions: [
+        {
+          kind: "setProperty",
+          property: "Review",
+          value: { type: "select", option: "Maybe" },
+        },
+      ],
+    }),
+  ).rejects.toThrow(/no option "Maybe"/);
+
   await asAlice.mutation(api.rules.create, {
     ...COFFEE,
     actions: [
-      { kind: "addTags", tags: ["  Treat ", "Treat", "", "a,b"] },
+      {
+        kind: "setProperty",
+        property: "Review",
+        value: { type: "select", option: "Yes" },
+      },
     ],
   });
-  const [rule] = await asAlice.query(api.rules.list);
-  // Notion refuses a comma inside a multi-select option, so it is turned into
-  // a space here rather than mangled on the way out.
-  expect(rule.actions).toEqual([{ kind: "addTags", tags: ["Treat", "a b"] }]);
+  expect((await asAlice.query(api.rules.list))[0].actions).toEqual([
+    {
+      kind: "setProperty",
+      property: "Review",
+      value: { type: "select", option: "Yes" },
+    },
+  ]);
+});
+
+test("a column retyped in Notion is caught rather than written wrong", async () => {
+  const { asAlice, alice, t } = await twoUsers();
+  await withColumns(t, alice, [{ name: "Reviewed", type: "checkbox" }]);
+
+  await expect(
+    asAlice.mutation(api.rules.create, {
+      ...COFFEE,
+      actions: [
+        {
+          kind: "setProperty",
+          property: "Reviewed",
+          value: { type: "select", option: "Yes" },
+        },
+      ],
+    }),
+  ).rejects.toThrow(/is a checkbox now, not a select/);
 });
 
 test("an action emptied by the UI is dropped rather than saved", async () => {
@@ -366,7 +443,6 @@ test("an action emptied by the UI is dropped rather than saved", async () => {
     actions: [
       { kind: "setCategory", categoryId: "FOOD_AND_DRINK_COFFEE" },
       { kind: "rename", value: "   " },
-      { kind: "addTags", tags: [] },
     ],
   });
   const [rule] = await asAlice.query(api.rules.list);
@@ -386,22 +462,32 @@ test("a category group can be matched on but not set", async () => {
   ).rejects.toThrow("Unknown category");
 });
 
-test("saving a rule that tags asks for the missing columns", async () => {
-  const { asAlice, t } = await twoUsers();
+test("saving a rule that writes a column re-reads which columns exist", async () => {
+  const { asAlice, alice, t } = await twoUsers();
+  await withColumns(t, alice, [
+    { name: "Review", type: "select", options: ["Yes"] },
+  ]);
+
   await asAlice.mutation(api.rules.create, {
     ...COFFEE,
-    actions: [{ kind: "addTags", tags: ["Reimbursable"] }],
+    actions: [
+      {
+        kind: "setProperty",
+        property: "Review",
+        value: { type: "select", option: "Yes" },
+      },
+    ],
   });
 
   const scheduled = await t.run(async (ctx) =>
     ctx.db.system.query("_scheduled_functions").collect(),
   );
   expect(
-    scheduled.filter((job) => job.name.includes("ensureDatabaseColumns")),
+    scheduled.filter((job) => job.name.includes("refreshManualProperties")),
   ).toHaveLength(1);
 });
 
-test("a rule that does not tag asks for nothing", async () => {
+test("a rule that writes no column asks for nothing", async () => {
   const { asAlice, t } = await twoUsers();
   await asAlice.mutation(api.rules.create, COFFEE);
 

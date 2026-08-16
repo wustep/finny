@@ -72,10 +72,22 @@ export const ruleActionValidator = v.union(
     value: v.string(),
   }),
   v.object({
-    kind: v.literal("addTags"),
-    // Written to the Tags multi-select on Transactions. Only ever added:
-    // one rule wins per row, so what it removed would be unknowable.
-    tags: v.array(v.string()),
+    kind: v.literal("setProperty"),
+    // A property the user added to the Transactions database themselves.
+    // Finny does not create these — it finds them, and refuses a rule naming
+    // one the database does not have (see rules.ts).
+    property: v.string(),
+    value: v.union(
+      v.object({ type: v.literal("select"), option: v.string() }),
+      v.object({ type: v.literal("status"), option: v.string() }),
+      // Added to rather than replaced: one rule wins per row, so what a rule
+      // took away would be unknowable.
+      v.object({
+        type: v.literal("multiSelect"),
+        options: v.array(v.string()),
+      }),
+      v.object({ type: v.literal("checkbox"), checked: v.boolean() }),
+    ),
   }),
   // No Notion row: skip the create, and archive + unmap a row that already
   // exists (see upsertTransaction in sync.ts).
@@ -215,6 +227,25 @@ export default defineSchema({
     startDate: v.optional(v.string()),
     // logical database key (e.g. "transactions") -> Notion database/data source id
     databases: v.optional(v.record(v.string(), v.string())),
+    // Notion database key -> the properties on it that Finny did not create.
+    // Discovered rather than declared: they are the user's own columns, and
+    // a rule may write one. Refreshed by the destination check and by every
+    // sync, so a column added in Notion shows up without being announced.
+    manualProperties: v.optional(
+      v.record(
+        v.string(),
+        v.array(
+          v.object({
+            name: v.string(),
+            type: v.string(),
+            // For select and status, the options the user defined. A rule can
+            // only set one of these, which is what stops a typo becoming a
+            // new option in their database.
+            options: v.optional(v.array(v.string())),
+          }),
+        ),
+      ),
+    ),
     // Notion database key -> title template, e.g.
     // `{"investmentTransactions": "[{date}] {subtype} {security}"}`. Config:
     // a template says how to lay a row out, never what was found in one.

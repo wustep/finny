@@ -239,7 +239,7 @@ test("a failed archive throws, so the row counts as failed and holds the cursor"
   ).rejects.toThrow(/400/);
 });
 
-test("a rule's rename and tags reach the page it writes", async () => {
+test("a rule's rename and property writes reach the page", async () => {
   notion.reply("/pages", { id: "page-new" });
   const fake = writer();
 
@@ -254,7 +254,16 @@ test("a rule's rename and tags reach the page it writes", async () => {
         ...hideRule,
         actions: [
           { kind: "rename", value: "Coffee" },
-          { kind: "addTags", tags: ["Treat"] },
+          {
+            kind: "setProperty",
+            property: "Review",
+            value: { type: "select", option: "Treat" },
+          },
+          {
+            kind: "setProperty",
+            property: "Reviewed",
+            value: { type: "checkbox", checked: true },
+          },
         ],
       },
     ],
@@ -264,9 +273,12 @@ test("a rule's rename and tags reach the page it writes", async () => {
 
   const created = notion.requests.find((request) => request.path === "/pages");
   expect(created?.body.properties.Name.title[0].text.content).toBe("Coffee");
-  expect(created?.body.properties.Tags.multi_select).toEqual([
-    { name: "Treat" },
-  ]);
+  // The user's own columns, written by name, in the shape Notion wants for
+  // each type.
+  expect(created?.body.properties.Review).toEqual({
+    select: { name: "Treat" },
+  });
+  expect(created?.body.properties.Reviewed).toEqual({ checkbox: true });
 });
 
 test("a title format names the row when no rule renames it", async () => {
@@ -311,4 +323,34 @@ test("a rule's rename beats the title format", async () => {
 
   const created = notion.requests.find((request) => request.path === "/pages");
   expect(created?.body.properties.Name.title[0].text.content).toBe("Coffee");
+});
+
+test("a row a rule did not touch carries none of the user's columns", async () => {
+  // Writing a property speculatively is a 400 for the whole row if the column
+  // is not there, so nothing is written unless a rule asked for it.
+  notion.reply("/pages", { id: "page-new" });
+  const fake = writer();
+
+  await upsertTransaction(fake.ctx, {
+    userId: USER,
+    token: "tok",
+    databaseId: "db",
+    txn: txn(),
+    accountPage: "page-acct",
+    rules: [],
+    ensureCategory: noCategory,
+    txnPages: {},
+  });
+
+  const created = notion.requests.find((request) => request.path === "/pages");
+  expect(Object.keys(created!.body.properties).sort()).toEqual([
+    "Account",
+    "Amount",
+    "Category",
+    "Date",
+    "ID",
+    "Name",
+    "Original Description",
+    "Pending",
+  ]);
 });

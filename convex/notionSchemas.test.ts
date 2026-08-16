@@ -95,15 +95,17 @@ test("accounts carry a currency", () => {
 
 test("the schema version is bumped when a property is added", () => {
   // Not a real invariant so much as a tripwire: this count changes whenever a
-  // spec gains or loses a property, and the version beside it has to move
-  // with it — otherwise destinations already built never get the new column
-  // and every sync 400s on the row that writes it.
+  // spec gains or loses a property. A property *added* has to move the
+  // version with it, or destinations already built never get the column and
+  // every sync 400s on the row that writes it. A property removed does not:
+  // nothing needs adding, and the column stays in databases that have it —
+  // where it becomes one of the user's own, which is where Tags went.
   const properties = DATABASE_SPECS.reduce(
     (total, spec) => total + Object.keys(propertyTypes(spec)).length,
     0,
   );
   expect({ properties, version: NOTION_SCHEMA_VERSION }).toEqual({
-    properties: 69,
+    properties: 68,
     version: 2,
   });
 });

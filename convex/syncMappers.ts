@@ -15,7 +15,7 @@ import type {
   Transaction,
   TransactionStream,
 } from "plaid";
-import type { RuleTransaction } from "./rulesEngine";
+import type { PropertyValue, RuleTransaction } from "./rulesEngine";
 import { renderTitle } from "./titleFormats";
 
 // The title templates a destination has set, keyed by database. Threaded
@@ -54,7 +54,25 @@ export const P = {
     })),
   }),
   checkbox: (b: boolean) => ({ checkbox: b }),
+  status: (name: string | null | undefined) =>
+    name ? { status: { name: clip(name).replaceAll(",", " ") } } : { status: null },
 };
+
+// One of the user's own properties, as Notion wants it written. Each shape is
+// a different key in Notion's API, which is why the rule stores which one it
+// meant rather than guessing from the value.
+export function propertyValue(value: PropertyValue): unknown {
+  switch (value.type) {
+    case "select":
+      return P.select(value.option);
+    case "status":
+      return P.status(value.option);
+    case "multiSelect":
+      return P.multiSelect(value.options);
+    case "checkbox":
+      return P.checkbox(value.checked);
+  }
+}
 
 // An icon hosted elsewhere. Notion stores the URL and renders it directly,
 // so unlike an uploaded file this costs nothing and needs no bookkeeping —
@@ -149,10 +167,10 @@ export function transactionProperties(
   accountPageId: string,
   categoryPageId: string | null,
   rename?: string,
-  // From a rule's addTags action. Written only when there are some: a
-  // Transactions database built before Tags existed has no such column, and
-  // writing a property a database does not have fails the whole row.
-  tags: string[] = [],
+  // The user's own properties a rule set, already resolved. Written only when
+  // a rule set some: writing a property the database does not have fails the
+  // whole row, so nothing here is written speculatively.
+  properties: Record<string, PropertyValue> = {},
   // The destination's template for this database, and the names a template
   // can refer to that the mapper alone knows.
   formats?: TitleFormats,
@@ -186,7 +204,12 @@ export function transactionProperties(
     Amount: P.number(-txn.amount),
     Date: P.date(txn.datetime ?? txn.authorized_datetime ?? txn.date),
     Pending: P.checkbox(txn.pending),
-    ...(tags.length > 0 ? { Tags: P.multiSelect(tags) } : {}),
+    ...Object.fromEntries(
+      Object.entries(properties).map(([name, value]) => [
+        name,
+        propertyValue(value),
+      ]),
+    ),
   };
 }
 
