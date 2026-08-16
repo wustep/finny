@@ -146,7 +146,9 @@ export interface RuleTransaction {
 // order. The sync reads this rather than the action list, so adding an action
 // kind never changes the shape the sync deals with.
 export interface RuleMatch {
-  ruleId: string;
+  // Every rule that contributed, highest priority first. Plural since more
+  // than one can now.
+  ruleIds: string[];
   categoryId?: string;
   rename?: string;
   // The user's own properties this rule sets, by property name. Resolved
@@ -157,7 +159,7 @@ export interface RuleMatch {
 }
 
 export function applyActions(ruleId: string, actions: Action[]): RuleMatch {
-  const match: RuleMatch = { ruleId, properties: {}, hide: false };
+  const match: RuleMatch = { ruleIds: [ruleId], properties: {}, hide: false };
   for (const action of actions) {
     switch (action.kind) {
       case "setCategory":
@@ -210,15 +212,53 @@ export function evaluate(
   rules: Rule[],
   txn: RuleTransaction,
 ): RuleMatch | null {
+  let match: RuleMatch | null = null;
   for (const rule of orderRules(rules)) {
-    if (!rule.enabled) {
+    if (!rule.enabled || !matches(rule.conditions, txn)) {
       continue;
     }
-    if (matches(rule.conditions, txn)) {
-      return applyActions(rule.id, rule.actions);
+    const applied = applyActions(rule.id, rule.actions);
+    match = match === null ? applied : layer(match, applied);
+  }
+  return match;
+}
+
+// Fold a lower-priority rule underneath what the higher ones already decided.
+//
+// "Underneath" is the whole rule: a field somebody higher up has already set
+// is not set again. That keeps the number beside a rule meaning what it looks
+// like it means — moving a rule up makes it matter more.
+function layer(over: RuleMatch, under: RuleMatch): RuleMatch {
+  const properties = { ...over.properties };
+  for (const [name, value] of Object.entries(under.properties)) {
+    const existing = properties[name];
+    if (!existing) {
+      properties[name] = value;
+      continue;
+    }
+    // Except multi-selects, which add up: a label is not a claim about the
+    // other labels, so there is nothing for a higher rule to have decided.
+    if (existing.type === "multiSelect" && value.type === "multiSelect") {
+      properties[name] = {
+        type: "multiSelect",
+        options: [
+          ...existing.options,
+          ...value.options.filter(
+            (option) => !existing.options.includes(option),
+          ),
+        ],
+      };
     }
   }
-  return null;
+  return {
+    ruleIds: [...over.ruleIds, ...under.ruleIds],
+    categoryId: over.categoryId ?? under.categoryId,
+    rename: over.rename ?? under.rename,
+    properties,
+    // One rule wanting the row gone is enough; there is no action that says
+    // "keep it", so nothing below can argue.
+    hide: over.hide || under.hide,
+  };
 }
 
 // Priority ascending. Callers read rules through the by_user_priority index

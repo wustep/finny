@@ -191,12 +191,13 @@ function RulesPage() {
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Rules</h1>
           <p className="text-sm text-muted-foreground">
-            Applied as each transaction syncs, top to bottom — the first match
-            wins.{" "}
+            Applied as each transaction syncs. Every rule that matches has a
+            say; where two set the same thing, the higher one wins.{" "}
             <Hint label="How rules work" className="ml-0.5 align-middle">
               <p className="mb-2">
-                Everything the winning rule sets is applied together, and no
-                rule below it is considered.
+                Multi-select values are the exception — those add up across
+                every rule that adds them. Keeping a row out of Notion is a
+                latch: one rule is enough.
               </p>
               <p>
                 Rows already in Notion take a new rule the next time that

@@ -161,11 +161,15 @@ and retries 429/409/5xx with jittered exponential backoff, honouring
   `accountBackfill` catch-up go through it. There is no stored transaction
   to re-run a rule against later; the next sync event for that transaction
   is the only chance a changed rule gets.
-- Priority ascending, and the first enabled rule whose conditions all match
-  wins outright: its outcomes (category, rename, hide) apply together and no
-  later rule is consulted. That one-rule-per-row semantics is load-bearing,
-  not a simplification — Finny stores no transactions, so a row's fate can
-  only be explained if exactly one rule decided it.
+- Priority ascending, and *every* enabled rule whose conditions match
+  contributes. Where two say something about the same field the higher one
+  wins (`layer` in rulesEngine.ts), multi-select values accumulate across all
+  of them, and `hide` is a latch. Moving a rule up makes it matter more, which
+  is what the number beside it implies.
+- The cost is real and was accepted deliberately: Finny stores no
+  transactions, so nothing can show which rules touched a row after the fact.
+  With layering, "why does this row say that" is answered by reading the list
+  in order.
 - A rule is two lists: conditions (ANDed) and actions (applied in order). If
   all of these, then do all of these. Several values inside one text or
   category condition are ORed, and a range is two amount conditions. No

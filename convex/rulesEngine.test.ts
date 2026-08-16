@@ -184,7 +184,7 @@ describe("condition combination", () => {
 });
 
 describe("rule ordering", () => {
-  test("the first matching rule wins outright and applies all its actions", () => {
+  test("a higher rule decides a field, and a lower one cannot take it back", () => {
     const first = rule(
       [merchant("contains", "coffee")],
       [
@@ -203,15 +203,12 @@ describe("rule ordering", () => {
     );
 
     const match = evaluate([second, first], txn());
-    expect(match).toEqual({
-      ruleId: first.id,
+    expect(match).toMatchObject({
       categoryId: "FOOD_AND_DRINK_COFFEE",
       rename: "Coffee",
-      properties: {},
-      hide: false,
     });
-    // Nothing leaks in from the rule below it.
-    expect(match?.hide).toBe(false);
+    // The higher rule decided both, so the lower one changed neither.
+    expect(match?.ruleIds[0]).toBe(first.id);
   });
 
   test("priority order decides, not the order rules arrive in", () => {
@@ -487,10 +484,134 @@ describe("actions", () => {
   test("a rule with no actions resolves to doing nothing", () => {
     // Writes refuse this; the engine must not invent an effect for it.
     const match = evaluate([rule([merchant("contains", "blue bottle")], [])], coffee);
-    expect(match).toEqual({
-      ruleId: expect.any(String),
-      properties: {},
-      hide: false,
+    expect(match).toMatchObject({ properties: {}, hide: false });
+  });
+});
+
+describe("layering", () => {
+  const coffee = txn();
+  const matchesCoffee = [merchant("contains", "blue bottle")];
+  const matchesAll = [amount("gt", 0)];
+
+  test("every matching rule contributes what nobody above it set", () => {
+    const specific = rule(
+      matchesCoffee,
+      [{ kind: "setCategory", categoryId: "FOOD_AND_DRINK_COFFEE" }],
+      { priority: 1 },
+    );
+    const general = rule(matchesAll, [{ kind: "rename", value: "Spending" }], {
+      priority: 2,
     });
+
+    const match = evaluate([general, specific], coffee);
+    expect(match).toMatchObject({
+      categoryId: "FOOD_AND_DRINK_COFFEE",
+      rename: "Spending",
+    });
+    expect(match?.ruleIds).toEqual([specific.id, general.id]);
+  });
+
+  test("the higher rule wins a field both set", () => {
+    const high = rule(matchesCoffee, [{ kind: "rename", value: "Coffee" }], {
+      priority: 1,
+    });
+    const low = rule(matchesAll, [{ kind: "rename", value: "Spending" }], {
+      priority: 2,
+    });
+    expect(evaluate([low, high], coffee)?.rename).toBe("Coffee");
+  });
+
+  test("multi-select values add up across rules, in priority order", () => {
+    // The point of layering: a label is not a claim about anyone else's
+    // labels, so there is nothing for a higher rule to have decided.
+    const high = rule(
+      matchesCoffee,
+      [
+        {
+          kind: "setProperty",
+          property: "Labels",
+          value: { type: "multiSelect", options: ["Treat"] },
+        },
+      ],
+      { priority: 1 },
+    );
+    const low = rule(
+      matchesAll,
+      [
+        {
+          kind: "setProperty",
+          property: "Labels",
+          value: { type: "multiSelect", options: ["Treat", "Spending"] },
+        },
+      ],
+      { priority: 2 },
+    );
+
+    expect(evaluate([low, high], coffee)?.properties.Labels).toEqual({
+      type: "multiSelect",
+      options: ["Treat", "Spending"],
+    });
+  });
+
+  test("a single-value property is not added to, it is decided", () => {
+    const high = rule(
+      matchesCoffee,
+      [
+        {
+          kind: "setProperty",
+          property: "Review",
+          value: { type: "select", option: "Done" },
+        },
+      ],
+      { priority: 1 },
+    );
+    const low = rule(
+      matchesAll,
+      [
+        {
+          kind: "setProperty",
+          property: "Review",
+          value: { type: "select", option: "Todo" },
+        },
+      ],
+      { priority: 2 },
+    );
+    expect(evaluate([low, high], coffee)?.properties.Review).toEqual({
+      type: "select",
+      option: "Done",
+    });
+  });
+
+  test("hide is a latch, whichever rule asks for it", () => {
+    const renamer = rule(matchesCoffee, [{ kind: "rename", value: "Coffee" }], {
+      priority: 1,
+    });
+    const hider = rule(matchesAll, [{ kind: "hide" }], { priority: 2 });
+
+    // A rule below cannot be overruled by one above, because there is no
+    // action that says "keep it".
+    expect(evaluate([renamer, hider], coffee)?.hide).toBe(true);
+    expect(evaluate([hider, renamer], coffee)?.hide).toBe(true);
+  });
+
+  test("a rule that does not match contributes nothing", () => {
+    const other = rule([merchant("contains", "amazon")], [
+      { kind: "rename", value: "Amazon" },
+    ]);
+    const mine = rule(matchesCoffee, [{ kind: "rename", value: "Coffee" }]);
+    expect(evaluate([other, mine], coffee)?.rename).toBe("Coffee");
+  });
+
+  test("a disabled rule contributes nothing either", () => {
+    const off = rule(matchesAll, [{ kind: "rename", value: "Spending" }], {
+      priority: 1,
+      enabled: false,
+    });
+    const on = rule(matchesCoffee, [{ kind: "setCategory", categoryId: "FOOD_AND_DRINK_COFFEE" }], {
+      priority: 2,
+    });
+    const match = evaluate([off, on], coffee);
+    expect(match?.rename).toBeUndefined();
+    expect(match?.ruleIds).toEqual([on.id]);
   });
 });
