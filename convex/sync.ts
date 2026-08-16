@@ -837,20 +837,28 @@ async function scheduleNextStage(
 // ---------- stage 2: transactions (self-rescheduling) ----------
 
 // Plaid rejects a page of transactions/sync when the Item's data changed
-// underneath the pagination, and asks for the walk to be restarted from the
-// last cursor that was committed. That is exactly what the stored cursor is —
-// it only ever moves after a page has been fully written to Notion — so a
-// restart is a fresh call, not a recovery.
+// underneath the pagination, and asks for the walk to be restarted.
 //
-// Expected rather than exceptional: a busy Item mutates while a two-year
-// backfill is walking it. It used to surface as a failed run and a five
-// minute wait for the retry.
+// Restarted from *where* is the whole of it. Every page's next_cursor is
+// persisted as it is written, so the obvious reading is "carry on from the
+// one you have" — and that does not work: the mid-sequence cursors belong to
+// a snapshot Plaid has just thrown away, so resuming from one is rejected
+// again, and again, for as long as anyone keeps trying. A run doing exactly
+// that was observed restarting five times, processing nothing each time.
+//
+// So a restart goes back to the cursor the *sequence* began with, which is
+// the last one from a walk that finished. Re-walking pages already written is
+// free of consequence — the page map turns every one of them into an update —
+// and it is the only position Plaid will still accept.
+//
+// Expected rather than exceptional: a busy Item mutates while a backfill is
+// walking it, and Notion's three writes a second make that window wide.
 const MUTATION_DURING_PAGINATION = "TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION";
 
 // Restarts one run will do before giving up and letting it fail properly. An
-// Item mutating faster than a page can be written is a real condition, and
-// somebody has to stop.
-const MAX_PAGINATION_RESTARTS = 5;
+// Item mutating faster than a whole sequence can be written is a real
+// condition, and somebody has to stop.
+const MAX_PAGINATION_RESTARTS = 4;
 
 export const transactionsBatch = internalAction({
   args: {
@@ -858,6 +866,14 @@ export const transactionsBatch = internalAction({
     runId: v.id("syncRuns"),
     // How many times this run has been sent back to the start of the walk.
     restarts: v.optional(v.number()),
+    // The cursor this pagination sequence started from, carried along the
+    // has_more chain so a mutation part-way through knows where to rewind to.
+    // Absent on the first hop, which reads it off the connection.
+    sequenceStart: v.optional(v.string()),
+    // Whether this hop is the first of its sequence, which is the only time
+    // sequenceStart may legitimately be undefined (an Item that has never
+    // synced has no cursor at all).
+    sequenceStarted: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
     const context = await loadContext(ctx, args.connectionId);
@@ -883,6 +899,11 @@ export const transactionsBatch = internalAction({
 
     try {
       const client = plaidClient(connection.plaidEnv ?? "production");
+      // Established once per sequence and carried from there; on the first
+      // hop it is wherever the connection had got to.
+      const sequenceStart = args.sequenceStarted
+        ? args.sequenceStart
+        : connection.transactionsCursor;
       let response;
       try {
         response = await client.transactionsSync({
@@ -899,16 +920,22 @@ export const transactionsBatch = internalAction({
         if (restarts > MAX_PAGINATION_RESTARTS) {
           throw error;
         }
-        // Start the walk again from the committed cursor. Nothing is lost:
-        // the cursor is behind every page that reached Notion, and the page
-        // map makes anything replayed an update rather than a duplicate.
+        // Back to where the sequence began. The cursors written since belong
+        // to a snapshot Plaid has discarded, so they are not resumable; the
+        // pages they covered are already in Notion and will be updated in
+        // place on the way back through.
+        await ctx.runMutation(internal.syncData.rewindCursor, {
+          connectionId: connection._id,
+          cursor: sequenceStart,
+        });
         console.log(
-          `transactions changed mid-walk, restarting (${restarts} of ${MAX_PAGINATION_RESTARTS})`,
+          `transactions changed mid-walk, restarting the sequence ` +
+            `(${restarts} of ${MAX_PAGINATION_RESTARTS})`,
         );
         await ctx.scheduler.runAfter(
-          // A moment, so the restart is not straight back into the same
-          // write that caused it.
-          restarts * 2000,
+          // Backing off properly: an Item busy enough to mutate mid-walk is
+          // an Item worth giving a moment to settle.
+          2000 * 2 ** (restarts - 1),
           internal.sync.transactionsBatch,
           {
             connectionId: connection._id,
@@ -1104,6 +1131,8 @@ export const transactionsBatch = internalAction({
           connectionId: connection._id,
           runId: args.runId,
           restarts: args.restarts,
+          sequenceStart,
+          sequenceStarted: true,
         });
       } else if (
         notion.modules.investments &&

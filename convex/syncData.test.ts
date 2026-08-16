@@ -865,3 +865,41 @@ test("a run that works clears the retry count", async () => {
   expect(connection?.syncRetryCount).toBeUndefined();
 });
 
+
+test("rewindCursor can put a connection back to no cursor at all", async () => {
+  const t = convexTest(schema, modules);
+  const seeded = await seed(t);
+  await t.run(async (ctx) => {
+    await ctx.db.patch(seeded.connectionId, {
+      transactionsCursor: "mid-sequence",
+      cursorFailures: 2,
+    });
+  });
+
+  // A sequence that began before the Item had ever synced started from no
+  // cursor, which is a position setCursor cannot express.
+  await t.mutation(internal.syncData.rewindCursor, {
+    connectionId: seeded.connectionId,
+  });
+
+  const connection = await t.run(async (ctx) => ctx.db.get(seeded.connectionId));
+  expect(connection?.transactionsCursor).toBeUndefined();
+  expect(connection?.cursorFailures).toBeUndefined();
+});
+
+test("rewindCursor goes backwards, unlike setCursor", async () => {
+  const t = convexTest(schema, modules);
+  const seeded = await seed(t);
+  await t.mutation(internal.syncData.setCursor, {
+    connectionId: seeded.connectionId,
+    cursor: "page-3",
+  });
+
+  await t.mutation(internal.syncData.rewindCursor, {
+    connectionId: seeded.connectionId,
+    cursor: "sequence-start",
+  });
+
+  const connection = await t.run(async (ctx) => ctx.db.get(seeded.connectionId));
+  expect(connection?.transactionsCursor).toBe("sequence-start");
+});

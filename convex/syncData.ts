@@ -282,6 +282,24 @@ export const setCursor = internalMutation({
   },
 });
 
+// Put the transactions cursor back to where a pagination sequence began.
+//
+// Distinct from setCursor because this one goes backwards, and because the
+// sequence may have begun with no cursor at all — the first sync of an Item —
+// which is a state setCursor cannot express.
+export const rewindCursor = internalMutation({
+  args: {
+    connectionId: v.id("bankConnections"),
+    cursor: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    await ctx.db.patch(args.connectionId, {
+      transactionsCursor: args.cursor,
+      cursorFailures: undefined,
+    });
+  },
+});
+
 // Count one run that could not write every row of the page at the current
 // cursor. Returns the number of consecutive failed attempts so far.
 export const recordCursorFailure = internalMutation({

@@ -70,6 +70,12 @@ map is the invariant, and every duplicate-row bug is a violation of it.
   forever. The daily sweep (`syncData.sweepStuckRuns`) closes those out as
   "timed out" — but only when the lease is not held by that run, since the
   heartbeat is the only signal separating a corpse from a slow backfill.
+- `TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION` means the Item changed
+  mid-walk. Restart from the cursor the *sequence* began with
+  (`syncData.rewindCursor`), never from the mid-sequence one you just wrote:
+  those belong to a snapshot Plaid has discarded and are rejected for ever.
+  Re-walking the pages already written costs nothing — the page map makes them
+  updates — and it is the only position Plaid still accepts.
 - Advance `transactionsCursor` only after a page has been fully written to
   Notion (`syncData.setCursor`, end of `transactionsBatch`). Advancing early
   drops transactions permanently — Plaid does not resend a consumed page.
