@@ -40,6 +40,7 @@ import {
   unknownTokens,
   type TitleFormatSpec,
 } from "../../convex/titleFormats";
+import { connectionCount } from "@/lib/plural";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -257,9 +258,7 @@ function ApplyToHistory() {
     applyToHistory({})
       .then((result) => {
         toast.success(
-          `Replaying ${result.connections} ${
-            result.connections === 1 ? "bank" : "banks"
-          } — this runs in the background`,
+          `Replaying ${connectionCount(result.connections)} — this runs in the background`,
         );
         setOpen(false);
       })

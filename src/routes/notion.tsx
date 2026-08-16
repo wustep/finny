@@ -13,6 +13,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { api } from "../../convex/_generated/api";
 import { DATABASE_EMOJI } from "../../convex/notionSchemas";
+import { connectionCount } from "@/lib/plural";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -612,13 +613,11 @@ function DestinationCard({
           (result) => result.status === "rejected",
         ).length;
         if (failed === 0) {
-          toast.success(
-            `Syncing ${results.length} ${
-              results.length === 1 ? "bank" : "banks"
-            }`,
-          );
+          toast.success(`Syncing ${connectionCount(results.length)}`);
         } else {
-          toast.error(`${failed} of ${results.length} banks failed to start`);
+          toast.error(
+            `${failed} of ${connectionCount(results.length)} failed to start`,
+          );
         }
       })
       .finally(() => setSyncing(false));
@@ -634,7 +633,7 @@ function DestinationCard({
             {connections === undefined
               ? ""
               : connections.length === 0
-                ? "No banks are connected yet — add one from Accounts and it will fill these in."
+                ? "Nothing is connected yet — add a connection from Accounts and it will fill these in."
                 : lastSyncedAt
                   ? `Last synced ${new Date(lastSyncedAt).toLocaleString()}.`
                   : "Waiting on the first sync to fill them in."}
@@ -775,9 +774,9 @@ function DatabaseSection({
       .then((result) => {
         toast.success(
           result.rebuilt.length
-            ? `Rebuilt ${result.rebuilt.length}, syncing ${result.syncing} ${
-                result.syncing === 1 ? "bank" : "banks"
-              }`
+            ? `Rebuilt ${result.rebuilt.length}, syncing ${connectionCount(
+                result.syncing,
+              )}`
             : `Added ${result.propertiesAdded} ${
                 result.propertiesAdded === 1 ? "column" : "columns"
               }`,
@@ -869,7 +868,8 @@ function DatabaseSection({
             </DialogTitle>
             <DialogDescription>
               Finny makes them again, repoints the relations that referenced
-              them, and syncs your banks to fill them in from Plaid. The rows
+              them, and syncs everything you have connected to fill them in
+              from Plaid. The rows
               that were in them are gone with them — if a database is only in
               your Notion trash, restoring it there keeps its history.
             </DialogDescription>
@@ -964,9 +964,9 @@ function StartDateSection({ startDate }: { startDate?: string }) {
       .then((result) =>
         toast.success(
           rebackfill
-            ? `Syncing history from ${value} across ${result.connections} ${
-                result.connections === 1 ? "bank" : "banks"
-              }`
+            ? `Syncing history from ${value} across ${connectionCount(
+                result.connections,
+              )}`
             : `New syncs will cover ${value} onwards`,
         ),
       )
@@ -1138,13 +1138,11 @@ function ResetResyncDialog({
     setWorking(true);
     resetAndResync({ existingRows })
       .then((result) => {
-        const banks = `${result.connections} ${
-          result.connections === 1 ? "bank" : "banks"
-        }`;
+        const across = connectionCount(result.connections);
         toast.success(
           existingRows === "archive"
-            ? `Clearing the old rows, then rebuilding across ${banks}`
-            : `Rebuilding from scratch across ${banks}`,
+            ? `Clearing the old rows, then rebuilding across ${across}`
+            : `Rebuilding from scratch across ${across}`,
         );
         onOpenChange(false);
       })

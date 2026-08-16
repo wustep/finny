@@ -5,6 +5,7 @@ import { Trash2, Unplug } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 import { api } from "../../convex/_generated/api";
+import { connectionCount } from "@/lib/plural";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -146,7 +147,7 @@ function DisconnectBanksRow({ count }: { count?: number }) {
   const disconnectAll = useAction(api.plaid.disconnectAllBanks);
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
-  const banks = count ?? 0;
+  const linked = count ?? 0;
 
   const handleDisconnect = () => {
     setBusy(true);
@@ -156,18 +157,18 @@ function DisconnectBanksRow({ count }: { count?: number }) {
           // The tokens are gone from Finny regardless; what failed is the
           // request asking Plaid to stop, which the user may want to chase.
           toast.warning(
-            `Removed ${result.removed} ${result.removed === 1 ? "bank" : "banks"}, but Plaid rejected the revocation for ${result.revokeFailures.join(", ")} — check your Plaid dashboard.`,
+            `Removed ${connectionCount(result.removed)}, but Plaid rejected the revocation for ${result.revokeFailures.join(", ")} — check your Plaid dashboard.`,
           );
         } else {
           toast.success(
-            `Disconnected ${result.removed} ${result.removed === 1 ? "bank" : "banks"}`,
+            `Disconnected ${connectionCount(result.removed)}`,
           );
         }
         setOpen(false);
       })
       .catch((error: unknown) => {
         console.error(error);
-        toast.error("Could not disconnect your banks — try again");
+        toast.error("Could not disconnect — try again");
       })
       .finally(() => setBusy(false));
   };
@@ -175,18 +176,18 @@ function DisconnectBanksRow({ count }: { count?: number }) {
   return (
     <div className="flex flex-wrap items-center justify-between gap-3">
       <div>
-        <div className="text-sm font-medium">Disconnect all banks</div>
+        <div className="text-sm font-medium">Disconnect everything</div>
         <p className="text-sm text-muted-foreground">
           {count === undefined
             ? "Loading…"
-            : banks === 0
-              ? "No banks are connected."
-              : `Revokes ${banks} bank ${banks === 1 ? "connection" : "connections"} at Plaid and deletes their tokens.`}
+            : linked === 0
+              ? "Nothing is connected."
+              : `Revokes ${connectionCount(linked)} at Plaid and deletes their tokens.`}
         </p>
       </div>
       <Button
         variant="outline"
-        disabled={banks === 0}
+        disabled={linked === 0}
         onClick={() => setOpen(true)}
       >
         <Unplug /> Disconnect all
@@ -194,14 +195,16 @@ function DisconnectBanksRow({ count }: { count?: number }) {
       <ConfirmDialog
         open={open}
         onOpenChange={setOpen}
-        title={`Disconnect ${banks === 1 ? "your bank" : `all ${banks} banks`}?`}
+        title={`Disconnect ${
+          linked === 1 ? "your connection" : `all ${linked} connections`
+        }?`}
         confirmLabel="Disconnect all"
         busyLabel="Disconnecting…"
         busy={busy}
         onConfirm={handleDisconnect}
       >
         <p>
-          Ends Plaid's access to these banks and deletes their tokens; syncing
+          Ends Plaid's access to these accounts and deletes their tokens; syncing
           stops now. Everything already in Notion stays. Relinking later uses
           a new Plaid Item — production slots are not refunded.
         </p>
@@ -299,7 +302,7 @@ function DangerZoneCard() {
       const { done } = await deleteAccount();
       if (revoked === null) {
         toast.warning(
-          "Account deleted, but Finny could not reach Plaid to revoke your banks — remove them from your Plaid dashboard.",
+          "Account deleted, but Finny could not reach Plaid to revoke your connections — remove them from your Plaid dashboard.",
         );
       } else if (revoked.revokeFailures.length > 0) {
         toast.warning(
@@ -348,7 +351,8 @@ function DangerZoneCard() {
         onConfirm={() => void handleDelete()}
       >
         <p>
-          This revokes every bank at Plaid and deletes everything Finny stores
+          This revokes every connection at Plaid and deletes everything Finny
+          stores
           about you — tokens, configuration, and the map that keeps Notion rows
           in sync. There is no undo.
         </p>

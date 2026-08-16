@@ -153,8 +153,8 @@ function AccountsPage() {
               </div>
               <CardTitle>No bank connections yet</CardTitle>
               <CardDescription>
-                Connect a bank through Plaid to start syncing accounts,
-                transactions, and investments to Notion.
+                Connect a bank, card, or brokerage through Plaid to start
+                syncing accounts, transactions, and investments to Notion.
               </CardDescription>
             </CardHeader>
           </Card>
@@ -185,7 +185,7 @@ function NoDestinationBanner() {
       <CardContent className="flex flex-wrap items-center gap-4 py-4">
         <div className="min-w-64 flex-1">
           <p className="text-sm font-medium">
-            Your banks are connected but nothing is syncing yet
+            Everything is connected but nothing is syncing yet
           </p>
           <p className="text-sm text-muted-foreground">
             Pick a Notion page and the first sync starts straight after.
@@ -222,7 +222,7 @@ function GettingStarted({
 }) {
   const steps = [
     {
-      title: "Connect a bank",
+      title: "Connect a bank or brokerage",
       detail: "Plaid handles the sign-in; Finny only ever reads.",
       done: hasBank,
       action: (

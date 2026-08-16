@@ -110,7 +110,7 @@ function PolicyPage() {
         <PolicyHeading>Disposal on your actions</PolicyHeading>
         <List
           items={[
-            "Removing a bank connection immediately deletes its Plaid access token and account metadata from Finny, and revokes the connection at Plaid (item removal), which instructs Plaid to stop data access. Settings has a “Disconnect all banks” action that does this for every connection at once; if Plaid rejects one of the revocations, Finny still deletes its own copy of that token and tells you which connection to check.",
+            "Removing a bank connection immediately deletes its Plaid access token and account metadata from Finny, and revokes the connection at Plaid (item removal), which instructs Plaid to stop data access. Settings has a “Disconnect everything” action that does this for every connection at once; if Plaid rejects one of the revocations, Finny still deletes its own copy of that token and tells you which connection to check.",
             "Disconnecting Notion immediately deletes the stored Notion token and the record of which databases Finny created. Notion's API has no token-revocation endpoint, so this removes Finny's copy of the token; you can additionally remove the Finny integration from your Notion workspace's connection settings. Data already synced to your Notion workspace is yours and remains there; Finny never deletes it.",
             "Data synced to Notion can be deleted by you at any time in Notion; Finny will not recreate rows for records it no longer syncs.",
           ]}
