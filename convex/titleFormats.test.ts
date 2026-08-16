@@ -88,6 +88,23 @@ describe("token validation", () => {
     expect(unknownTokens("transactions", "{merchant} {amount}")).toEqual([]);
   });
 
+  test("every default template is itself valid", () => {
+    // It is shown as the placeholder, so a default naming a token the
+    // database does not offer would be teaching the wrong syntax.
+    for (const spec of TITLE_FORMATS) {
+      expect(unknownTokens(spec.key, spec.defaultTemplate)).toEqual([]);
+    }
+  });
+
+  test("every default renders to something against its own example", () => {
+    for (const spec of TITLE_FORMATS) {
+      expect(
+        renderTitle(spec.defaultTemplate, spec.example, "FELL BACK"),
+        spec.key,
+      ).not.toBe("FELL BACK");
+    }
+  });
+
   test("every spec's example covers every token it offers", () => {
     // The example is what the Rules page previews against, so a token with no
     // example would preview as a gap and look broken.

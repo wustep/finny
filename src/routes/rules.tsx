@@ -323,7 +323,9 @@ function TitleFormats() {
       <CardHeader>
         <CardTitle>Titles</CardTitle>
         <CardDescription>
-          What each row is called in Notion. Leave one empty for the default.
+          What each row is called in Notion. A saved title reaches a row the
+          next time it syncs — use Apply to history for the ones already
+          there.
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-5">
@@ -381,7 +383,7 @@ function TitleFormatRow({
         <Input
           id={`format-${spec.key}`}
           className="min-w-64 flex-1 font-mono text-sm"
-          placeholder={`Default: ${spec.fallbackDescription}`}
+          placeholder={spec.defaultTemplate}
           value={value}
           onChange={(event) => setValue(event.target.value)}
         />
@@ -414,18 +416,17 @@ function TitleFormatRow({
             {unknown.map((name) => `{${name}}`).join(", ")}{" "}
             {unknown.length === 1 ? "is not a field" : "are not fields"} here.
           </span>
-        ) : value.trim() ? (
+        ) : (
           // A template is pure formatting, so an example renders it exactly —
           // there is no condition hiding behind it that a sample cannot stand
-          // in for.
+          // in for. Shown for the default too, so the row always says what it
+          // produces rather than only once you have typed something.
           <>
-            A row would read{" "}
+            Example:{" "}
             <span className="text-foreground">
-              {renderTitle(value, spec.example, "—")}
+              {renderTitle(value.trim() || spec.defaultTemplate, spec.example, "—")}
             </span>
           </>
-        ) : (
-          `Currently ${spec.fallbackDescription}.`
         )}
       </p>
     </div>

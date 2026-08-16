@@ -30,9 +30,12 @@ export interface TitleFormatSpec {
   key: string;
   label: string;
   tokens: TitleToken[];
-  // Reproduces exactly what the code did before formats existed, so an
-  // untouched destination is unchanged.
-  fallbackDescription: string;
+  // The built-in title, written as a template. Every default happens to be
+  // expressible in the same syntax people type, which makes it the honest
+  // placeholder: it says what the title is made of and teaches the syntax at
+  // the same time. Rendering still falls back to the code path rather than
+  // running this, so the two can never drift into disagreeing.
+  defaultTemplate: string;
   example: Record<string, string>;
 }
 
@@ -54,7 +57,7 @@ export const TITLE_FORMATS: TitleFormatSpec[] = [
       { name: "account", describes: "the account's name in Notion" },
       { name: "category", describes: "e.g. Coffee" },
     ],
-    fallbackDescription: "the merchant name",
+    defaultTemplate: "{merchant}",
     example: {
       merchant: "Blue Bottle Coffee",
       description: "SQ *BLUE BOTTLE COFFEE 123",
@@ -77,7 +80,7 @@ export const TITLE_FORMATS: TitleFormatSpec[] = [
       { name: "date", describes: "YYYY-MM-DD" },
       { name: "account", describes: "the account's name in Notion" },
     ],
-    fallbackDescription: "what Plaid called it, or its subtype",
+    defaultTemplate: "{name}",
     example: {
       name: "BUY CSBS",
       type: "buy",
@@ -97,7 +100,7 @@ export const TITLE_FORMATS: TitleFormatSpec[] = [
       { name: "quantity", describes: "units held" },
       { name: "account", describes: "the account's name in Notion" },
     ],
-    fallbackDescription: "the ticker, then Holding",
+    defaultTemplate: "{security} Holding",
     example: {
       security: "VTI",
       quantity: "31.4",
@@ -112,7 +115,7 @@ export const TITLE_FORMATS: TitleFormatSpec[] = [
       { name: "account", describes: "the account's name in Notion" },
       { name: "balance", describes: "the balance that day" },
     ],
-    fallbackDescription: "the date, then the account",
+    defaultTemplate: "{date} · {account}",
     example: {
       date: "2026-08-14",
       account: "Chase Checking *7449",
@@ -129,7 +132,7 @@ export const TITLE_FORMATS: TitleFormatSpec[] = [
       { name: "amount", describes: "the average, as shown in Notion" },
       { name: "account", describes: "the account's name in Notion" },
     ],
-    fallbackDescription: "the merchant name",
+    defaultTemplate: "{merchant}",
     example: {
       merchant: "Netflix",
       frequency: "Monthly",
