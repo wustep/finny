@@ -981,7 +981,7 @@ export const setTitleFormat = mutation({
     const badFilters = unknownFilters(template);
     if (badFilters.length > 0) {
       throw new Error(
-        `${badFilters.map((name) => `|${name}`).join(", ")} ${
+        `${badFilters.map((name) => `.${name}`).join(", ")} ${
           badFilters.length === 1 ? "is not a filter" : "are not filters"
         }`,
       );

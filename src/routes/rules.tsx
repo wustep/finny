@@ -325,9 +325,9 @@ function TitleFormats() {
       <CardHeader>
         <CardTitle>Titles</CardTitle>
         <CardDescription>
-          What each row is called in Notion. A saved title reaches a row the
-          next time it syncs — use Apply to history for the ones already
-          there.
+          What each row is called in Notion. A change here only affects rows
+          that sync from now on; to rename the rows already in Notion, use
+          Apply to history at the top of this page.
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-5">
@@ -358,7 +358,7 @@ function TitleFormatRow({
 
   const unknown = [
     ...unknownTokens(spec.key, value).map((name) => `{${name}}`),
-    ...unknownFilters(value).map((name) => `|${name}`),
+    ...unknownFilters(value).map((name) => `.${name}`),
   ];
   const dirty = value.trim() !== saved.trim();
 
@@ -414,14 +414,16 @@ function TitleFormatRow({
             {`{${token.name}}`}
           </button>
         ))}
-        <span className="text-xs text-muted-foreground">then optionally</span>
+        <span className="text-xs text-muted-foreground">
+          and, on the end of any of them
+        </span>
         {FILTERS.map((filter) => (
           <span
             key={filter.name}
             title={filter.describes}
             className="rounded border border-dashed px-1.5 py-0.5 font-mono text-xs text-muted-foreground"
           >
-            {`|${filter.name}`}
+            {`.${filter.name}`}
           </span>
         ))}
       </div>

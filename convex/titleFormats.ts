@@ -150,25 +150,27 @@ export const TITLE_FORMAT_BY_KEY: Record<string, TitleFormatSpec> =
 // used to smuggle a novel into every row.
 export const MAX_TEMPLATE_LENGTH = 200;
 
-// What a token can be put through on the way out: {amount|money},
-// {merchant|upper}, {amount|abs|money}.
+// What a token can be put through on the way out: {amount.money},
+// {merchant.upper}, {amount.abs.money}.
 //
-// Pipes rather than sigils ({$amount}) or prefixes (\upper{merchant}) for one
-// reason: they compose. "Absolute value, then as money" is two filters in the
-// order you read them, and adding a third later needs no new punctuation —
-// whereas a sigil per operation runs out of characters immediately and cannot
-// express a sequence at all. It is also the idiom everything from Jinja to
-// Liquid already uses, so it is one fewer thing to learn.
+// A dot rather than a pipe, and rather than a sigil like {$amount}, because
+// it reads as what it is — the lowercase version of merchant — instead of as
+// plumbing. It composes for free: "absolute value, then as money" is two in
+// the order you read them, and a third later needs no new punctuation, which
+// is the thing a sigil per operation cannot do.
 export const FILTERS: TitleToken[] = [
-  { name: "money", describes: "1,200.00 with the row's own currency symbol" },
-  { name: "abs", describes: "drops the minus sign" },
-  { name: "upper", describes: "UPPERCASE" },
-  { name: "lower", describes: "lowercase" },
+  {
+    name: "money",
+    describes: "1,200.00 with the row's own currency symbol — {amount.money}",
+  },
+  { name: "abs", describes: "drops the minus sign — {amount.abs}" },
+  { name: "upper", describes: "UPPERCASE — {merchant.upper}" },
+  { name: "lower", describes: "lowercase — {merchant.lower}" },
 ];
 
 const FILTER_NAMES = new Set(FILTERS.map((filter) => filter.name));
 
-const TOKEN = /\{([a-zA-Z]+)((?:\|[a-zA-Z]+)*)\}/g;
+const TOKEN = /\{([a-zA-Z]+)((?:\.[a-zA-Z]+)*)\}/g;
 
 // The token names a template uses, in the order they appear.
 export function tokensIn(template: string): string[] {
@@ -178,7 +180,7 @@ export function tokensIn(template: string): string[] {
 // The filter names a template uses, whether or not they exist.
 export function filtersIn(template: string): string[] {
   return [...template.matchAll(TOKEN)].flatMap((match) =>
-    match[2] ? match[2].split("|").filter(Boolean) : [],
+    match[2] ? match[2].split(".").filter(Boolean) : [],
   );
 }
 
@@ -190,7 +192,7 @@ export function unknownFilters(template: string): string[] {
 
 // Put one value through one filter. A filter that cannot apply to what it was
 // given passes it through rather than throwing: a title is not worth failing a
-// row over, and `{merchant|money}` is a mistake the write-time check catches
+// row over, and `{merchant.money}` is a mistake the write-time check catches
 // anyway.
 function applyFilter(
   value: string | number,
@@ -250,12 +252,12 @@ export function renderTitle(
     return fallback;
   }
   const rendered = template
-    .replace(TOKEN, (_match, name: string, pipes: string) => {
+    .replace(TOKEN, (_match, name: string, suffix: string) => {
       const value = values[name];
       if (value === null || value === undefined) {
         return "";
       }
-      const filters = pipes ? pipes.split("|").filter(Boolean) : [];
+      const filters = suffix ? suffix.split(".").filter(Boolean) : [];
       return String(
         filters.reduce<string | number>(
           (carried, filter) => applyFilter(carried, filter, currency),

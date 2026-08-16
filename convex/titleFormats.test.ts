@@ -122,25 +122,25 @@ describe("filters", () => {
   const values = { amount: -1200.5, merchant: "Blue Bottle Coffee", quantity: 12 };
 
   test("money puts the symbol in the right place", () => {
-    expect(renderTitle("{amount|money}", values, "x")).toBe("-$1,200.50");
-    expect(renderTitle("{quantity|money}", values, "x")).toBe("$12.00");
+    expect(renderTitle("{amount.money}", values, "x")).toBe("-$1,200.50");
+    expect(renderTitle("{quantity.money}", values, "x")).toBe("$12.00");
   });
 
   test("money uses the row's own currency", () => {
     // The same mistake as a dollar-formatted column: a Canadian account's
     // numbers are not US dollars.
-    expect(renderTitle("{amount|money}", values, "x", "CAD")).toBe("-CA$1,200.50");
+    expect(renderTitle("{amount.money}", values, "x", "CAD")).toBe("-CA$1,200.50");
   });
 
   test("filters compose left to right", () => {
-    expect(renderTitle("{amount|abs|money}", values, "x")).toBe("$1,200.50");
+    expect(renderTitle("{amount.abs.money}", values, "x")).toBe("$1,200.50");
   });
 
   test("case filters do what they say", () => {
-    expect(renderTitle("{merchant|upper}", values, "x")).toBe(
+    expect(renderTitle("{merchant.upper}", values, "x")).toBe(
       "BLUE BOTTLE COFFEE",
     );
-    expect(renderTitle("{merchant|lower}", values, "x")).toBe(
+    expect(renderTitle("{merchant.lower}", values, "x")).toBe(
       "blue bottle coffee",
     );
   });
@@ -148,33 +148,33 @@ describe("filters", () => {
   test("a filter that cannot apply passes the value through", () => {
     // Writes catch this; at render time a title is not worth failing a row
     // over.
-    expect(renderTitle("{merchant|money}", values, "x")).toBe(
+    expect(renderTitle("{merchant.money}", values, "x")).toBe(
       "Blue Bottle Coffee",
     );
-    expect(renderTitle("{merchant|nope}", values, "x")).toBe(
+    expect(renderTitle("{merchant.nope}", values, "x")).toBe(
       "Blue Bottle Coffee",
     );
   });
 
   test("a filtered token that has no value still collapses", () => {
-    expect(renderTitle("[{missing|money}] {merchant}", values, "x")).toBe(
+    expect(renderTitle("[{missing.money}] {merchant}", values, "x")).toBe(
       "Blue Bottle Coffee",
     );
   });
 
   test("filters are read out of a template, known or not", () => {
-    expect(filtersIn("{amount|abs|money} {merchant|upper}")).toEqual([
+    expect(filtersIn("{amount.abs.money} {merchant.upper}")).toEqual([
       "abs",
       "money",
       "upper",
     ]);
-    expect(unknownFilters("{amount|abs|nope}")).toEqual(["nope"]);
-    expect(unknownFilters("{amount|abs|money}")).toEqual([]);
+    expect(unknownFilters("{amount.abs.nope}")).toEqual(["nope"]);
+    expect(unknownFilters("{amount.abs.money}")).toEqual([]);
   });
 
   test("a token with filters is still the same token", () => {
-    expect(tokensIn("{amount|money}")).toEqual(["amount"]);
-    expect(unknownTokens("transactions", "{amount|money}")).toEqual([]);
-    expect(unknownTokens("transactions", "{ticker|money}")).toEqual(["ticker"]);
+    expect(tokensIn("{amount.money}")).toEqual(["amount"]);
+    expect(unknownTokens("transactions", "{amount.money}")).toEqual([]);
+    expect(unknownTokens("transactions", "{ticker.money}")).toEqual(["ticker"]);
   });
 });
