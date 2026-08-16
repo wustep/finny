@@ -64,7 +64,15 @@ import {
 } from "./syncRun";
 import { categoryResolver, upsertTransaction } from "./syncTransactionWriter";
 
-const TXN_BATCH_SIZE = 100;
+// Deliberately small, and the reason is Notion rather than Plaid.
+//
+// A page is fetched and then written one row at a time at Notion's three a
+// second, and Plaid's pagination is open for all of it. A hundred rows is
+// half a minute of open window on a busy Item, which is how
+// TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION goes from unlucky to routine.
+// Twenty-five is about eight seconds. Plaid calls are cheap; the window is
+// not.
+const TXN_BATCH_SIZE = 25;
 const INV_BATCH_SIZE = 100;
 
 // How many runs may fail on the same transactions/sync page before its
