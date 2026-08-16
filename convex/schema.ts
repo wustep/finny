@@ -133,6 +133,13 @@ export default defineSchema({
     // once and then reused as the page icon for this connection and every
     // account under it.
     notionIconFileUploadId: v.optional(v.string()),
+    // An icon set by hand, for the institutions Plaid has no logo for — it
+    // returns one for most and nothing at all for the rest, and a bank with a
+    // blank square next to it looks broken rather than undocumented. Takes
+    // precedence over the uploaded logo, since it only exists where someone
+    // chose it. Notion renders an external URL directly, so unlike Plaid's
+    // base64 there is nothing to upload.
+    institutionIconUrl: v.optional(v.string()),
     status: v.union(
       v.literal("active"),
       v.literal("error"),

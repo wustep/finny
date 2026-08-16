@@ -11,6 +11,7 @@ import { env, type ActionCtx } from "./_generated/server";
 import {
   accountTitle,
   createComment,
+  externalIcon,
   fileUploadIcon,
   uploadDataUri,
 } from "./notionApi";
@@ -233,6 +234,11 @@ export function institutionIcon(
 ): () => Promise<NotionIcon | undefined> {
   let pending: Promise<NotionIcon | undefined> | undefined;
   const resolve = async () => {
+    // Chosen by hand beats found by Plaid: it only exists because someone set
+    // it, which is a stronger signal than anything automatic.
+    if (connection.institutionIconUrl) {
+      return externalIcon(connection.institutionIconUrl);
+    }
     if (connection.notionIconFileUploadId) {
       return fileUploadIcon(connection.notionIconFileUploadId);
     }

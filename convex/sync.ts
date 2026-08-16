@@ -35,7 +35,15 @@ import type { CreditCardLiability, Transaction } from "plaid";
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { action, internalAction, type ActionCtx } from "./_generated/server";
-import { P, archivePage, accountTitle, todayUTC, updatePage } from "./notionApi";
+import {
+  P,
+  archivePage,
+  accountTitle,
+  externalIcon,
+  setPageIcon,
+  todayUTC,
+  updatePage,
+} from "./notionApi";
 import { NOTION_SCHEMA_VERSION } from "./notionSchemas";
 import { plaidClient, plaidErrorInfo } from "./plaidClient";
 import {
@@ -342,6 +350,75 @@ export const pushConnectionStatusToNotion = internalAction({
     } catch (error) {
       console.error("failed to write connection status to Notion", error);
     }
+  },
+});
+
+// Give a connection an icon by hand, and put it on the rows it already has.
+//
+// Plaid returns a logo for most institutions and nothing for the rest, and
+// there is no fixing that from here — so this takes a URL, records it, and
+// applies it immediately to the Bank Connection row and every Account row
+// under it rather than waiting for a sync to notice.
+//
+// The URL is handed to Notion as an external icon, so Notion fetches and
+// renders it: no upload, and nothing of the image is stored here.
+//
+//   npx convex run sync:setConnectionIcon '{"institutionName":"Chase","iconUrl":"https://…"}'
+export const setConnectionIcon = internalAction({
+  args: {
+    // By name, because this is run by a person who is looking at the app, not
+    // at a table of ids.
+    institutionName: v.string(),
+    iconUrl: v.string(),
+  },
+  handler: async (ctx, args): Promise<{ pages: number }> => {
+    const connection = await ctx.runQuery(
+      internal.connections.getByInstitutionInternal,
+      { institutionName: args.institutionName },
+    );
+    if (!connection) {
+      throw new Error(`No connection called "${args.institutionName}"`);
+    }
+    await ctx.runMutation(internal.connections.setInstitutionIconUrl, {
+      connectionId: connection._id,
+      iconUrl: args.iconUrl,
+    });
+
+    const notion = await ctx.runQuery(internal.notion.getConnectionInternal, {
+      userId: connection.userId,
+    });
+    if (!notion?.databases) {
+      return { pages: 0 };
+    }
+    const accounts = await ctx.runQuery(internal.connections.listAccountsInternal, {
+      connectionId: connection._id,
+    });
+    const icon = externalIcon(args.iconUrl);
+
+    // The connection's own row, then each of its accounts. Every one of these
+    // already has a page or it has never synced, in which case the next sync
+    // creates it with the icon.
+    const targets = await ctx.runQuery(internal.syncData.getMapEntries, {
+      userId: connection.userId,
+      kind: "bankConnection",
+      providerIds: [connection.plaidItemId],
+    });
+    const accountPages = await ctx.runQuery(internal.syncData.getMapEntries, {
+      userId: connection.userId,
+      kind: "account",
+      providerIds: accounts.map((account) => account.plaidAccountId),
+    });
+
+    let pages = 0;
+    for (const pageId of [
+      ...Object.values(targets),
+      ...Object.values(accountPages),
+    ]) {
+      await setPageIcon(notion.accessToken, pageId, icon);
+      pages++;
+    }
+    console.log(`icon set on ${pages} page(s) for ${args.institutionName}`);
+    return { pages };
   },
 });
 

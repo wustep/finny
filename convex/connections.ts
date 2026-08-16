@@ -269,6 +269,45 @@ export const getInternal = internalQuery({
   },
 });
 
+// By display name, for the hand-run fixers. Institution names are not unique
+// by construction, so this takes the first and says so if there are more.
+export const getByInstitutionInternal = internalQuery({
+  args: { institutionName: v.string() },
+  handler: async (ctx, args) => {
+    const connections = await ctx.db.query("bankConnections").take(200);
+    const matches = connections.filter(
+      (connection) => connection.institutionName === args.institutionName,
+    );
+    if (matches.length > 1) {
+      console.warn(
+        `${matches.length} connections are called "${args.institutionName}"; using the first`,
+      );
+    }
+    return matches[0] ?? null;
+  },
+});
+
+export const listAccountsInternal = internalQuery({
+  args: { connectionId: v.id("bankConnections") },
+  handler: async (ctx, args) => {
+    return await ctx.db
+      .query("accounts")
+      .withIndex("by_connection", (q) => q.eq("connectionId", args.connectionId))
+      .collect();
+  },
+});
+
+export const setInstitutionIconUrl = internalMutation({
+  args: { connectionId: v.id("bankConnections"), iconUrl: v.string() },
+  handler: async (ctx, args) => {
+    await ctx.db.patch(args.connectionId, {
+      institutionIconUrl: args.iconUrl,
+      // The uploaded logo, if there ever was one, is no longer the answer.
+      notionIconFileUploadId: undefined,
+    });
+  },
+});
+
 export const getByItemInternal = internalQuery({
   args: { plaidItemId: v.string() },
   handler: async (ctx, args) => {

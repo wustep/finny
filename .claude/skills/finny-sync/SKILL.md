@@ -328,6 +328,19 @@ Direction carrying what the sign used to imply.
 `modules.recurring` is optional in the schema because every connection made
 before the module existed has a row without it; absent reads as off.
 
+## 6f. Icons Plaid does not have
+
+Plaid returns an institution logo for most banks and nothing for the rest, and
+a blank square next to a bank reads as broken rather than as undocumented.
+`sync.setConnectionIcon` takes an institution name and an image URL, records
+it as `bankConnections.institutionIconUrl`, and applies it straight away to
+the Bank Connection row and every Account row under it. A hand-set icon beats
+the uploaded Plaid logo in `institutionIcon`, since it only exists where
+someone chose it. Notion is given an external URL and fetches it itself, so
+there is nothing to upload and nothing of the image is stored here.
+
+  npx convex run sync:setConnectionIcon '{"institutionName":"Chase","iconUrl":"…"}'
+
 ## 7. Docs
 
 PLAN.md's Notion property tables are stale — `convex/notionSchemas.ts` is
