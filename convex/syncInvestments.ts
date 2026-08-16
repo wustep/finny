@@ -387,6 +387,7 @@ export async function syncHoldings(
             account: input.accountNames[holding.account_id],
           },
           `${symbol} Holding`,
+          holding.iso_currency_code ?? undefined,
         ),
       ),
       Account: P.relation(accountPage),

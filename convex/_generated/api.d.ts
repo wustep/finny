@@ -28,6 +28,7 @@ import type * as syncInvestments from "../syncInvestments.js";
 import type * as syncMappers from "../syncMappers.js";
 import type * as syncPages from "../syncPages.js";
 import type * as syncRun from "../syncRun.js";
+import type * as syncTestCtx from "../syncTestCtx.js";
 import type * as syncTransactionWriter from "../syncTransactionWriter.js";
 import type * as titleFormats from "../titleFormats.js";
 import type * as users from "../users.js";
@@ -59,6 +60,7 @@ declare const fullApi: ApiFromModules<{
   syncMappers: typeof syncMappers;
   syncPages: typeof syncPages;
   syncRun: typeof syncRun;
+  syncTestCtx: typeof syncTestCtx;
   syncTransactionWriter: typeof syncTransactionWriter;
   titleFormats: typeof titleFormats;
   users: typeof users;

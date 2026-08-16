@@ -210,6 +210,12 @@ an untouched destination is unchanged and an over-ambitious format never
 yields "Untitled". Tokens are validated on write against the database's own
 list.
 
+Tokens can be piped through filters — `{amount|abs|money}`, `{merchant|upper}`
+— applied left to right. `money` uses the row's own currency, threaded from
+Plaid rather than assumed, for the same reason the Currency column exists. A
+filter that cannot apply passes the value through instead of throwing: writes
+already reject an unknown one, and a title is not worth failing a row over.
+
 `{account}` refers to the Notion title of the account row, so it is derived
 through `syncRun.accountTitles` rather than read back — a stage that never
 touched the Accounts database still knows it.

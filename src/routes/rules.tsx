@@ -31,8 +31,10 @@ import {
   type TextOp,
 } from "../../convex/rulesEngine";
 import {
+  FILTERS,
   TITLE_FORMATS,
   renderTitle,
+  unknownFilters,
   unknownTokens,
   type TitleFormatSpec,
 } from "../../convex/titleFormats";
@@ -354,7 +356,10 @@ function TitleFormatRow({
 
   useEffect(() => setValue(saved), [saved]);
 
-  const unknown = unknownTokens(spec.key, value);
+  const unknown = [
+    ...unknownTokens(spec.key, value).map((name) => `{${name}}`),
+    ...unknownFilters(value).map((name) => `|${name}`),
+  ];
   const dirty = value.trim() !== saved.trim();
 
   const handleSave = () => {
@@ -397,7 +402,7 @@ function TitleFormatRow({
           </Button>
         ) : null}
       </div>
-      <div className="flex flex-wrap gap-1.5">
+      <div className="flex flex-wrap items-center gap-1.5">
         {spec.tokens.map((token) => (
           <button
             key={token.name}
@@ -409,12 +414,23 @@ function TitleFormatRow({
             {`{${token.name}}`}
           </button>
         ))}
+        <span className="text-xs text-muted-foreground">then optionally</span>
+        {FILTERS.map((filter) => (
+          <span
+            key={filter.name}
+            title={filter.describes}
+            className="rounded border border-dashed px-1.5 py-0.5 font-mono text-xs text-muted-foreground"
+          >
+            {`|${filter.name}`}
+          </span>
+        ))}
       </div>
       <p className="text-xs text-muted-foreground">
         {unknown.length > 0 ? (
           <span className="text-destructive">
-            {unknown.map((name) => `{${name}}`).join(", ")}{" "}
-            {unknown.length === 1 ? "is not a field" : "are not fields"} here.
+            {unknown.join(", ")}{" "}
+            {unknown.length === 1 ? "is not available" : "are not available"}{" "}
+            here.
           </span>
         ) : (
           // A template is pure formatting, so an example renders it exactly —

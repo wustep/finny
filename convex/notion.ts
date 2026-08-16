@@ -26,6 +26,7 @@ import { allowedOrigins } from "./origins";
 import {
   MAX_TEMPLATE_LENGTH,
   TITLE_FORMAT_BY_KEY,
+  unknownFilters,
   unknownTokens,
 } from "./titleFormats";
 
@@ -975,6 +976,14 @@ export const setTitleFormat = mutation({
         `${unknown.map((name) => `{${name}}`).join(", ")} ${
           unknown.length === 1 ? "is not a field" : "are not fields"
         } here`,
+      );
+    }
+    const badFilters = unknownFilters(template);
+    if (badFilters.length > 0) {
+      throw new Error(
+        `${badFilters.map((name) => `|${name}`).join(", ")} ${
+          badFilters.length === 1 ? "is not a filter" : "are not filters"
+        }`,
       );
     }
     const connection = await ctx.db

@@ -497,6 +497,7 @@ export const runForConnection = internalAction({
                     balance: balanceForNotion(account),
                   },
                   `${day} · ${accountName}`,
+                  account.balances.iso_currency_code ?? undefined,
                 ),
               ),
               Account: P.relation(pageId),

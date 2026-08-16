@@ -150,11 +150,73 @@ export const TITLE_FORMAT_BY_KEY: Record<string, TitleFormatSpec> =
 // used to smuggle a novel into every row.
 export const MAX_TEMPLATE_LENGTH = 200;
 
-const TOKEN = /\{([a-zA-Z]+)\}/g;
+// What a token can be put through on the way out: {amount|money},
+// {merchant|upper}, {amount|abs|money}.
+//
+// Pipes rather than sigils ({$amount}) or prefixes (\upper{merchant}) for one
+// reason: they compose. "Absolute value, then as money" is two filters in the
+// order you read them, and adding a third later needs no new punctuation —
+// whereas a sigil per operation runs out of characters immediately and cannot
+// express a sequence at all. It is also the idiom everything from Jinja to
+// Liquid already uses, so it is one fewer thing to learn.
+export const FILTERS: TitleToken[] = [
+  { name: "money", describes: "1,200.00 with the row's own currency symbol" },
+  { name: "abs", describes: "drops the minus sign" },
+  { name: "upper", describes: "UPPERCASE" },
+  { name: "lower", describes: "lowercase" },
+];
+
+const FILTER_NAMES = new Set(FILTERS.map((filter) => filter.name));
+
+const TOKEN = /\{([a-zA-Z]+)((?:\|[a-zA-Z]+)*)\}/g;
 
 // The token names a template uses, in the order they appear.
 export function tokensIn(template: string): string[] {
   return [...template.matchAll(TOKEN)].map((match) => match[1]);
+}
+
+// The filter names a template uses, whether or not they exist.
+export function filtersIn(template: string): string[] {
+  return [...template.matchAll(TOKEN)].flatMap((match) =>
+    match[2] ? match[2].split("|").filter(Boolean) : [],
+  );
+}
+
+export function unknownFilters(template: string): string[] {
+  return [...new Set(filtersIn(template))].filter(
+    (name) => !FILTER_NAMES.has(name),
+  );
+}
+
+// Put one value through one filter. A filter that cannot apply to what it was
+// given passes it through rather than throwing: a title is not worth failing a
+// row over, and `{merchant|money}` is a mistake the write-time check catches
+// anyway.
+function applyFilter(
+  value: string | number,
+  filter: string,
+  currency: string,
+): string | number {
+  switch (filter) {
+    case "abs":
+      return typeof value === "number" ? Math.abs(value) : value;
+    case "money": {
+      const amount = typeof value === "number" ? value : Number(value);
+      if (!Number.isFinite(amount)) {
+        return value;
+      }
+      return new Intl.NumberFormat("en-US", {
+        style: "currency",
+        currency,
+      }).format(amount);
+    }
+    case "upper":
+      return String(value).toUpperCase();
+    case "lower":
+      return String(value).toLowerCase();
+    default:
+      return value;
+  }
 }
 
 // Any token the given database does not offer. A template that names one is
@@ -180,14 +242,26 @@ export function renderTitle(
   template: string | undefined,
   values: Record<string, string | number | null | undefined>,
   fallback: string,
+  // The row's own currency, so {amount|money} on a Canadian account says
+  // CA$ rather than assuming everyone banks in dollars.
+  currency = "USD",
 ): string {
   if (!template?.trim()) {
     return fallback;
   }
   const rendered = template
-    .replace(TOKEN, (_match, name: string) => {
+    .replace(TOKEN, (_match, name: string, pipes: string) => {
       const value = values[name];
-      return value === null || value === undefined ? "" : String(value);
+      if (value === null || value === undefined) {
+        return "";
+      }
+      const filters = pipes ? pipes.split("|").filter(Boolean) : [];
+      return String(
+        filters.reduce<string | number>(
+          (carried, filter) => applyFilter(carried, filter, currency),
+          value,
+        ),
+      );
     })
     // Tokens that rendered empty leave gaps, and a gap between two spaces is
     // not something anyone asked for.
