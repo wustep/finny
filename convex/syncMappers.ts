@@ -11,6 +11,7 @@
 import type {
   AccountBase,
   CreditCardLiability,
+  Holding,
   InvestmentTransaction,
   Transaction,
   TransactionStream,
@@ -299,6 +300,45 @@ export function investmentTransactionProperties(
     Date: P.date(txn.date),
     "Related Account": P.relation(accountPageId),
     "Related Security": P.relation(securityPageId),
+  };
+}
+
+// One position in one account. Market Value is Plaid's `institution_value`,
+// not a quantity × price we compute — the institution has already done that
+// sum, including cash and fractional shares, and it is the number a formula
+// in Notion would have been trying to reconstruct.
+export function holdingProperties(
+  holding: Holding,
+  accountPageId: string,
+  securityPageId: string | undefined,
+  symbol: string,
+  formats?: TitleFormats,
+  named?: { account?: string },
+  lastUpdate: string = new Date().toISOString(),
+) {
+  return {
+    Summary: P.title(
+      renderTitle(
+        formats?.holdings,
+        {
+          security: symbol,
+          quantity: holding.quantity,
+          value: holding.institution_value,
+          price: holding.institution_price,
+          account: named?.account,
+        },
+        `${symbol} Holding`,
+        holding.iso_currency_code ?? undefined,
+      ),
+    ),
+    Account: P.relation(accountPageId),
+    Security: P.relation(securityPageId),
+    Quantity: P.number(holding.quantity),
+    "Cost Basis": P.number(holding.cost_basis),
+    "Market Value": P.number(holding.institution_value),
+    "Institution Price": P.number(holding.institution_price),
+    "Institution Price As Of": P.date(holding.institution_price_as_of),
+    "Last Update": P.date(lastUpdate),
   };
 }
 

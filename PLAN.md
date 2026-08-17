@@ -26,7 +26,7 @@ Baseline verified from a live reference Notion page (8 full-page databases, one 
 
 **Approved deviations from the baseline (2026-08-12):**
 - *Balance History*: title is `YYYY-MM-DD · <Account Name>` (keyed on account+date); the UUID title property is dropped.
-- *Holdings*: add **Cost Basis** ($). The baseline's "Formula" (market value) is not created — Notion rejects a rollup pointing at a relation made in the same request, so the Security Price rollup and the `Quantity * price` formula are left for the user to add by hand.
+- *Holdings*: add **Cost Basis** ($), **Market Value** ($ from Plaid's `institution_value`), and **Institution Price**. The baseline's "Formula" (a Quantity × Security-price rollup) is not created — Notion rejects a rollup pointing at a relation made in the same request.
 - *Transactions*: title is the **cleaned merchant name** (fallback: Plaid's `name`); raw bank string goes to a new **Original Description** text property; "Is Pending?" renamed **Pending**.
 - *Accounts*: add credit liability fields — **Next Payment Due** (date), **Minimum Payment** ($), **Last Statement Balance** ($), **APR** (%); row icon = institution logo.
 - *Bank Connections*: add **Status** select (Active / Error / Pending expiration); row icon = institution logo.

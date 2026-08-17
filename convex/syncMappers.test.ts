@@ -11,6 +11,7 @@ import type {
 import { describe, expect, it } from "vitest";
 import {
   accountProperties,
+  holdingProperties,
   recurringStreamProperties,
   balanceForNotion,
   investmentTransactionProperties,
@@ -277,6 +278,70 @@ describe("currency", () => {
     );
   });
 
+});
+
+describe("holdingProperties", () => {
+  const holding = {
+    account_id: "acc_1",
+    security_id: "sec_1",
+    quantity: 31.4,
+    cost_basis: 6200,
+    institution_value: 7842.16,
+    institution_price: 249.75,
+    institution_price_as_of: "2026-08-14",
+    iso_currency_code: "USD",
+    unofficial_currency_code: null,
+  } as any;
+
+  it("writes Plaid's institution_value as Market Value, not a recomputed product", () => {
+    // The institution has already done quantity × price, including cash and
+    // fractional shares. Re-multiplying here would only be able to disagree.
+    const props = holdingProperties(
+      holding,
+      "page-a",
+      "page-s",
+      "VTI",
+      undefined,
+      { account: "Fidelity *5555" },
+      "2026-08-17T00:00:00.000Z",
+    );
+    expect(props["Market Value"]).toEqual({ number: 7842.16 });
+    expect(props["Institution Price"]).toEqual({ number: 249.75 });
+    expect(props["Institution Price As Of"]).toEqual({
+      date: { start: "2026-08-14" },
+    });
+    expect(props["Cost Basis"]).toEqual({ number: 6200 });
+    expect(props.Quantity).toEqual({ number: 31.4 });
+  });
+
+  it("leaves market value empty when Plaid has none, rather than inventing one", () => {
+    const props = holdingProperties(
+      { ...holding, institution_value: null, institution_price: null },
+      "page-a",
+      "page-s",
+      "SPAXX",
+      undefined,
+      undefined,
+      "2026-08-17T00:00:00.000Z",
+    );
+    expect(props["Market Value"]).toEqual({ number: null });
+    expect(props["Institution Price"]).toEqual({ number: null });
+  });
+
+  it("still titles a holding from the ticker when no format is set", () => {
+    const props = holdingProperties(
+      holding,
+      "page-a",
+      "page-s",
+      "VTI",
+      undefined,
+      undefined,
+      "2026-08-17T00:00:00.000Z",
+    );
+    expect(props.Summary).toMatchObject({
+      title: [{ text: { content: "VTI Holding" } }],
+    });
+  });
 });
 
 describe("recurringStreamProperties", () => {

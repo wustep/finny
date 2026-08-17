@@ -98,12 +98,16 @@ export const TITLE_FORMATS: TitleFormatSpec[] = [
     tokens: [
       { name: "security", describes: "The ticker, falling back to the security's name." },
       { name: "quantity", describes: "How many units you hold." },
+      { name: "value", describes: "The market value, as the institution reports it." },
+      { name: "price", describes: "The institution's price per unit." },
       { name: "account", describes: "The account's name, as it appears in Notion." },
     ],
     defaultTemplate: "{security} Holding",
     example: {
       security: "VTI",
       quantity: "31.4",
+      value: "7842.16",
+      price: "249.75",
       account: "Fidelity Brokerage *5555",
     },
   },
