@@ -26,9 +26,23 @@ const navItems = [
 
 function NotionGlyph({ className }: { className?: string }) {
   return (
-    <span className={className} aria-hidden>
+    <span
+      className={`flex items-center justify-center text-[11px] font-semibold ${className ?? ""}`}
+      aria-hidden
+    >
       N
     </span>
+  );
+}
+
+function SkipLink() {
+  return (
+    <a
+      href="#main"
+      className="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 focus:z-50 focus:rounded-md focus:bg-background focus:px-3 focus:py-2 focus:shadow"
+    >
+      Skip to content
+    </a>
   );
 }
 
@@ -50,11 +64,16 @@ export function PublicShell({ children }: { children: ReactNode }) {
   }
   return (
     <div className="flex min-h-svh flex-col">
+      <SkipLink />
       <header className="sticky top-0 z-10 border-b bg-background/95 backdrop-blur">
-        <div className="mx-auto flex h-14 w-full max-w-5xl items-center px-4">
-          <Link to="/" className="flex items-center gap-2 font-semibold">
+        <div className="mx-auto flex h-14 w-full max-w-5xl items-center px-3 sm:px-4">
+          <Link
+            to="/"
+            className="flex items-center gap-2 font-semibold"
+            aria-label="Finny"
+          >
             <AppIcon className="size-6 rounded-md" />
-            Finny
+            <span className="hidden sm:inline">Finny</span>
           </Link>
           <div className="ml-auto flex items-center gap-2">
             {viewer === null && unlockedBefore ? (
@@ -66,7 +85,10 @@ export function PublicShell({ children }: { children: ReactNode }) {
           </div>
         </div>
       </header>
-      <main className="mx-auto w-full max-w-5xl flex-1 px-4 py-8">
+      <main
+        id="main"
+        className="mx-auto w-full max-w-5xl flex-1 px-3 py-8 sm:px-4"
+      >
         {children}
       </main>
     </div>
@@ -89,25 +111,32 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   return (
     <div className="flex min-h-svh flex-col">
+      <SkipLink />
       <header className="sticky top-0 z-10 border-b bg-background/95 backdrop-blur">
-        <div className="mx-auto flex h-14 w-full max-w-5xl items-center gap-6 px-4">
-          <Link to="/" className="flex items-center gap-2 font-semibold">
+        <div className="mx-auto flex h-14 w-full max-w-5xl items-center gap-2 px-3 sm:gap-6 sm:px-4">
+          <Link
+            to="/"
+            className="flex items-center gap-2 font-semibold"
+            aria-label="Finny"
+          >
             <AppIcon className="size-6 rounded-md" />
-            Finny
+            <span className="hidden sm:inline">Finny</span>
           </Link>
-          <nav className="flex items-center gap-1 text-sm">
+          <nav className="flex items-center gap-0.5 text-sm">
             {navItems.map((item) => (
               <Link
                 key={item.to}
                 to={item.to}
                 activeOptions={{ exact: item.exact }}
-                className="rounded-md px-3 py-1.5 text-muted-foreground transition-colors hover:text-foreground [&.active]:bg-muted [&.active]:text-foreground"
+                aria-label={item.label}
+                className="relative flex items-center gap-1.5 rounded-md px-2 py-1.5 text-muted-foreground transition-colors hover:text-foreground sm:px-3 [&.active]:bg-muted [&.active]:text-foreground"
               >
-                {item.label}
+                <item.icon className="size-4" />
+                <span className="hidden sm:inline">{item.label}</span>
                 {item.to === "/notion" && notionNeedsSetup ? (
                   <span
                     aria-label="Notion setup unfinished"
-                    className="ml-1.5 inline-block size-1.5 rounded-full bg-primary align-middle"
+                    className="absolute top-1.5 right-1.5 size-1.5 rounded-full bg-primary sm:static sm:ml-0.5"
                   />
                 ) : null}
               </Link>
@@ -117,7 +146,12 @@ export function AppShell({ children }: { children: ReactNode }) {
             <ThemeToggle />
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button variant="ghost" size="icon" className="rounded-full">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="rounded-full"
+                  aria-label="Account menu"
+                >
                   {viewer?.image ? (
                     <img
                       src={viewer.image}
@@ -147,7 +181,10 @@ export function AppShell({ children }: { children: ReactNode }) {
           </div>
         </div>
       </header>
-      <main className="mx-auto w-full max-w-5xl flex-1 px-4 py-8">
+      <main
+        id="main"
+        className="mx-auto w-full max-w-5xl flex-1 px-3 py-8 sm:px-4"
+      >
         {children}
       </main>
     </div>

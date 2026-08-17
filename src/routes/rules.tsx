@@ -206,7 +206,7 @@ function RulesPage() {
           database. A page called "Rules" with a "Titles" card inside it
           implied a relationship that is not there. */}
       <section className="flex flex-col gap-4">
-        <div className="flex items-start justify-between gap-4">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div>
             <h2 className="flex items-center gap-1.5 text-lg font-semibold tracking-tight">
               Rules
@@ -228,7 +228,7 @@ function RulesPage() {
               Change particular transactions as they sync.
             </p>
           </div>
-          <div className="flex shrink-0 items-center gap-2">
+          <div className="flex shrink-0 flex-wrap items-center gap-2">
             {rules && rules.length > 0 ? <ApplyToHistory /> : null}
             <Button onClick={() => setEditing("new")}>
               <Plus /> New rule

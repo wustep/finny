@@ -115,14 +115,18 @@ function AccountsPage() {
 
   return (
     <div className="mx-auto flex w-full max-w-3xl flex-col gap-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Accounts</h1>
           <p className="text-sm text-muted-foreground">
             Bank connections synced to Notion
           </p>
         </div>
-        <Button onClick={() => startLink()} disabled={busy}>
+        <Button
+          onClick={() => startLink()}
+          disabled={busy}
+          className="w-fit"
+        >
           <Plus /> Add connection
         </Button>
       </div>
@@ -375,7 +379,7 @@ function SyncRunRow({ run }: { run: RunData }) {
           : "flex flex-col gap-1.5 px-3 py-2 text-sm"
       }
     >
-      <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
         <Badge
           variant={
             failed
@@ -387,7 +391,7 @@ function SyncRunRow({ run }: { run: RunData }) {
         >
           {run.status}
         </Badge>
-        <span className="flex-1">
+        <span className="min-w-0 flex-1">
           {run.institutionName}
           <span className="text-muted-foreground"> · {run.trigger}</span>
           {summary ? (
@@ -612,20 +616,22 @@ function ConnectionCard({
   return (
     <Card>
       <CardHeader>
-        <div className="flex items-center gap-3">
+        <div className="flex items-start gap-3 sm:items-center">
           {connection.institutionLogo ? (
             <img
               src={connection.institutionLogo}
               alt=""
-              className="size-8 rounded"
+              className="size-8 shrink-0 rounded"
             />
           ) : (
-            <div className="flex size-8 items-center justify-center rounded bg-muted">
+            <div className="flex size-8 shrink-0 items-center justify-center rounded bg-muted">
               <Landmark className="size-4 text-muted-foreground" />
             </div>
           )}
-          <div className="flex-1">
-            <CardTitle>{connection.institutionName}</CardTitle>
+          <div className="min-w-0 flex-1">
+            <CardTitle className="truncate">
+              {connection.institutionName}
+            </CardTitle>
             {connection.lastSyncedAt ? (
               <CardDescription>
                 Last synced{" "}
@@ -635,34 +641,40 @@ function ConnectionCard({
               <CardDescription>Not synced yet</CardDescription>
             )}
           </div>
-          <Badge
-            variant={
-              connection.status === "active" ? "secondary" : "destructive"
-            }
-          >
-            {statusLabels[connection.status]}
-          </Badge>
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="icon">
-                <MoreHorizontal />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem disabled={syncing} onClick={handleSync}>
-                <RefreshCw /> Sync now
-              </DropdownMenuItem>
-              <DropdownMenuItem disabled={reconnecting} onClick={onReconnect}>
-                <Wrench /> Reconnect
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                variant="destructive"
-                onClick={() => setConfirmRemove(true)}
-              >
-                <Trash2 /> Remove…
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+          <div className="flex shrink-0 items-center gap-1">
+            <Badge
+              variant={
+                connection.status === "active" ? "secondary" : "destructive"
+              }
+            >
+              {statusLabels[connection.status]}
+            </Badge>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  aria-label={`More for ${connection.institutionName}`}
+                >
+                  <MoreHorizontal />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem disabled={syncing} onClick={handleSync}>
+                  <RefreshCw /> Sync now
+                </DropdownMenuItem>
+                <DropdownMenuItem disabled={reconnecting} onClick={onReconnect}>
+                  <Wrench /> Reconnect
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  variant="destructive"
+                  onClick={() => setConfirmRemove(true)}
+                >
+                  <Trash2 /> Remove…
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
         </div>
       </CardHeader>
       <CardContent>
