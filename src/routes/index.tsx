@@ -2,7 +2,6 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useAction, useMutation, useQuery } from "convex/react";
 import {
   ArrowRight,
-  ChevronRight,
   CircleCheck,
   Landmark,
   MoreHorizontal,
@@ -15,9 +14,11 @@ import {
 } from "lucide-react";
 import { useEffect, useState, type FormEvent } from "react";
 import { toast } from "@/lib/notify";
+import { formatDuration, triggerLabels } from "@/lib/sync-labels";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 import { usePlaidConnect } from "@/components/plaid-link";
+import { SyncRunRow } from "@/components/sync-run-row";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -65,6 +66,7 @@ const errorExplanations: Record<string, string> = {
   INVALID_UPDATED_USERNAME: "Your username at the bank changed.",
   ITEM_LOCKED: "Your bank has locked the account. Sign in at your bank to unlock it, then reconnect here.",
   USER_PERMISSION_REVOKED: "Access to this bank was revoked, so it stopped sharing data.",
+  ACCESS_NOT_GRANTED: "You didn't grant Finny access to this bank.",
   USER_INPUT_TIMEOUT: "The last reconnect timed out before it finished.",
   ITEM_NOT_SUPPORTED: "Your bank no longer supports this kind of connection.",
   INSUFFICIENT_CREDENTIALS: "Your bank is asking for more than the saved credentials.",
@@ -309,39 +311,6 @@ function GettingStarted({
   );
 }
 
-type RunData = NonNullable<
-  ReturnType<typeof useQuery<typeof api.connections.recentRuns>>
->[number];
-
-function formatDuration(ms: number) {
-  const seconds = Math.round(ms / 1000);
-  if (seconds < 60) {
-    return `${seconds}s`;
-  }
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) {
-    return seconds % 60 ? `${minutes}m ${seconds % 60}s` : `${minutes}m`;
-  }
-  const hours = Math.floor(minutes / 60);
-  return minutes % 60 ? `${hours}h ${minutes % 60}m` : `${hours}h`;
-}
-
-// "+3 / ~1 / −0", plus what a run gave up on. Skipped rows are the ones
-// Notion refused often enough that the sync moved past them, so they are
-// worth naming rather than folding into the other counts.
-function statsSummary(stats: RunData["stats"]) {
-  if (!stats) {
-    return null;
-  }
-  const { added, modified, removed, skipped } = stats;
-  if (added + modified + removed + (skipped ?? 0) === 0) {
-    return null;
-  }
-  return `+${added} / ~${modified} / −${removed}${
-    skipped ? ` · ${skipped} skipped` : ""
-  }`;
-}
-
 function SyncHistory() {
   const runs = useQuery(api.connections.recentRuns);
   if (!runs || runs.length === 0) {
@@ -360,74 +329,6 @@ function SyncHistory() {
         </ul>
       </CardContent>
     </Card>
-  );
-}
-
-function SyncRunRow({ run }: { run: RunData }) {
-  const [expanded, setExpanded] = useState(false);
-  const failed = run.status === "error";
-  const summary = statsSummary(run.stats);
-  const duration = run.finishedAt
-    ? formatDuration(run.finishedAt - run.startedAt)
-    : null;
-
-  return (
-    <li
-      className={
-        failed
-          ? "flex flex-col gap-1.5 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm"
-          : "flex flex-col gap-1.5 px-3 py-2 text-sm"
-      }
-    >
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-        <Badge
-          variant={
-            failed
-              ? "destructive"
-              : run.status === "running"
-                ? "outline"
-                : "secondary"
-          }
-        >
-          {run.status}
-        </Badge>
-        <span className="min-w-0 flex-1">
-          {run.institutionName}
-          <span className="text-muted-foreground"> · {run.trigger}</span>
-          {summary ? (
-            <span className="tabular-nums text-muted-foreground">
-              {" "}
-              · {summary}
-            </span>
-          ) : null}
-          {duration ? (
-            <span className="tabular-nums text-muted-foreground">
-              {" "}
-              · {duration}
-            </span>
-          ) : null}
-        </span>
-        <span className="text-xs tabular-nums text-muted-foreground">
-          {new Date(run.startedAt).toLocaleString()}
-        </span>
-      </div>
-      {run.error ? (
-        <button
-          type="button"
-          aria-expanded={expanded}
-          onClick={() => setExpanded((open) => !open)}
-          className="flex cursor-pointer items-start gap-1 text-left text-xs text-destructive"
-        >
-          <ChevronRight
-            aria-hidden
-            className={`mt-0.5 size-3 shrink-0 transition-transform duration-150 ${
-              expanded ? "rotate-90" : ""
-            }`}
-          />
-          <span className={expanded ? "" : "line-clamp-2"}>{run.error}</span>
-        </button>
-      ) : null}
-    </li>
   );
 }
 
@@ -514,14 +415,6 @@ function RenameAccountDialog({
 type ActiveRun = NonNullable<
   ReturnType<typeof useQuery<typeof api.connections.activeRuns>>
 >[number];
-
-const triggerLabels = {
-  initial: "First sync",
-  webhook: "Bank update",
-  manual: "Manual sync",
-  cron: "Scheduled sync",
-  retry: "Retry",
-} as const;
 
 // Only for the elapsed clock. Everything else on this card comes from
 // reactive queries, which update themselves as the sync writes.
