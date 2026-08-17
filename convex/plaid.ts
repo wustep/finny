@@ -15,6 +15,7 @@ import {
   withPlaidError,
   type PlaidEnv,
 } from "./plaidClient";
+import { classifyPlaidWebhook } from "./plaidWebhooks";
 
 const WEBHOOK_URL = () => `${process.env.CONVEX_SITE_URL}/plaid/webhook`;
 
@@ -261,15 +262,25 @@ export const handleWebhook = internalAction({
     // Read the item id before verifying, only to look up which environment
     // issued this Item — verification keys are environment-specific. The
     // signature check below still gates everything that follows.
-    const payload = JSON.parse(args.body) as {
+    let payload: {
       webhook_type?: string;
       webhook_code?: string;
       item_id?: string;
       error?: { error_code?: string } | null;
     };
+    try {
+      payload = JSON.parse(args.body) as typeof payload;
+    } catch {
+      console.error("plaid webhook: body was not JSON, dropping");
+      return;
+    }
+    if (payload === null || typeof payload !== "object") {
+      console.error("plaid webhook: body was not an object, dropping");
+      return;
+    }
     const { webhook_type: type, webhook_code: code, item_id: itemId } =
       payload;
-    if (!itemId) {
+    if (typeof itemId !== "string" || itemId.length === 0) {
       return;
     }
     const connection = await ctx.runQuery(
@@ -288,55 +299,32 @@ export const handleWebhook = internalAction({
     }
     console.log("plaid webhook", type, code, itemId);
 
-    if (type === "ITEM") {
-      // A broken Item stops syncing, so the sync is no longer what keeps the
-      // Notion row honest — each status change pushes itself.
-      const mirrorStatus = () =>
-        ctx.scheduler.runAfter(0, internal.sync.pushConnectionStatusToNotion, {
-          connectionId: connection._id,
-        });
-      if (code === "ERROR") {
-        await ctx.runMutation(internal.connections.setStatusByItem, {
-          plaidItemId: itemId,
-          status: "error",
-          errorCode: payload.error?.error_code,
-        });
-        await mirrorStatus();
-      } else if (code === "PENDING_EXPIRATION") {
-        await ctx.runMutation(internal.connections.setStatusByItem, {
-          plaidItemId: itemId,
-          status: "pending_expiration",
-        });
-        await mirrorStatus();
-      } else if (code === "LOGIN_REPAIRED") {
-        await ctx.runMutation(internal.connections.setStatusByItem, {
-          plaidItemId: itemId,
-          status: "active",
-        });
-        await mirrorStatus();
-      } else if (code === "NEW_ACCOUNTS_AVAILABLE") {
-        // The sync's accountsGet is what records new accounts, so this is
-        // just a nudge to run one.
-        await ctx.scheduler.runAfter(0, internal.sync.runForConnection, {
-          connectionId: connection._id,
-          trigger: "webhook",
-        });
-      }
+    const disposition = classifyPlaidWebhook(
+      type,
+      code,
+      payload.error?.error_code,
+    );
+    if (disposition.action === "ignore") {
+      console.log("plaid webhook: no handler", type, code);
       return;
     }
-
-    if (
-      (type === "TRANSACTIONS" && code === "SYNC_UPDATES_AVAILABLE") ||
-      (type === "TRANSACTIONS" && code === "INITIAL_UPDATE") ||
-      (type === "TRANSACTIONS" && code === "HISTORICAL_UPDATE") ||
-      (type === "HOLDINGS" && code === "DEFAULT_UPDATE") ||
-      (type === "INVESTMENTS_TRANSACTIONS" && code === "DEFAULT_UPDATE")
-    ) {
-      await ctx.scheduler.runAfter(0, internal.sync.runForConnection, {
-        connectionId: connection._id,
-        trigger: "webhook",
+    if (disposition.action === "item_status") {
+      // A broken Item stops syncing, so the sync is no longer what keeps the
+      // Notion row honest — each status change pushes itself.
+      await ctx.runMutation(internal.connections.setStatusByItem, {
+        plaidItemId: itemId,
+        status: disposition.status,
+        errorCode: disposition.errorCode,
       });
+      await ctx.scheduler.runAfter(0, internal.sync.pushConnectionStatusToNotion, {
+        connectionId: connection._id,
+      });
+      return;
     }
+    await ctx.scheduler.runAfter(0, internal.sync.runForConnection, {
+      connectionId: connection._id,
+      trigger: "webhook",
+    });
   },
 });
 
@@ -358,7 +346,11 @@ async function verifyWebhook(
     });
     const key = await importJWK(keyResponse.data.key, "ES256");
     const { payload } = await jwtVerify(signature, key, {
-      maxTokenAge: "5 min",
+      // Plaid issues a 5-minute JWT. We ack 200 immediately and verify in a
+      // scheduled action, so a Convex delay past that window used to drop a
+      // real, signed webhook. The signature and body hash still bind the
+      // payload to Plaid; a replay only re-triggers an idempotent sync.
+      clockTolerance: 60 * 60,
     });
     const bodyHash = createHash("sha256").update(body).digest("hex");
     return payload.request_body_sha256 === bodyHash;
