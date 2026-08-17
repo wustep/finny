@@ -1,4 +1,5 @@
 import { useAuthActions } from "@convex-dev/auth/react";
+import { Link } from "@tanstack/react-router";
 import { Loader2, Wrench } from "lucide-react";
 import { useState } from "react";
 import { toast } from "@/lib/notify";
@@ -81,6 +82,12 @@ export function SignIn() {
               Continue as tester
             </Button>
           ) : null}
+          <p className="text-center text-xs text-muted-foreground">
+            Invite-only — you'll need the access password next.{" "}
+            <Link to="/policy" className="underline underline-offset-4">
+              Privacy
+            </Link>
+          </p>
         </CardContent>
       </Card>
     </div>

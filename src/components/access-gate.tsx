@@ -1,4 +1,4 @@
-import { useAuthToken } from "@convex-dev/auth/react";
+import { useAuthActions, useAuthToken } from "@convex-dev/auth/react";
 import { useQuery } from "convex/react";
 import { KeyRound } from "lucide-react";
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
@@ -13,6 +13,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 
 // Signed-in users must also present the shared access password once before
@@ -55,6 +56,7 @@ const CONVEX_SITE_URL = (import.meta.env.VITE_CONVEX_URL as string).replace(
 );
 
 function AccessGate() {
+  const { signOut } = useAuthActions();
   const token = useAuthToken();
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
@@ -107,15 +109,27 @@ function AccessGate() {
         </CardHeader>
         <CardContent>
           <form onSubmit={handleSubmit} className="flex flex-col gap-3">
-            <Input
-              type="password"
-              autoFocus
-              value={password}
-              onChange={(event) => setPassword(event.target.value)}
-              placeholder="Password"
-            />
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="access-password">Password</Label>
+              <Input
+                id="access-password"
+                type="password"
+                autoComplete="current-password"
+                autoFocus
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+              />
+            </div>
             <Button type="submit" disabled={busy || !password}>
               {busy ? "Checking…" : "Unlock"}
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              disabled={busy}
+              onClick={() => void signOut()}
+            >
+              Sign out
             </Button>
           </form>
         </CardContent>
