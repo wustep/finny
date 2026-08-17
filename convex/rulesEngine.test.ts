@@ -3,8 +3,11 @@ import {
   evaluate,
   isPfcPrimary,
   isPfcCategory,
+  pfcDetailedCategories,
+  pfcIconUrl,
   pfcLabel,
   pfcPrimary,
+  PFC_TAXONOMY,
   type Action,
   type Condition,
   type Rule,
@@ -258,6 +261,24 @@ describe("Plaid category taxonomy", () => {
     expect(isPfcCategory("RENT_AND_UTILITIES_RENT")).toBe(true);
     expect(isPfcCategory("rent_and_utilities_rent")).toBe(false);
     expect(isPfcCategory("")).toBe(false);
+  });
+
+  test("the seed list is every detailed category, once", () => {
+    const rows = pfcDetailedCategories();
+    const ids = rows.map((row) => row.detailed);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(ids.length).toBe(
+      Object.values(PFC_TAXONOMY).reduce((n, list) => n + list.length, 0),
+    );
+    for (const row of rows) {
+      expect(pfcPrimary(row.detailed)).toBe(row.primary);
+    }
+  });
+
+  test("the icon URL is the one Plaid puts on transactions", () => {
+    expect(pfcIconUrl("FOOD_AND_DRINK")).toBe(
+      "https://plaid-category-icons.plaid.com/PFC_FOOD_AND_DRINK.png",
+    );
   });
 });
 

@@ -11,7 +11,13 @@ import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import type { ActionCtx } from "./_generated/server";
 import { P, archivePage, categoryName, externalIcon, titleCase, updatePage } from "./notionApi";
-import { evaluate, pfcPrimary, type Rule } from "./rulesEngine";
+import {
+  evaluate,
+  pfcDetailedCategories,
+  pfcIconUrl,
+  pfcPrimary,
+  type Rule,
+} from "./rulesEngine";
 import { claimAndCreatePage } from "./syncPages";
 import { ruleTransaction, transactionIcon, transactionProperties } from "./syncMappers";
 
@@ -242,9 +248,49 @@ export function categoryResolver(
   };
 }
 
+// Create every PFC category row up front, so the Categories database is the
+// taxonomy rather than a log of what has been spent so far. Recurring streams
+// and rules that point at a category nobody has transacted in yet then have
+// something to relate to. Later syncs see the map full and do nothing.
+export async function seedCategories(
+  ctx: ActionCtx,
+  input: {
+    userId: Id<"users">;
+    token: string;
+    databaseId: string;
+  },
+): Promise<number> {
+  const existing = await ctx.runQuery(internal.syncData.getAllMapEntries, {
+    userId: input.userId,
+    kind: "category",
+  });
+  let created = 0;
+  for (const { detailed, primary } of pfcDetailedCategories()) {
+    if (existing[detailed]) {
+      continue;
+    }
+    const pageId = await ensureCategoryPage(ctx, {
+      userId: input.userId,
+      token: input.token,
+      databaseId: input.databaseId,
+      detailed,
+      primary,
+      iconUrl: pfcIconUrl(primary),
+    });
+    if (pageId) {
+      existing[detailed] = pageId;
+      created++;
+    }
+  }
+  if (created > 0) {
+    console.log(`seeded ${created} category page(s)`);
+  }
+  return created;
+}
+
 // Categories belong to the user, not to one connection, so two connections
 // syncing at once can reach the same one.
-async function ensureCategoryPage(
+export async function ensureCategoryPage(
   ctx: ActionCtx,
   input: {
     userId: Id<"users">;
