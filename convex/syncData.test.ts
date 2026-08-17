@@ -887,6 +887,30 @@ test("rewindCursor can put a connection back to no cursor at all", async () => {
   expect(connection?.cursorFailures).toBeUndefined();
 });
 
+test("clearCursors rewinds the walk, not just the transactions cursor", async () => {
+  const t = convexTest(schema, modules);
+  const seeded = await seed(t);
+  await t.run(async (ctx) => {
+    await ctx.db.patch(seeded.connectionId, {
+      transactionsCursor: "page-9",
+      cursorFailures: 2,
+      lastInvestmentsFullSyncAt: Date.now() - 60_000,
+      syncRetryCount: 2,
+    });
+  });
+
+  const ids = await t.mutation(internal.syncData.clearCursors, {
+    userId: seeded.userId,
+  });
+  expect(ids).toEqual([seeded.connectionId]);
+
+  const connection = await t.run(async (ctx) => ctx.db.get(seeded.connectionId));
+  expect(connection?.transactionsCursor).toBeUndefined();
+  expect(connection?.cursorFailures).toBeUndefined();
+  expect(connection?.lastInvestmentsFullSyncAt).toBeUndefined();
+  expect(connection?.syncRetryCount).toBeUndefined();
+});
+
 test("rewindCursor goes backwards, unlike setCursor", async () => {
   const t = convexTest(schema, modules);
   const seeded = await seed(t);

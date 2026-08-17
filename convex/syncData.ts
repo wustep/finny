@@ -408,8 +408,11 @@ export const deleteMapRows = internalMutation({
   },
 });
 
-// Rewind every connection's transactions/sync cursor so the next run replays
-// the full history rather than only what has changed since last time.
+// Rewind every connection so the next run replays the full history rather
+// than only what has changed since last time. Used by reset & resync, the
+// destination re-backfill, and apply-rules-to-history — all of which mean
+// "start the walk over", not "keep the counters from the walk we just
+// abandoned".
 export const clearCursors = internalMutation({
   args: { userId: v.id("users") },
   handler: async (ctx, args) => {
@@ -418,7 +421,21 @@ export const clearCursors = internalMutation({
       .withIndex("by_user", (q) => q.eq("userId", args.userId))
       .collect();
     for (const connection of connections) {
-      await ctx.db.patch(connection._id, { transactionsCursor: undefined });
+      await ctx.db.patch(connection._id, {
+        transactionsCursor: undefined,
+        // A leftover count from the page we just rewound would count toward
+        // abandoning the *first* page of the replay. Two prior failures plus
+        // one Notion 502 on that page would skip it forever.
+        cursorFailures: undefined,
+        // Investment transactions have no cursor — a recent last-full-sync
+        // stamp is what keeps the next run inside a 30-day window. A rewind
+        // that leaves it set would recreate only a month of trades after
+        // the map was wiped.
+        lastInvestmentsFullSyncAt: undefined,
+        // A fresh walk is not the next attempt in the previous failure's
+        // backoff sequence.
+        syncRetryCount: undefined,
+      });
     }
     return connections.map((connection) => connection._id);
   },
