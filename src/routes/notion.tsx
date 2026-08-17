@@ -1025,7 +1025,10 @@ function RecentSyncs() {
       <CardContent>
         <ul className="flex flex-col gap-2">
           {runs.slice(0, 5).map((run) => (
-            <li key={run.id} className="flex items-center gap-3 text-sm">
+            <li
+              key={run.id}
+              className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm"
+            >
               <Badge
                 variant={
                   run.status === "error"
@@ -1037,7 +1040,7 @@ function RecentSyncs() {
               >
                 {run.status}
               </Badge>
-              <span className="flex-1">
+              <span className="min-w-0 flex-1">
                 {run.institutionName}
                 <span className="text-muted-foreground"> · {run.trigger}</span>
               </span>
