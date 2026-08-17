@@ -1,5 +1,9 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { notionFetch } from "./notionApi";
+import {
+  NotionApiError,
+  isNotionUnauthorized,
+  notionFetch,
+} from "./notionApi";
 
 // The spacing notionFetch enforces (MIN_REQUEST_INTERVAL_MS), mirrored so the
 // assertions below say what they are checking.
@@ -75,4 +79,33 @@ test("an error Notion will not take back is thrown with its message", async () =
   await expect(notionFetch("token", "/databases/gone/query")).rejects.toThrow(
     /404.*Could not find database/,
   );
+});
+
+test("a 401 is a NotionApiError that isNotionUnauthorized recognises", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ message: "API token is invalid." }), {
+          status: 401,
+        }),
+      ),
+    ),
+  );
+
+  const error = await notionFetch("token", "/pages").catch((thrown) => thrown);
+  expect(error).toBeInstanceOf(NotionApiError);
+  expect(error.status).toBe(401);
+  expect(isNotionUnauthorized(error)).toBe(true);
+  // A wrapped copy still matches: per-row catches stringify on the way past.
+  expect(isNotionUnauthorized(new Error(String(error)))).toBe(true);
+});
+
+test("a 403 is not a dead token", () => {
+  expect(
+    isNotionUnauthorized(new NotionApiError("/pages/x", 403, "restricted")),
+  ).toBe(false);
+  expect(
+    isNotionUnauthorized(new NotionApiError("/pages/x", 502, "bad gateway")),
+  ).toBe(false);
 });

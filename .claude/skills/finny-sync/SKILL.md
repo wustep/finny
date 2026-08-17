@@ -79,6 +79,8 @@ map is the invariant, and every duplicate-row bug is a violation of it.
 - Advance `transactionsCursor` only after a page has been fully written to
   Notion (`syncData.setCursor`, end of `transactionsBatch`). Advancing early
   drops transactions permanently — Plaid does not resend a consumed page.
+  A Notion 401 is a dead token, not a poison page: `failRun` must not retry
+  it, and `transactionsBatch` must not count it toward abandoning the cursor.
 - Creating a page is claim-then-create: `syncData.claimMapEntry` returns
   `create` | `pending` | `ready`; only the `create` winner calls the Notion
   API, then `putMapEntries` writes the page id. A `notionPageMap` row with an

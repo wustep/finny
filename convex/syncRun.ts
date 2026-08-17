@@ -13,6 +13,7 @@ import {
   createComment,
   externalIcon,
   fileUploadIcon,
+  isNotionUnauthorized,
   uploadDataUri,
 } from "./notionApi";
 import { plaidErrorInfo } from "./plaidClient";
@@ -87,6 +88,38 @@ export function itemIsBroken(error: unknown): boolean {
 // same run: finishRun's success path forces the connection back to active, so
 // a stage that marked the Item and let the chain carry on would leave the card
 // flipping between "needs attention" and "active" once a day.
+// What to write on the run, and whether another attempt could help.
+//
+// Split out of failRun so the decision is unit-testable: a Notion 401 used
+// to look like any other write failure (retryable, and after three tries
+// the transactions page was abandoned and the Plaid cursor moved on).
+export function describeRunFailure(
+  stage: string,
+  error: unknown,
+): { error: string; retryable: boolean; itemBroken: boolean; errorCode?: string } {
+  if (isNotionUnauthorized(error)) {
+    return {
+      error:
+        `${stage}: Notion rejected the integration token (401). ` +
+        `Reconnect Notion; the Plaid cursor was left in place.`,
+      retryable: false,
+      itemBroken: false,
+    };
+  }
+  const info = plaidErrorInfo(error);
+  return {
+    error: info.code
+      ? `${stage}: ${info.message}`
+      : `${stage}: ${String(error)}`,
+    // A broken Item is precisely the failure another attempt cannot get past.
+    // Everything else here — a Notion 5xx, a rate limit, a page that would not
+    // write — is worth trying again before tomorrow's sweep.
+    retryable: !info.itemBroken,
+    itemBroken: info.itemBroken,
+    errorCode: info.code,
+  };
+}
+
 export async function failRun(
   ctx: ActionCtx,
   input: {
@@ -96,11 +129,11 @@ export async function failRun(
     error: unknown;
   },
 ): Promise<void> {
-  const info = plaidErrorInfo(input.error);
-  if (info.itemBroken) {
+  const failure = describeRunFailure(input.stage, input.error);
+  if (failure.itemBroken) {
     await ctx.runMutation(internal.connections.markItemBroken, {
       connectionId: input.connectionId,
-      errorCode: info.code,
+      errorCode: failure.errorCode,
     });
     // The Notion Bank Connections row says Active until something tells it
     // otherwise, and no sync will run to correct it while the Item is broken.
@@ -113,14 +146,30 @@ export async function failRun(
   await ctx.runMutation(internal.syncData.finishRun, {
     runId: input.runId,
     status: "error",
-    error: info.code
-      ? `${input.stage}: ${info.message}`
-      : `${input.stage}: ${String(input.error)}`,
-    // A broken Item is precisely the failure another attempt cannot get past.
-    // Everything else here — a Notion 5xx, a rate limit, a page that would not
-    // write — is worth trying again before tomorrow's sweep.
-    retryable: !info.itemBroken,
+    error: failure.error,
+    retryable: failure.retryable,
   });
+}
+
+// Per-row writes catch their own errors so one bad page does not kill the
+// batch. A 401 is not one bad page — every subsequent write will fail the
+// same way, and counting them toward cursor-abandonment would skip the
+// Plaid page. Call this in those catches; true means the run is already
+// finished and the caller should return.
+export async function failIfNotionUnauthorized(
+  ctx: ActionCtx,
+  input: {
+    runId: Id<"syncRuns">;
+    connectionId: Id<"bankConnections">;
+    stage: string;
+    error: unknown;
+  },
+): Promise<boolean> {
+  if (!isNotionUnauthorized(input.error)) {
+    return false;
+  }
+  await failRun(ctx, input);
+  return true;
 }
 
 // The Status select option in the Notion Bank Connections database. Live

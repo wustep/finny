@@ -10,7 +10,7 @@ import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import type { ActionCtx } from "./_generated/server";
 import type { Security } from "plaid";
-import { P, archivePage, updatePage } from "./notionApi";
+import { P, archivePage, isNotionUnauthorized, updatePage } from "./notionApi";
 import { plaidClient, plaidErrorInfo } from "./plaidClient";
 import { claimAndCreatePage } from "./syncPages";
 import { recurringStreamProperties } from "./syncMappers";
@@ -76,6 +76,9 @@ export async function reconcileInvestmentTransactions(
           await archivePage(input.token, entry.notionPageId);
           archived.push(entry.providerId);
         } catch (error) {
+          if (isNotionUnauthorized(error)) {
+            throw error;
+          }
           console.error(
             "failed to archive investment transaction",
             entry.providerId,
@@ -168,6 +171,9 @@ export async function syncSecurities(
       }
       pages[security.security_id] = claimed.pageId;
     } catch (error) {
+      if (isNotionUnauthorized(error)) {
+        throw error;
+      }
       console.error("failed to sync security", security.security_id, error);
     }
   }
@@ -288,6 +294,9 @@ export async function syncRecurring(
       }
       stats.added++;
     } catch (error) {
+      if (isNotionUnauthorized(error)) {
+        throw error;
+      }
       console.error("failed to sync recurring stream", stream.stream_id, error);
     }
   }
@@ -423,6 +432,9 @@ export async function syncHoldings(
         stats.added++;
       }
     } catch (error) {
+      if (isNotionUnauthorized(error)) {
+        throw error;
+      }
       console.error("failed to sync holding", providerId, error);
     }
   }
@@ -440,6 +452,9 @@ export async function syncHoldings(
       removedIds.push(providerId);
       stats.removed++;
     } catch (error) {
+      if (isNotionUnauthorized(error)) {
+        throw error;
+      }
       console.error("failed to archive holding", providerId, error);
     }
   }
