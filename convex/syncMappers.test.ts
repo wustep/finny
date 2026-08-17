@@ -137,6 +137,25 @@ describe("investmentTransactionProperties", () => {
     expect(properties.Amount).toEqual({ number: 1000 });
   });
 
+  it("writes a Plaid subtype so it matches a declared select option", () => {
+    // The schema lists "dividend reinvestment". Underscores become spaces;
+    // nothing is title-cased, or the option and the row would miss.
+    const properties = investmentTransactionProperties(
+      investmentTransaction({
+        type: "cash",
+        subtype: "dividend_reinvestment",
+      }),
+      "page_account",
+      "page_security",
+    );
+    expect(properties["Transaction Subtype"]).toEqual({
+      select: { name: "dividend reinvestment" },
+    });
+    expect(properties["Transaction Type"]).toEqual({
+      select: { name: "cash" },
+    });
+  });
+
   it("defaults missing fees to zero and allows a null security relation", () => {
     const properties = investmentTransactionProperties(
       investmentTransaction({ fees: null }),

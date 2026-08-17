@@ -4,6 +4,8 @@ import { titleCase } from "./syncMappers";
 import {
   CATEGORY_GROUP_OPTIONS,
   DATABASE_SPECS,
+  INVESTMENT_TRANSACTION_SUBTYPES,
+  INVESTMENT_TRANSACTION_TYPES,
   NOTION_SCHEMA_VERSION,
   MAP_KINDS_BY_DATABASE,
   SPEC_BY_KEY,
@@ -85,6 +87,78 @@ test("category group options carry no commas", () => {
   // P.select strips them, so an option name with one would never match the
   // option the database was built with.
   for (const [name] of CATEGORY_GROUP_OPTIONS) {
+    expect(name).not.toContain(",");
+  }
+});
+
+test("investment transaction selects are Plaid's full type and subtype sets", () => {
+  // PLAN: "use Plaid's full type/subtype option sets". A missing name is
+  // auto-created by Notion with a random colour the first time it lands.
+  const types = INVESTMENT_TRANSACTION_TYPES.map(([name]) => name);
+  const subtypes = INVESTMENT_TRANSACTION_SUBTYPES.map(([name]) => name);
+  expect(types).toEqual([
+    "buy",
+    "sell",
+    "cancel",
+    "cash",
+    "fee",
+    "transfer",
+  ]);
+  // Plaid's published set (space-separated, as the API sends them).
+  expect([...subtypes].sort()).toEqual(
+    [
+      "account fee",
+      "adjustment",
+      "assignment",
+      "buy",
+      "buy to cover",
+      "contribution",
+      "deposit",
+      "distribution",
+      "dividend",
+      "dividend reinvestment",
+      "exercise",
+      "expire",
+      "fund fee",
+      "interest",
+      "interest receivable",
+      "interest reinvestment",
+      "legal fee",
+      "loan payment",
+      "long-term capital gain",
+      "long-term capital gain reinvestment",
+      "management fee",
+      "margin expense",
+      "merger",
+      "miscellaneous fee",
+      "non-qualified dividend",
+      "non-resident tax",
+      "pending credit",
+      "pending debit",
+      "qualified dividend",
+      "rebalance",
+      "return of principal",
+      "request",
+      "sell",
+      "sell short",
+      "send",
+      "short-term capital gain",
+      "short-term capital gain reinvestment",
+      "spin off",
+      "split",
+      "stock distribution",
+      "tax",
+      "tax withheld",
+      "trade",
+      "transfer",
+      "transfer fee",
+      "trust fee",
+      "unqualified gain",
+      "withdrawal",
+    ].sort(),
+  );
+  expect(new Set(subtypes).size).toBe(subtypes.length);
+  for (const name of [...types, ...subtypes]) {
     expect(name).not.toContain(",");
   }
 });
