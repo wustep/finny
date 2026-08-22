@@ -14,11 +14,9 @@ Vite + React frontend; [Convex](https://convex.dev) for auth, config, and the
 sync engine. Notion property names live in
 [`convex/notionSchemas.ts`](convex/notionSchemas.ts).
 
-![Sign-in](docs/signin.png)
-
-![Accounts — a Plaid Sandbox Item with per-account sync toggles](docs/accounts.png)
-
-![Notion destination — modules, start date, Sync now, recent runs](docs/notion.png)
+| Sign-in | Accounts | Notion |
+| :---: | :---: | :---: |
+| ![Sign-in](docs/signin.png) | ![Accounts — a Plaid Sandbox Item with per-account sync toggles](docs/accounts.png) | ![Notion destination — databases, Recurring, modules](docs/notion.png) |
 
 ## How it works
 
