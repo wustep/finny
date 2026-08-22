@@ -13,8 +13,7 @@ import type { Security } from "plaid";
 import { P, archivePage, updatePage } from "./notionApi";
 import { plaidClient, plaidErrorInfo } from "./plaidClient";
 import { claimAndCreatePage } from "./syncPages";
-import { recurringStreamProperties } from "./syncMappers";
-import { renderTitle } from "./titleFormats";
+import { holdingProperties, recurringStreamProperties } from "./syncMappers";
 import { itemIsBroken, type SyncContext } from "./syncRun";
 
 // A run archives at most this many vanished rows; the next one picks up the
@@ -377,25 +376,14 @@ export async function syncHoldings(
     const security = securityById[holding.security_id];
     const symbol =
       security?.ticker_symbol ?? security?.name ?? holding.security_id;
-    const properties = {
-      Summary: P.title(
-        renderTitle(
-          notion.titleFormats?.holdings,
-          {
-            security: symbol,
-            quantity: holding.quantity,
-            account: input.accountNames[holding.account_id],
-          },
-          `${symbol} Holding`,
-          holding.iso_currency_code ?? undefined,
-        ),
-      ),
-      Account: P.relation(accountPage),
-      Security: P.relation(securityPages[holding.security_id]),
-      Quantity: P.number(holding.quantity),
-      "Cost Basis": P.number(holding.cost_basis),
-      "Last Update": P.date(new Date().toISOString()),
-    };
+    const properties = holdingProperties(
+      holding,
+      accountPage,
+      securityPages[holding.security_id],
+      symbol,
+      notion.titleFormats,
+      { account: input.accountNames[holding.account_id] },
+    );
     try {
       const existing = holdingPages[providerId];
       if (existing) {

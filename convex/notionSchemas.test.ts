@@ -93,6 +93,14 @@ test("accounts carry a currency", () => {
   expect(propertyTypes(SPEC_BY_KEY.accounts).Currency).toBe("select");
 });
 
+test("holdings carry the market value Plaid already computed", () => {
+  const holdings = propertyTypes(SPEC_BY_KEY.holdings);
+  expect(holdings["Market Value"]).toBe("number");
+  expect(holdings["Institution Price"]).toBe("number");
+  expect(holdings["Institution Price As Of"]).toBe("date");
+  expect(holdings["Cost Basis"]).toBe("number");
+});
+
 test("the schema version is bumped when a property is added", () => {
   // Not a real invariant so much as a tripwire: this count changes whenever a
   // spec gains or loses a property. A property *added* has to move the
@@ -105,7 +113,7 @@ test("the schema version is bumped when a property is added", () => {
     0,
   );
   expect({ properties, version: NOTION_SCHEMA_VERSION }).toEqual({
-    properties: 68,
-    version: 2,
+    properties: 71,
+    version: 3,
   });
 });

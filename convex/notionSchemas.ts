@@ -73,7 +73,8 @@ export const CATEGORY_GROUP_OPTIONS: Array<[name: string, color: string]> =
 //
 //   1  the original eight databases
 //   2  Accounts.Currency, Transactions.Tags, the Recurring database
-export const NOTION_SCHEMA_VERSION = 2;
+//   3  Holdings.Market Value, Institution Price, Institution Price As Of
+export const NOTION_SCHEMA_VERSION = 3;
 
 export interface DatabaseSpec {
   key: string;
@@ -210,9 +211,13 @@ export const DATABASE_SPECS: DatabaseSpec[] = [
       Security: relation(ids.securities),
       Quantity: plainNumber,
       "Cost Basis": dollar,
-      // Market value is left to the user: Notion rejects a rollup that points
-      // at a relation created in the same request, so a Security Price rollup
-      // and a Quantity * price formula have to be added by hand afterwards.
+      // Plaid already computes this (quantity × institution price). The
+      // baseline asked for a Quantity × Security-price formula, but Notion
+      // rejects a rollup that points at a relation created in the same
+      // request — so write the number instead of leaving a hole.
+      "Market Value": dollar,
+      "Institution Price": dollar,
+      "Institution Price As Of": date,
       "Last Update": date,
     }),
   },
