@@ -14,7 +14,7 @@ Distilled from researching commercial Plaid → Notion sync products and inspect
   - *Balances*: Bank Connections (Institutions), Accounts, Balance History
   - *Spending*: Accounts, Transactions, Categories
   - *Investments*: Accounts, Securities, Holdings, Investment Transactions
-- **Categories** = Plaid Personal Finance Categories (the "AI categorization" toggle), synced into a Categories DB with a relation from Transactions.
+- **Categories** = Plaid Personal Finance Categories (the "AI categorization" toggle), seeded into a Categories DB (the full taxonomy, not only categories a transaction has mentioned) with a relation from Transactions.
 - **Rules engine** (phase 2 for us): conditions on merchant/summary/amount/account/day with contains/equals/regex; outcomes: set category, rename merchant, hide transaction. Priority-ordered, manual assignment always wins.
 
 ## Notion schema (baseline + approved changes)

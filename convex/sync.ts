@@ -6,7 +6,7 @@
 // backfills never hit action time limits:
 //
 //   runForConnection            (bank connection page, accounts, balances,
-//                                holdings + securities)
+//                                category seed, holdings + securities)
 //     -> accountBackfill        (one transactions/get page per invocation,
 //                                once per account switched back on)
 //     -> transactionsBatch      (one transactions/sync page per invocation,
@@ -70,7 +70,11 @@ import {
   notionStatus,
   type SyncContext,
 } from "./syncRun";
-import { categoryResolver, upsertTransaction } from "./syncTransactionWriter";
+import {
+  categoryResolver,
+  seedCategories,
+  upsertTransaction,
+} from "./syncTransactionWriter";
 
 // Deliberately small, and the reason is Notion rather than Plaid.
 //
@@ -604,7 +608,18 @@ export const runForConnection = internalAction({
         }
       }
 
-      // 4. Holdings + securities
+      // 4. Categories — the whole taxonomy, not just ones a transaction has
+      //    mentioned. Recurring and a rule that recategorises into something
+      //    unspent both need the row to exist first.
+      if (notion.modules.spending && databases.categories) {
+        await seedCategories(ctx, {
+          userId: connection.userId,
+          token,
+          databaseId: databases.categories,
+        });
+      }
+
+      // 5. Holdings + securities
       if (
         notion.modules.investments &&
         databases.holdings &&
@@ -620,12 +635,12 @@ export const runForConnection = internalAction({
         });
       }
 
-      // 5. Recurring streams
+      // 6. Recurring streams
       if (notion.modules.recurring && databases.recurring) {
         await syncRecurring(ctx, { context, runId, accountPages, accountNames });
       }
 
-      // 6. Hand off to the transaction chain, catching up any account that
+      // 7. Hand off to the transaction chain, catching up any account that
       //    was switched back on first.
       await scheduleNextStage(ctx, { context, runId, completed: [] });
     } catch (error) {

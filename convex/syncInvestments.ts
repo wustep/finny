@@ -12,9 +12,11 @@ import type { ActionCtx } from "./_generated/server";
 import type { Security } from "plaid";
 import { P, archivePage, updatePage } from "./notionApi";
 import { plaidClient, plaidErrorInfo } from "./plaidClient";
+import { pfcIconUrl, pfcPrimary } from "./rulesEngine";
 import { claimAndCreatePage } from "./syncPages";
 import { holdingProperties, recurringStreamProperties } from "./syncMappers";
 import { itemIsBroken, type SyncContext } from "./syncRun";
+import { ensureCategoryPage } from "./syncTransactionWriter";
 
 // A run archives at most this many vanished rows; the next one picks up the
 // rest. Keeps a first reconciliation over a long history from trying to make
@@ -223,13 +225,8 @@ export async function syncRecurring(
     return;
   }
 
-  const categoryPages = databases.categories
-    ? await ctx.runQuery(internal.syncData.getAllMapEntries, {
-        userId,
-        kind: "category",
-      })
-    : {};
   const hasCategoryRelation = Boolean(databases.categories);
+  const categoryCache: Record<string, string> = {};
   const streams = [
     ...response.data.inflow_streams.map(
       (stream) => ({ stream, direction: "Inflow" as const }),
@@ -251,13 +248,37 @@ export async function syncRecurring(
     if (!accountPage) {
       continue;
     }
+    const detailed = stream.personal_finance_category?.detailed;
+    const primary =
+      stream.personal_finance_category?.primary ??
+      (detailed ? pfcPrimary(detailed) : undefined);
+    let categoryPageId: string | null = null;
+    if (hasCategoryRelation && detailed && databases.categories) {
+      // Seed usually created this already. Still go through ensure so a
+      // category Plaid added after our taxonomy copy is not left blank.
+      if (categoryCache[detailed]) {
+        categoryPageId = categoryCache[detailed];
+      } else {
+        categoryPageId = await ensureCategoryPage(ctx, {
+          userId,
+          token,
+          databaseId: databases.categories,
+          detailed,
+          primary: primary ?? detailed,
+          iconUrl: primary ? pfcIconUrl(primary) : undefined,
+        });
+        if (categoryPageId) {
+          categoryCache[detailed] = categoryPageId;
+        }
+      }
+    }
     const properties = recurringStreamProperties(
       stream,
       direction,
       accountPage,
       // The stream's own category, not one a rule chose: rules run per
       // transaction, and a stream is not one.
-      categoryPages[stream.personal_finance_category?.detailed ?? ""] ?? null,
+      categoryPageId,
       hasCategoryRelation,
       notion.titleFormats,
       { account: input.accountNames[stream.account_id] },

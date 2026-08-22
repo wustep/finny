@@ -596,6 +596,25 @@ export function isPfcPrimary(primary: string): boolean {
 
 // "FOOD_AND_DRINK_COFFEE" -> "Coffee", the same name the Notion Categories
 // row gets (see categoryName in notionApi.ts).
+// Every detailed category in the taxonomy, with the primary it belongs to.
+// The Categories database is seeded from this so a row exists before any
+// transaction or recurring stream relates to it.
+export function pfcDetailedCategories(): Array<{
+  detailed: string;
+  primary: string;
+}> {
+  return Object.entries(PFC_TAXONOMY).flatMap(([primary, detailed]) =>
+    detailed.map((id) => ({ detailed: id, primary })),
+  );
+}
+
+// Plaid hosts one 100×100 PNG per primary group. Documented on the
+// transaction as `personal_finance_category_icon_url`; the path is stable
+// enough to use when we create a category that no transaction has seen yet.
+export function pfcIconUrl(primary: string): string {
+  return `https://plaid-category-icons.plaid.com/PFC_${primary}.png`;
+}
+
 export function pfcLabel(detailed: string): string {
   const primary = pfcPrimary(detailed);
   const rest =
