@@ -62,6 +62,72 @@ export const CATEGORY_GROUP_OPTIONS: Array<[name: string, color: string]> =
     GROUP_COLORS[primary] ?? "default",
   ]);
 
+// Plaid's full investment transaction type / subtype sets. PLAN asked for
+// these in full; the first cut only listed the ones a sandbox Item happens
+// to emit. Anything missing here is auto-created by Notion the first time
+// it lands — with a random colour — which is the same drift Category Group
+// already had. Names are Plaid's strings as written (the mapper only
+// replaces underscores with spaces), so an option and a row always match.
+export const INVESTMENT_TRANSACTION_TYPES: Array<[name: string, color: string]> = [
+  ["buy", "green"],
+  ["sell", "red"],
+  ["cancel", "gray"],
+  ["cash", "gray"],
+  ["fee", "orange"],
+  ["transfer", "blue"],
+];
+
+export const INVESTMENT_TRANSACTION_SUBTYPES: Array<[name: string, color: string]> = [
+  ["buy", "green"],
+  ["buy to cover", "green"],
+  ["trade", "green"],
+  ["sell", "red"],
+  ["sell short", "red"],
+  ["deposit", "orange"],
+  ["contribution", "brown"],
+  ["withdrawal", "yellow"],
+  ["distribution", "pink"],
+  ["stock distribution", "pink"],
+  ["dividend", "blue"],
+  ["dividend reinvestment", "blue"],
+  ["qualified dividend", "blue"],
+  ["non-qualified dividend", "blue"],
+  ["interest", "purple"],
+  ["interest receivable", "purple"],
+  ["interest reinvestment", "purple"],
+  ["long-term capital gain", "green"],
+  ["long-term capital gain reinvestment", "green"],
+  ["short-term capital gain", "green"],
+  ["short-term capital gain reinvestment", "green"],
+  ["unqualified gain", "green"],
+  ["account fee", "orange"],
+  ["fund fee", "orange"],
+  ["management fee", "orange"],
+  ["miscellaneous fee", "orange"],
+  ["legal fee", "orange"],
+  ["trust fee", "orange"],
+  ["transfer fee", "orange"],
+  ["margin expense", "orange"],
+  ["transfer", "default"],
+  ["send", "default"],
+  ["tax", "red"],
+  ["tax withheld", "red"],
+  ["non-resident tax", "red"],
+  ["split", "pink"],
+  ["spin off", "pink"],
+  ["merger", "pink"],
+  ["assignment", "pink"],
+  ["exercise", "pink"],
+  ["expire", "gray"],
+  ["loan payment", "brown"],
+  ["rebalance", "gray"],
+  ["return of principal", "gray"],
+  ["adjustment", "gray"],
+  ["request", "gray"],
+  ["pending credit", "gray"],
+  ["pending debit", "gray"],
+];
+
 // Bumped whenever a property is added to any spec above.
 //
 // Databases are only ever *created* by ensureDatabases, so a property added
@@ -271,24 +337,8 @@ export const DATABASE_SPECS: DatabaseSpec[] = [
     properties: (ids) => ({
       "Transaction Summary": { title: {} },
       "Transaction ID": text,
-      "Transaction Type": select([
-        ["buy", "green"],
-        ["sell", "red"],
-        ["cash", "gray"],
-        ["fee", "orange"],
-        ["transfer", "blue"],
-      ]),
-      "Transaction Subtype": select([
-        ["buy", "green"],
-        ["sell", "red"],
-        ["dividend", "blue"],
-        ["deposit", "orange"],
-        ["withdrawal", "yellow"],
-        ["contribution", "brown"],
-        ["interest", "purple"],
-        ["transfer", "default"],
-        ["distribution", "pink"],
-      ]),
+      "Transaction Type": select(INVESTMENT_TRANSACTION_TYPES),
+      "Transaction Subtype": select(INVESTMENT_TRANSACTION_SUBTYPES),
       Amount: dollar,
       Price: dollar,
       Quantity: plainNumber,
