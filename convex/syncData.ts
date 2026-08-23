@@ -1143,11 +1143,22 @@ export const pruneHistory = internalMutation({
       deletedAttempts++;
     }
 
+    // Pre-sign-in grant tickets whose window has closed. Live ones are
+    // still waiting to be claimed after Google returns.
+    const grants = await ctx.db
+      .query("accessGrants")
+      .withIndex("by_expiresAt", (q) => q.lt("expiresAt", now))
+      .take(RETENTION_BATCH);
+    for (const grant of grants) {
+      await ctx.db.delete(grant._id);
+    }
+
     return {
       runs: deletedRuns,
       oauthStates: states.length,
       balanceSnapshots: snapshots.length,
       accessAttempts: deletedAttempts,
+      accessGrants: grants.length,
     };
   },
 });

@@ -582,6 +582,30 @@ test("pruneHistory forgets a quiet access attempt but keeps a live one", async (
   expect(left.map((row) => row.ip)).toEqual(["persistent"]);
 });
 
+test("pruneHistory drops expired access grants and keeps live ones", async () => {
+  const t = convexTest(schema, modules);
+  const now = Date.now();
+  await t.run(async (ctx) => {
+    await ctx.db.insert("accessGrants", {
+      token: "expired",
+      createdAt: now - 2 * 60 * 60 * 1000,
+      expiresAt: now - 1,
+    });
+    await ctx.db.insert("accessGrants", {
+      token: "live",
+      createdAt: now,
+      expiresAt: now + 60 * 60 * 1000,
+    });
+  });
+
+  expect(await t.mutation(internal.syncData.pruneHistory, {})).toMatchObject({
+    accessGrants: 1,
+  });
+
+  const left = await t.run(async (ctx) => ctx.db.query("accessGrants").collect());
+  expect(left.map((row) => row.token)).toEqual(["live"]);
+});
+
 test("clearMapEntriesOfKind empties one kind and leaves the rest", async () => {
   const t = convexTest(schema, modules);
   const seeded = await seed(t);

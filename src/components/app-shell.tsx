@@ -5,7 +5,7 @@ import { Landmark, LogOut, Settings, Wand2 } from "lucide-react";
 import type { ReactNode } from "react";
 import { api } from "../../convex/_generated/api";
 import { AppIcon } from "@/components/app-icon";
-import { UNLOCKED_FLAG } from "@/components/access-gate";
+import { readUnlockedFlag } from "@/components/access-gate";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
 import {
@@ -51,13 +51,7 @@ function SkipLink() {
 // a Log in button; everyone else sees the logo alone.
 export function PublicShell({ children }: { children: ReactNode }) {
   const viewer = useQuery(api.users.viewer);
-  const unlockedBefore = (() => {
-    try {
-      return localStorage.getItem(UNLOCKED_FLAG) === "1";
-    } catch {
-      return false;
-    }
-  })();
+  const unlockedBefore = readUnlockedFlag();
 
   if (viewer?.accessGranted) {
     return <AppShell>{children}</AppShell>;

@@ -83,7 +83,7 @@ export function SignIn() {
             </Button>
           ) : null}
           <p className="text-center text-xs text-muted-foreground">
-            Invite-only — you'll need the access password next.{" "}
+            Invite-only. Sign in to continue.{" "}
             <Link to="/policy" className="underline underline-offset-4">
               Privacy
             </Link>
