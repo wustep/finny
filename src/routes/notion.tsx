@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useAction, useMutation, useQuery } from "convex/react";
 import {
   ExternalLink,
@@ -14,7 +14,7 @@ import { toast } from "@/lib/notify";
 import { api } from "../../convex/_generated/api";
 import { DATABASE_EMOJI } from "../../convex/notionSchemas";
 import { connectionCount } from "@/lib/plural";
-import { Badge } from "@/components/ui/badge";
+import { SyncRunRow } from "@/components/sync-run-row";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -145,6 +145,10 @@ type Health = Awaited<
 
 function NotionPage() {
   const { error } = Route.useSearch();
+  const navigate = useNavigate({ from: "/notion" });
+  const [oauthError, setOauthError] = useState<
+    "oauth_denied" | "oauth_failed" | null
+  >(null);
   const status = useQuery(api.notion.getStatus);
   const checkHealth = useAction(api.notion.checkHealth);
   const { start: startOAuth, busy: connecting } = useNotionOAuth();
@@ -158,12 +162,15 @@ function NotionPage() {
   const healthChecked = useRef(false);
 
   useEffect(() => {
-    if (error === "oauth_denied") {
-      toast.error("Notion connection was cancelled");
-    } else if (error === "oauth_failed") {
-      toast.error("Notion connection failed — try again");
+    if (error !== "oauth_denied" && error !== "oauth_failed") {
+      return;
     }
-  }, [error]);
+    setOauthError(error);
+    void navigate({
+      search: { connected: undefined, error: undefined },
+      replace: true,
+    });
+  }, [error, navigate]);
 
   // "Is my destination all right" is one question with two halves — does the
   // token still work, and are the databases still the ones Finny built — so
@@ -251,6 +258,13 @@ function NotionPage() {
         </p>
       </div>
 
+      {oauthError ? (
+        <OauthErrorBanner
+          error={oauthError}
+          onDismiss={() => setOauthError(null)}
+        />
+      ) : null}
+
       {status === undefined || status === null ? (
         <Skeleton className="h-48 w-full" />
       ) : !status.connected ? (
@@ -313,6 +327,39 @@ function NotionPage() {
         </>
       )}
     </div>
+  );
+}
+
+function OauthErrorBanner({
+  error,
+  onDismiss,
+}: {
+  error: "oauth_denied" | "oauth_failed";
+  onDismiss: () => void;
+}) {
+  return (
+    <Card className="border-destructive">
+      <CardHeader>
+        <div className="flex items-start gap-3">
+          <TriangleAlert className="mt-0.5 size-5 shrink-0 text-destructive" />
+          <div className="flex flex-1 flex-col gap-1.5">
+            <CardTitle>
+              {error === "oauth_denied"
+                ? "Notion connection was cancelled"
+                : "Notion connection failed"}
+            </CardTitle>
+            <CardDescription>
+              {error === "oauth_denied"
+                ? "Nothing was granted. Connect Notion again when you're ready."
+                : "The grant didn't complete. Try Connect Notion again."}
+            </CardDescription>
+          </div>
+          <Button variant="ghost" size="sm" onClick={onDismiss}>
+            Dismiss
+          </Button>
+        </div>
+      </CardHeader>
+    </Card>
   );
 }
 
@@ -545,7 +592,11 @@ function SetupCard({ modules: initialModules }: { modules: Modules }) {
           />
         </div>
 
-        <Button onClick={handleCreate} disabled={creating} className="w-fit">
+        <Button
+          onClick={handleCreate}
+          disabled={creating || !pageId}
+          className="w-fit"
+        >
           {creating ? "Creating databases…" : "Create databases"}
         </Button>
       </CardContent>
@@ -1025,29 +1076,7 @@ function RecentSyncs() {
       <CardContent>
         <ul className="flex flex-col gap-2">
           {runs.slice(0, 5).map((run) => (
-            <li
-              key={run.id}
-              className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm"
-            >
-              <Badge
-                variant={
-                  run.status === "error"
-                    ? "destructive"
-                    : run.status === "running"
-                      ? "outline"
-                      : "secondary"
-                }
-              >
-                {run.status}
-              </Badge>
-              <span className="min-w-0 flex-1">
-                {run.institutionName}
-                <span className="text-muted-foreground"> · {run.trigger}</span>
-              </span>
-              <span className="text-xs tabular-nums text-muted-foreground">
-                {new Date(run.startedAt).toLocaleString()}
-              </span>
-            </li>
+            <SyncRunRow key={run.id} run={run} />
           ))}
         </ul>
       </CardContent>
