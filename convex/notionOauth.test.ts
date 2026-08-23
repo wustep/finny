@@ -245,6 +245,11 @@ test("checkHealth reports a revoked token as unauthorized", async () => {
     state: "unauthorized",
     message: "API token is invalid.",
   });
+  const stored = await asUser.query(api.notion.getStatus, {});
+  expect(stored).toMatchObject({
+    connected: true,
+    tokenStatus: "unauthorized",
+  });
 });
 
 test("checkHealth separates a healthy token from an unreachable Notion", async () => {
@@ -254,6 +259,9 @@ test("checkHealth separates a healthy token from an unreachable Notion", async (
   vi.stubGlobal("fetch", vi.fn(async () => Response.json({ id: "bot-1" })));
   expect(await asUser.action(api.notion.checkHealth, {})).toEqual({
     state: "ok",
+  });
+  expect(await asUser.query(api.notion.getStatus, {})).toMatchObject({
+    tokenStatus: "ok",
   });
 
   // A 5xx is Notion's problem, not the user's — it must not read as

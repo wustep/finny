@@ -39,6 +39,7 @@ import {
   P,
   archivePage,
   accountTitle,
+  createComment,
   externalIcon,
   setPageIcon,
   todayUTC,
@@ -358,6 +359,48 @@ export const pushConnectionStatusToNotion = internalAction({
   },
 });
 
+function operatorDigestText(claim: {
+  failedRuns: number;
+  abandonedPages: number;
+  samples: Array<{ institutionName: string; error: string }>;
+}): string {
+  const runs =
+    claim.failedRuns === 1
+      ? "1 non-retryable failed run"
+      : `${claim.failedRuns} non-retryable failed runs`;
+  const skipped =
+    claim.abandonedPages === 1
+      ? "1 permanently skipped page"
+      : `${claim.abandonedPages} permanently skipped pages`;
+  const lines = [`Finny daily: ${runs}, ${skipped}.`];
+  for (const sample of claim.samples) {
+    lines.push(`${sample.institutionName}: ${sample.error}`);
+  }
+  return lines.join("\n");
+}
+
+// Daily count of failures a retry cannot fix, posted to the operator's own
+// Notion page — the inbox a broken bank already comments on. Claimed once
+// per UTC day so a sweep continuation cannot say it twice.
+export const pushOperatorDigest = internalAction({
+  args: {},
+  handler: async (ctx) => {
+    const claim = await ctx.runMutation(internal.syncData.claimOperatorDigest, {});
+    if (claim.kind !== "post") {
+      return;
+    }
+    try {
+      await createComment(
+        claim.token,
+        claim.pageId,
+        operatorDigestText(claim),
+      );
+    } catch (error) {
+      console.error("failed to post operator digest", error);
+    }
+  },
+});
+
 // Give a connection an icon by hand, and put it on the rows it already has.
 //
 // Plaid returns a logo for most institutions and nothing for the rest, and
@@ -424,6 +467,89 @@ export const setConnectionIcon = internalAction({
     }
     console.log(`icon set on ${pages} page(s) for ${args.institutionName}`);
     return { pages };
+  },
+});
+
+// ---------- recurring-only: Plaid said the streams moved ----------
+
+const recurringTriggerValidator = v.union(
+  v.literal("initial"),
+  v.literal("webhook"),
+  v.literal("manual"),
+  v.literal("cron"),
+  v.literal("retry"),
+);
+
+// RECURRING_TRANSACTIONS_UPDATE is tens of rows and does not consume the
+// transactions/sync cursor. Walking that cursor (and investments) just to
+// refresh Recurring would hide the change behind a full run.
+export const runRecurringForConnection = internalAction({
+  args: {
+    connectionId: v.id("bankConnections"),
+    trigger: recurringTriggerValidator,
+  },
+  handler: async (ctx, args) => {
+    const context = await loadContext(ctx, args.connectionId);
+    if (!context) {
+      console.log(
+        "recurring sync skipped: no Notion destination",
+        args.connectionId,
+      );
+      return;
+    }
+    const { connection, notion, accounts } = context;
+    if (!notion.modules.recurring || !notion.databases?.recurring) {
+      console.log(
+        "recurring sync skipped: module off",
+        args.connectionId,
+      );
+      return;
+    }
+    const lease = await ctx.runMutation(internal.syncData.beginRun, {
+      userId: connection.userId,
+      connectionId: connection._id,
+      trigger: args.trigger,
+      scope: "recurring",
+    });
+    if (!lease.acquired) {
+      console.log(
+        "recurring sync skipped: connection is already syncing",
+        connection._id,
+      );
+      return;
+    }
+    const runId = lease.runId;
+    try {
+      if (notion.schemaVersion !== NOTION_SCHEMA_VERSION) {
+        await ctx.runAction(internal.notion.ensureDatabaseColumns, {
+          userId: connection.userId,
+        });
+      }
+      const enabled = accounts.filter((account) => account.syncEnabled);
+      const accountPages = await ctx.runQuery(internal.syncData.getMapEntries, {
+        userId: connection.userId,
+        kind: "account",
+        providerIds: enabled.map((account) => account.plaidAccountId),
+      });
+      await syncRecurring(ctx, {
+        context,
+        runId,
+        accountPages,
+        accountNames: accountTitles(context),
+      });
+      await ctx.runMutation(internal.syncData.finishRun, {
+        runId,
+        status: "success",
+      });
+    } catch (error) {
+      console.error("recurring sync failed", error);
+      await failRun(ctx, {
+        runId,
+        connectionId: connection._id,
+        stage: "Recurring",
+        error,
+      });
+    }
   },
 });
 
@@ -1255,15 +1381,23 @@ export const transactionsBatch = internalAction({
         // A row Notion will never accept — a rejected select option, a
         // deleted database — would otherwise block this Item's whole
         // transaction stream. Move past it and say so on the run.
+        const abandonError =
+          `Gave up on ${failures} transaction(s) after ${attempt} attempts ` +
+          `and advanced the Plaid cursor past them. They will not be ` +
+          `retried; check the logs for the underlying Notion error.`;
+        await ctx.runMutation(internal.syncData.recordAbandonedPage, {
+          connectionId: connection._id,
+          cursor: connection.transactionsCursor,
+          nextCursor: next_cursor,
+          skipped: failures,
+          error: abandonError,
+        });
         await ctx.runMutation(internal.syncData.finishRun, {
           runId: args.runId,
           status: "error",
           // Just decided not to try these again.
           retryable: false,
-          error:
-            `Gave up on ${failures} transaction(s) after ${attempt} attempts ` +
-            `and advanced the Plaid cursor past them. They will not be ` +
-            `retried; check the logs for the underlying Notion error.`,
+          error: abandonError,
         });
         return;
       }

@@ -321,6 +321,13 @@ export const handleWebhook = internalAction({
       });
       return;
     }
+    if (disposition.action === "sync_recurring") {
+      await ctx.scheduler.runAfter(0, internal.sync.runRecurringForConnection, {
+        connectionId: connection._id,
+        trigger: "webhook",
+      });
+      return;
+    }
     await ctx.scheduler.runAfter(0, internal.sync.runForConnection, {
       connectionId: connection._id,
       trigger: "webhook",

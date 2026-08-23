@@ -130,6 +130,11 @@ export async function failRun(
   },
 ): Promise<void> {
   const failure = describeRunFailure(input.stage, input.error);
+  if (isNotionUnauthorized(input.error)) {
+    await ctx.runMutation(internal.notion.markDestinationUnauthorized, {
+      connectionId: input.connectionId,
+    });
+  }
   if (failure.itemBroken) {
     await ctx.runMutation(internal.connections.markItemBroken, {
       connectionId: input.connectionId,

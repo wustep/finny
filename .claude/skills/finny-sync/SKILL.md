@@ -246,10 +246,12 @@ verifies the `Plaid-Verification` JWT (signature + body hash; a one-hour
 clock tolerance, because verification is scheduled rather than inline), and
 routes after that via `classifyPlaidWebhook`: ITEM status codes
 (`ERROR`, `USER_PERMISSION_REVOKED`, expiration/disconnect, `LOGIN_REPAIRED`)
-set connection status; everything that means new data — including
-`RECURRING_TRANSACTIONS_UPDATE`, `LIABILITIES: DEFAULT_UPDATE`, and
-`USER_ACCOUNT_REVOKED` — schedules `sync.runForConnection` with trigger
-`webhook`. Nothing acts on an unverified body.
+set connection status; `RECURRING_TRANSACTIONS_UPDATE` schedules
+`sync.runRecurringForConnection` (streams only — it does not walk the
+transactions cursor); everything else that means new data — including
+`LIABILITIES: DEFAULT_UPDATE` and `USER_ACCOUNT_REVOKED` — schedules
+`sync.runForConnection` with trigger `webhook`. Nothing acts on an
+unverified body.
 
 ## 6. Local dev
 
@@ -264,9 +266,12 @@ reuses that; access tokens do not work across environments.
 
 ## 6b. Destination integrity (`convex/notion.ts`)
 
-`checkHealth` asks whether the token works. `checkDatabases` asks the question
-after it — every database Finny recorded is fetched and compared against its
-spec (missing / trashed / missing columns / retyped columns). `repairDatabases`
+`checkHealth` asks whether the token works and writes `tokenStatus` on the
+destination row so the Notion page can flip without waiting for a click.
+A sync that sees a 401 does the same write (`markDestinationUnauthorized`).
+`checkDatabases` asks the question after it — every database Finny recorded
+is fetched and compared against its spec (missing / trashed / missing columns
+/ retyped columns). `repairDatabases`
 adds missing columns, and rebuilds a database that is gone: the rows went with
 it, so it also drops the `notionPageMap` entries pointing into it (they address
 pages that no longer exist) and repoints every relation that named it — a
@@ -314,8 +319,16 @@ webhook, the run it schedules, and the daily sweep — all of which push the
 status of a broken Item — say it once between them. A first-ever claim on an
 `active` connection returns null, because "still fine" is not news.
 `finishRun` schedules a push only when a run actually recovers a broken
-connection. Commenting never throws: the integration may not have the
-insert-comments capability, which is a 403 forever.
+connection (`status === "error"` → `active`). A successful run does **not**
+clear `pending_expiration` — LOGIN_REPAIRED and reconnect do. Commenting
+never throws: the integration may not have the insert-comments capability,
+which is a 403 forever.
+
+A transactions page abandoned after `MAX_CURSOR_ATTEMPTS` is written to
+`abandonedPages` (item, cursor, next cursor, skip count, error, time) before
+the run is failed. The daily sweep's last pass counts non-retryable failed
+runs and those rows across users and comments once on the oldest Notion
+destination's parent page (`pushOperatorDigest`).
 
 ## 6e. Recurring streams (`convex/sync.ts`)
 
@@ -349,5 +362,5 @@ there is nothing to upload and nothing of the image is stored here.
 
 ## 7. Docs
 
-PLAN.md's Notion property tables are stale — `convex/notionSchemas.ts` is
-the live schema.
+PLAN.md is decisions plus a pointer at the README.
+`convex/notionSchemas.ts` is the live schema.

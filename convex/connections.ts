@@ -367,6 +367,30 @@ export const recentRuns = query({
   },
 });
 
+// Pages this user permanently skipped. The run log is pruned after 30 days;
+// this trail is what still names the cursor after that.
+export const recentAbandonedPages = query({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) {
+      return [];
+    }
+    const pages = await ctx.db
+      .query("abandonedPages")
+      .withIndex("by_user_and_abandonedAt", (q) => q.eq("userId", userId))
+      .order("desc")
+      .take(10);
+    return pages.map((page) => ({
+      id: page._id,
+      institutionName: page.institutionName,
+      skipped: page.skipped,
+      error: page.error,
+      abandonedAt: page.abandonedAt,
+    }));
+  },
+});
+
 // Runs still in flight, for the live progress line on a connection's card.
 // Queries are reactive, so the counts a running sync writes as it goes reach
 // the page on their own — nothing here needs polling.

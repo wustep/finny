@@ -294,9 +294,14 @@ function NotionPage() {
               busy={connecting}
             />
           ) : null}
-          {health?.state === "unauthorized" ? (
+          {health?.state === "unauthorized" ||
+          (health === null && status.tokenStatus === "unauthorized") ? (
             <UnhealthyCard
-              message={health.message}
+              message={
+                health?.state === "unauthorized"
+                  ? health.message
+                  : "Notion rejected the stored token"
+              }
               onReconnect={() =>
                 startOAuth({
                   workspaceId: status.workspaceId,

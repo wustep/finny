@@ -262,6 +262,14 @@ export default defineSchema({
     // Absent means "before versions existed", which is the case a sync has to
     // fix: a property added to a spec is not on a database already built.
     schemaVersion: v.optional(v.number()),
+    // Last known Notion token health. Bookkeeping, like a bank connection's
+    // status: a 401 during a sync writes this so the destination page does
+    // not stay green until someone happens to click Check. `ok` after a
+    // reconnect or a health ping that succeeded. Absent means never checked.
+    tokenStatus: v.optional(
+      v.union(v.literal("ok"), v.literal("unauthorized")),
+    ),
+    tokenStatusAt: v.optional(v.number()),
   }).index("by_user", ["userId"]),
 
   // Access-password attempts per IP. 3 consecutive failures bans the IP for
@@ -400,10 +408,46 @@ export default defineSchema({
       }),
     ),
     error: v.optional(v.string()),
+    // Set on error runs. false is a failure a retry cannot fix — a dead
+    // Notion token, a broken Item, a page we just abandoned. The daily
+    // operator digest counts these. Absent on runs finished before this
+    // was recorded, and on successes.
+    retryable: v.optional(v.boolean()),
   })
     .index("by_user", ["userId"])
     .index("by_connection", ["connectionId"])
     // Finds runs left saying "running" by an action that died before
     // finishRun, oldest first — see syncData.sweepStuckRuns.
     .index("by_status_and_startedAt", ["status", "startedAt"]),
+
+  // A transactions/sync page we advanced past after MAX_CURSOR_ATTEMPTS.
+  // The run row says how many were skipped; this is the trail — which
+  // Item, which cursor, why — that survives after the run is pruned.
+  // No financial data: a cursor is an opaque Plaid position.
+  abandonedPages: defineTable({
+    userId: v.id("users"),
+    connectionId: v.id("bankConnections"),
+    plaidItemId: v.string(),
+    institutionName: v.string(),
+    // The Plaid cursor the page was at when we gave up. Absent on the
+    // first page of an Item, which has no cursor yet.
+    cursor: v.optional(v.string()),
+    // The cursor we wrote afterwards. Plaid will not resend this page.
+    nextCursor: v.string(),
+    skipped: v.number(),
+    error: v.string(),
+    abandonedAt: v.number(),
+  })
+    .index("by_user_and_abandonedAt", ["userId", "abandonedAt"])
+    .index("by_connection", ["connectionId"])
+    .index("by_abandonedAt", ["abandonedAt"]),
+
+  // One row per UTC day the daily sweep posted an operator digest, so a
+  // sweep that continues or retries does not comment twice.
+  operatorDigests: defineTable({
+    day: v.string(),
+    failedRuns: v.number(),
+    abandonedPages: v.number(),
+    postedAt: v.number(),
+  }).index("by_day", ["day"]),
 });

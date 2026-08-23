@@ -772,6 +772,145 @@ test("a run that recovers a broken connection schedules the news", async () => {
   ).toHaveLength(1);
 });
 
+test("a successful run does not clear pending expiration", async () => {
+  const t = convexTest(schema, modules);
+  const seeded = await seed(t);
+  await t.run(async (ctx) => {
+    await ctx.db.patch(seeded.connectionId, { status: "pending_expiration" });
+  });
+
+  await t.mutation(internal.syncData.finishRun, {
+    runId: seeded.runId,
+    status: "success",
+  });
+
+  const connection = await t.run(async (ctx) => ctx.db.get(seeded.connectionId));
+  expect(connection?.status).toBe("pending_expiration");
+  const scheduled = await t.run(async (ctx) =>
+    ctx.db.system.query("_scheduled_functions").collect(),
+  );
+  expect(
+    scheduled.filter((job) => job.name.includes("pushConnectionStatusToNotion")),
+  ).toHaveLength(0);
+});
+
+test("an error run records whether it was retryable", async () => {
+  const t = convexTest(schema, modules);
+  const seeded = await seed(t);
+  await t.mutation(internal.syncData.finishRun, {
+    runId: seeded.runId,
+    status: "error",
+    error: "Notion rejected the integration token (401).",
+    retryable: false,
+  });
+  const run = await t.run(async (ctx) => ctx.db.get(seeded.runId));
+  expect(run?.retryable).toBe(false);
+});
+
+test("recordAbandonedPage names the item, cursor, and why", async () => {
+  const t = convexTest(schema, modules);
+  const seeded = await seed(t);
+  await t.run(async (ctx) => {
+    await ctx.db.patch(seeded.connectionId, {
+      transactionsCursor: "cursor-before",
+    });
+  });
+
+  await t.mutation(internal.syncData.recordAbandonedPage, {
+    connectionId: seeded.connectionId,
+    cursor: "cursor-before",
+    nextCursor: "cursor-after",
+    skipped: 3,
+    error: "Gave up on 3 transaction(s) after 3 attempts",
+  });
+
+  const pages = await t.run(async (ctx) => ctx.db.query("abandonedPages").collect());
+  expect(pages).toHaveLength(1);
+  expect(pages[0]).toMatchObject({
+    userId: seeded.userId,
+    connectionId: seeded.connectionId,
+    plaidItemId: "item-1",
+    institutionName: "Brokerage",
+    cursor: "cursor-before",
+    nextCursor: "cursor-after",
+    skipped: 3,
+  });
+});
+
+test("claimOperatorDigest posts once per day to the oldest destination", async () => {
+  const t = convexTest(schema, modules);
+  const seeded = await seed(t);
+  await t.run(async (ctx) => {
+    await ctx.db.insert("notionConnections", {
+      userId: seeded.userId,
+      accessToken: "notion-token",
+      workspaceId: "ws-1",
+      botId: "bot-1",
+      parentPageId: "page-parent",
+      modules: { balances: true, spending: true, investments: true },
+    });
+    await ctx.db.patch(seeded.runId, {
+      status: "error",
+      error: "Gave up on 2 transaction(s)",
+      retryable: false,
+      finishedAt: Date.now(),
+    });
+    await ctx.db.insert("abandonedPages", {
+      userId: seeded.userId,
+      connectionId: seeded.connectionId,
+      plaidItemId: "item-1",
+      institutionName: "Brokerage",
+      nextCursor: "c2",
+      skipped: 2,
+      error: "Gave up on 2 transaction(s)",
+      abandonedAt: Date.now(),
+    });
+  });
+
+  const first = await t.mutation(internal.syncData.claimOperatorDigest, {});
+  expect(first).toMatchObject({
+    kind: "post",
+    failedRuns: 1,
+    abandonedPages: 1,
+    token: "notion-token",
+    pageId: "page-parent",
+  });
+  expect(first.kind === "post" && first.samples.length).toBeGreaterThan(0);
+
+  const second = await t.mutation(internal.syncData.claimOperatorDigest, {});
+  expect(second).toEqual({ kind: "skip" });
+});
+
+test("claimOperatorDigest stays quiet when nothing failed", async () => {
+  const t = convexTest(schema, modules);
+  const seeded = await seed(t);
+  await t.run(async (ctx) => {
+    await ctx.db.insert("notionConnections", {
+      userId: seeded.userId,
+      accessToken: "notion-token",
+      workspaceId: "ws-1",
+      botId: "bot-1",
+      parentPageId: "page-parent",
+      modules: { balances: true, spending: true, investments: true },
+    });
+  });
+  expect(await t.mutation(internal.syncData.claimOperatorDigest, {})).toEqual({
+    kind: "skip",
+  });
+});
+
+test("a small sweep schedules the operator digest on its last pass", async () => {
+  const t = convexTest(schema, modules);
+  await seed(t);
+  await t.mutation(internal.syncData.sweep, {});
+  const scheduled = await t.run(async (ctx) =>
+    ctx.db.system.query("_scheduled_functions").collect(),
+  );
+  expect(
+    scheduled.filter((job) => job.name.includes("pushOperatorDigest")),
+  ).toHaveLength(1);
+});
+
 test("a run on a healthy connection says nothing", async () => {
   const t = convexTest(schema, modules);
   const seeded = await seed(t);

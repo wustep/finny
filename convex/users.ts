@@ -149,6 +149,16 @@ async function purgePass(
     await ctx.db.delete(run._id);
   }
 
+  const abandoned = overflow(
+    await ctx.db
+      .query("abandonedPages")
+      .withIndex("by_user_and_abandonedAt", (q) => q.eq("userId", userId))
+      .take(PURGE_BATCH + 1),
+  );
+  for (const page of abandoned) {
+    await ctx.db.delete(page._id);
+  }
+
   const states = await ctx.db.query("notionOauthStates").take(OAUTH_STATE_SCAN);
   let deletedStates = 0;
   for (const state of states) {

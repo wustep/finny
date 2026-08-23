@@ -10,6 +10,7 @@
 export type WebhookDisposition =
   | { action: "ignore" }
   | { action: "sync" }
+  | { action: "sync_recurring" }
   | {
       action: "item_status";
       status: "error" | "pending_expiration" | "active";
@@ -54,13 +55,20 @@ export function classifyPlaidWebhook(
         code === "INITIAL_UPDATE" ||
         code === "HISTORICAL_UPDATE" ||
         code === "DEFAULT_UPDATE" ||
-        code === "TRANSACTIONS_REMOVED" ||
-        code === "RECURRING_TRANSACTIONS_UPDATE")) ||
+        code === "TRANSACTIONS_REMOVED")) ||
     (type === "HOLDINGS" && code === "DEFAULT_UPDATE") ||
     (type === "INVESTMENTS_TRANSACTIONS" && code === "DEFAULT_UPDATE") ||
     (type === "LIABILITIES" && code === "DEFAULT_UPDATE")
   ) {
     return { action: "sync" };
+  }
+
+  // Recurring streams are tens of rows and do not consume the
+  // transactions/sync cursor. A full run would walk that cursor and
+  // investments before the Recurring database moved; this one writes
+  // only the streams Plaid said changed.
+  if (type === "TRANSACTIONS" && code === "RECURRING_TRANSACTIONS_UPDATE") {
+    return { action: "sync_recurring" };
   }
 
   return { action: "ignore" };

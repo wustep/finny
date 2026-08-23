@@ -97,6 +97,7 @@ export const getStatus = query({
       databases: connection.databases,
       titleFormats: connection.titleFormats,
       manualProperties: connection.manualProperties,
+      tokenStatus: connection.tokenStatus,
     };
   },
 });
@@ -146,6 +147,10 @@ export const checkHealth = action({
       return { state: "unknown", message: String(error) };
     }
     if (response.ok) {
+      await ctx.runMutation(internal.notion.setTokenStatus, {
+        userId,
+        status: "ok",
+      });
       return { state: "ok" };
     }
     const data: any = await response.json().catch(() => ({}));
@@ -153,9 +158,57 @@ export const checkHealth = action({
     // 401 is a revoked or expired token; 403 is a token that no longer has
     // the access it was granted. Both are fixed by reauthorising.
     if (response.status === 401 || response.status === 403) {
+      await ctx.runMutation(internal.notion.setTokenStatus, {
+        userId,
+        status: "unauthorized",
+      });
       return { state: "unauthorized", message };
     }
     return { state: "unknown", message };
+  },
+});
+
+export const setTokenStatus = internalMutation({
+  args: {
+    userId: v.id("users"),
+    status: v.union(v.literal("ok"), v.literal("unauthorized")),
+  },
+  handler: async (ctx, args) => {
+    const connection = await ctx.db
+      .query("notionConnections")
+      .withIndex("by_user", (q) => q.eq("userId", args.userId))
+      .unique();
+    if (!connection) {
+      return;
+    }
+    await ctx.db.patch(connection._id, {
+      tokenStatus: args.status,
+      tokenStatusAt: Date.now(),
+    });
+  },
+});
+
+// A sync discovered the destination token is dead. Same write as
+// checkHealth's 401 path, so the Notion page flips without waiting for
+// someone to open it and run the ping.
+export const markDestinationUnauthorized = internalMutation({
+  args: { connectionId: v.id("bankConnections") },
+  handler: async (ctx, args) => {
+    const connection = await ctx.db.get(args.connectionId);
+    if (!connection) {
+      return;
+    }
+    const notion = await ctx.db
+      .query("notionConnections")
+      .withIndex("by_user", (q) => q.eq("userId", connection.userId))
+      .unique();
+    if (!notion) {
+      return;
+    }
+    await ctx.db.patch(notion._id, {
+      tokenStatus: "unauthorized",
+      tokenStatusAt: Date.now(),
+    });
   },
 });
 
@@ -317,6 +370,10 @@ export const saveConnection = internalMutation({
         workspaceName: args.workspaceName,
         workspaceIcon: args.workspaceIcon,
         botId: args.botId,
+        // A fresh token is the answer to unauthorized; the next check or
+        // sync will confirm it.
+        tokenStatus: "ok",
+        tokenStatusAt: Date.now(),
         // Databases from another workspace are unreachable with this token.
         ...(sameWorkspace
           ? {}

@@ -60,11 +60,18 @@ const SYNC_FOLLOW_UP_MS = 60 * 1000;
 // someone else holds it. Both halves live in one mutation because mutations
 // are serializable: a check in one call and a set in another let two
 // webhooks 1ms apart each believe they were first.
+const runScopeValidator = v.optional(
+  v.union(v.literal("full"), v.literal("recurring")),
+);
+
 export const beginRun = internalMutation({
   args: {
     userId: v.id("users"),
     connectionId: v.id("bankConnections"),
     trigger: triggerValidator,
+    // Recurring-only webhooks take the same lease — the page map is still
+    // shared — but follow up with the recurring action, not a full walk.
+    scope: runScopeValidator,
   },
   handler: async (ctx, args) => {
     const connection = await ctx.db.get(args.connectionId);
@@ -83,9 +90,13 @@ export const beginRun = internalMutation({
         await ctx.db.patch(args.connectionId, {
           syncFollowUpAt: now + SYNC_FOLLOW_UP_MS,
         });
+        const followUp =
+          args.scope === "recurring"
+            ? internal.sync.runRecurringForConnection
+            : internal.sync.runForConnection;
         await ctx.scheduler.runAfter(
           SYNC_FOLLOW_UP_MS,
-          internal.sync.runForConnection,
+          followUp,
           { connectionId: args.connectionId, trigger: "webhook" },
         );
       }
@@ -180,6 +191,7 @@ export const finishRun = internalMutation({
       status: args.status,
       error: args.error,
       finishedAt: Date.now(),
+      retryable: args.status === "error" ? args.retryable : undefined,
     });
     if (!run.connectionId) {
       return;
@@ -194,14 +206,18 @@ export const finishRun = internalMutation({
       });
     }
     if (args.status === "success") {
-      const recovered = connection !== null && connection.status !== "active";
+      // pending_expiration is a warning, not a failure: the Item still
+      // syncs until it actually dies. Forcing Active here would hide the
+      // webhook the card is supposed to show until the next expiration
+      // event — LOGIN_REPAIRED and reconnect are what clear it.
+      const recovered = connection !== null && connection.status === "error";
       await ctx.db.patch(run.connectionId, {
         lastSyncedAt: Date.now(),
-        status: "active",
-        errorCode: undefined,
+        syncRetryCount: undefined,
+        ...(recovered || connection?.status === "active"
+          ? { status: "active" as const, errorCode: undefined }
+          : {}),
       });
-      // A run that worked ends the retry sequence, whatever it took.
-      await ctx.db.patch(run.connectionId, { syncRetryCount: undefined });
       if (recovered) {
         // A bank that fixed itself is worth saying out loud, since the user
         // was told when it broke. The push is what writes the Notion row's
@@ -312,6 +328,36 @@ export const recordCursorFailure = internalMutation({
     const failures = (connection.cursorFailures ?? 0) + 1;
     await ctx.db.patch(args.connectionId, { cursorFailures: failures });
     return failures;
+  },
+});
+
+// Persist a page the sync just advanced past after MAX_CURSOR_ATTEMPTS.
+// The run error says it happened; this is what still names the cursor
+// after that run is pruned.
+export const recordAbandonedPage = internalMutation({
+  args: {
+    connectionId: v.id("bankConnections"),
+    cursor: v.optional(v.string()),
+    nextCursor: v.string(),
+    skipped: v.number(),
+    error: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const connection = await ctx.db.get(args.connectionId);
+    if (!connection) {
+      return;
+    }
+    await ctx.db.insert("abandonedPages", {
+      userId: connection.userId,
+      connectionId: connection._id,
+      plaidItemId: connection.plaidItemId,
+      institutionName: connection.institutionName,
+      cursor: args.cursor,
+      nextCursor: args.nextCursor,
+      skipped: args.skipped,
+      error: args.error,
+      abandonedAt: Date.now(),
+    });
   },
 });
 
@@ -1062,6 +1108,11 @@ const BALANCE_SNAPSHOT_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
 // enforces it; this only clears the row afterwards.
 const ACCESS_ATTEMPT_RETENTION_MS = 24 * 60 * 60 * 1000;
 
+// Abandoned pages outlive the run log: the run is what the UI shows first,
+// this is the trail after that row is pruned. Ninety days matches balance
+// snapshots — long enough to notice, not a forever table.
+const ABANDONED_PAGE_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
+
 // Rows one retention pass deletes, per table. Bounded so the daily sweep stays
 // inside one transaction; a backlog drains over consecutive days.
 const RETENTION_BATCH = 500;
@@ -1153,12 +1204,23 @@ export const pruneHistory = internalMutation({
       await ctx.db.delete(grant._id);
     }
 
+    const abandoned = await ctx.db
+      .query("abandonedPages")
+      .withIndex("by_abandonedAt", (q) =>
+        q.lt("abandonedAt", now - ABANDONED_PAGE_RETENTION_MS),
+      )
+      .take(RETENTION_BATCH);
+    for (const page of abandoned) {
+      await ctx.db.delete(page._id);
+    }
+
     return {
       runs: deletedRuns,
       oauthStates: states.length,
       balanceSnapshots: snapshots.length,
       accessAttempts: deletedAttempts,
       accessGrants: grants.length,
+      abandonedPages: abandoned.length,
     };
   },
 });
@@ -1230,6 +1292,122 @@ export const sweep = internalMutation({
         after: connections[connections.length - 1]._creationTime,
         delayMs: delay,
       });
+      return;
     }
+    // Last pass: the day's non-retryable failures, posted to the operator's
+    // own Notion page — the same inbox a broken bank already comments on.
+    await ctx.scheduler.runAfter(
+      delay,
+      internal.sync.pushOperatorDigest,
+      {},
+    );
+  },
+});
+
+const DIGEST_WINDOW_MS = 24 * 60 * 60 * 1000;
+const DIGEST_SAMPLE_LIMIT = 5;
+const DIGEST_SCAN_LIMIT = 201;
+
+export type OperatorDigestClaim =
+  | { kind: "skip" }
+  | {
+      kind: "post";
+      day: string;
+      failedRuns: number;
+      abandonedPages: number;
+      samples: Array<{ institutionName: string; error: string }>;
+      token: string;
+      pageId: string;
+    };
+
+// Count yesterday's non-retryable failures, claim today's digest slot, and
+// hand the comment's destination back. The oldest Notion destination is
+// the operator's — the person who stood the instance up — which is the
+// least-new place this number can land: their Notion inbox, same as a
+// broken bank.
+export const claimOperatorDigest = internalMutation({
+  args: {},
+  handler: async (ctx): Promise<OperatorDigestClaim> => {
+    const now = Date.now();
+    const day = new Date(now).toISOString().slice(0, 10);
+    const existing = await ctx.db
+      .query("operatorDigests")
+      .withIndex("by_day", (q) => q.eq("day", day))
+      .unique();
+    if (existing) {
+      return { kind: "skip" };
+    }
+
+    const since = now - DIGEST_WINDOW_MS;
+    const errorRuns = await ctx.db
+      .query("syncRuns")
+      .withIndex("by_status_and_startedAt", (q) =>
+        q.eq("status", "error").gte("startedAt", since),
+      )
+      .take(DIGEST_SCAN_LIMIT);
+    const nonRetryable = errorRuns.filter((run) => run.retryable === false);
+    const abandoned = await ctx.db
+      .query("abandonedPages")
+      .withIndex("by_abandonedAt", (q) => q.gte("abandonedAt", since))
+      .take(DIGEST_SCAN_LIMIT);
+
+    const failedRuns = nonRetryable.length;
+    const abandonedCount = abandoned.length;
+    if (failedRuns === 0 && abandonedCount === 0) {
+      return { kind: "skip" };
+    }
+
+    const destination = await ctx.db.query("notionConnections").order("asc").first();
+    if (!destination?.accessToken || !destination.parentPageId) {
+      console.error(
+        "operator digest: no Notion parent page to comment on",
+        { failedRuns, abandonedPages: abandonedCount },
+      );
+      return { kind: "skip" };
+    }
+
+    const samples: Array<{ institutionName: string; error: string }> = [];
+    for (const run of nonRetryable) {
+      if (samples.length >= DIGEST_SAMPLE_LIMIT) {
+        break;
+      }
+      if (!run.error) {
+        continue;
+      }
+      let institutionName = "Unknown";
+      if (run.connectionId) {
+        const connection = await ctx.db.get(run.connectionId);
+        if (connection) {
+          institutionName = connection.institutionName;
+        }
+      }
+      samples.push({ institutionName, error: run.error });
+    }
+    for (const page of abandoned) {
+      if (samples.length >= DIGEST_SAMPLE_LIMIT) {
+        break;
+      }
+      samples.push({
+        institutionName: page.institutionName,
+        error: page.error,
+      });
+    }
+
+    await ctx.db.insert("operatorDigests", {
+      day,
+      failedRuns,
+      abandonedPages: abandonedCount,
+      postedAt: now,
+    });
+
+    return {
+      kind: "post",
+      day,
+      failedRuns,
+      abandonedPages: abandonedCount,
+      samples,
+      token: destination.accessToken,
+      pageId: destination.parentPageId,
+    };
   },
 });
