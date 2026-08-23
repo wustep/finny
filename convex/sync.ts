@@ -61,6 +61,7 @@ import { claimAndCreatePage, upsertMapped } from "./syncPages";
 import { renderTitle } from "./titleFormats";
 import {
   commentOnStatusChange,
+  failIfNotionUnauthorized,
   failRun,
   heartbeat,
   institutionIcon,
@@ -831,6 +832,16 @@ export const accountBackfill = internalAction({
             stats[result]++;
           }
         } catch (error) {
+          if (
+            await failIfNotionUnauthorized(ctx, {
+              runId: args.runId,
+              connectionId: args.connectionId,
+              stage: "Account catch-up",
+              error,
+            })
+          ) {
+            return;
+          }
           console.error("failed to catch up transaction", txn.transaction_id, error);
           failures++;
         }
@@ -1155,6 +1166,16 @@ export const transactionsBatch = internalAction({
             stats[result]++;
           }
         } catch (error) {
+          if (
+            await failIfNotionUnauthorized(ctx, {
+              runId: args.runId,
+              connectionId: args.connectionId,
+              stage: "Transactions",
+              error,
+            })
+          ) {
+            return;
+          }
           console.error("failed to sync transaction", txn.transaction_id, error);
           failures++;
         }
@@ -1175,6 +1196,16 @@ export const transactionsBatch = internalAction({
           removedIds.push(id);
           stats.removed++;
         } catch (error) {
+          if (
+            await failIfNotionUnauthorized(ctx, {
+              runId: args.runId,
+              connectionId: args.connectionId,
+              stage: "Transactions",
+              error,
+            })
+          ) {
+            return;
+          }
           console.error("failed to archive transaction", id, error);
           failures++;
         }
@@ -1463,6 +1494,16 @@ export const investmentsBatch = internalAction({
             stats.added++;
           }
         } catch (error) {
+          if (
+            await failIfNotionUnauthorized(ctx, {
+              runId: args.runId,
+              connectionId: args.connectionId,
+              stage: "Investment transactions",
+              error,
+            })
+          ) {
+            return;
+          }
           console.error(
             "failed to sync investment transaction",
             txn.investment_transaction_id,

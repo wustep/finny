@@ -73,6 +73,29 @@ function backoffMs(attempt: number): number {
   return ceiling / 2 + Math.random() * (ceiling / 2);
 }
 
+// Thrown for any non-retryable Notion response. Callers that need to tell
+// "the token is dead" from "this one row failed" should use
+// `isNotionUnauthorized` rather than matching on the message string.
+export class NotionApiError extends Error {
+  readonly status: number;
+  constructor(path: string, status: number, detail: string) {
+    super(`Notion API ${path} failed (${status}): ${detail}`);
+    this.name = "NotionApiError";
+    this.status = status;
+  }
+}
+
+// 401 is a revoked or expired integration token. 403 is often one page or
+// capability (comments, a locked row) and must not be treated as the same
+// thing — that would stop a whole Item over one restricted page.
+export function isNotionUnauthorized(error: unknown): boolean {
+  if (error instanceof NotionApiError) {
+    return error.status === 401;
+  }
+  const text = String(error);
+  return text.includes("Notion API") && text.includes("(401)");
+}
+
 export async function notionFetch(
   token: string,
   path: string,
@@ -106,8 +129,10 @@ export async function notionFetch(
     }
     const data: any = await response.json().catch(() => ({}));
     if (!response.ok) {
-      throw new Error(
-        `Notion API ${path} failed (${response.status}): ${data?.message ?? "unknown"}`,
+      throw new NotionApiError(
+        path,
+        response.status,
+        data?.message ?? "unknown",
       );
     }
     return data;
