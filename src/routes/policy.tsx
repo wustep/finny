@@ -83,8 +83,8 @@ function PolicyPage() {
 
         <PolicyHeading>Access control</PolicyHeading>
         <P>
-          Every account requires Google sign-in plus a shared access
-          password. Actions that read bank data or write to Notion are
+          Every account requires the shared access password and Google
+          sign-in. Actions that read bank data or write to Notion are
           additionally authorized server-side per user; each user can only
           ever reach their own connections and their own Notion workspace.
         </P>

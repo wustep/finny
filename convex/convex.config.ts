@@ -27,9 +27,10 @@ const app = defineApp({
     NOTION_CLIENT_ID: v.string(),
     NOTION_CLIENT_SECRET: v.string(),
 
-    // Required to use the app, but optional to deploy: without it, redeeming
-    // reports "unconfigured" (a 503) rather than the backend refusing to
-    // start, which is the difference between a diagnosable app and a dead one.
+    // Required to use the app, but optional to deploy: without it, the
+    // password screen is skipped and redeeming reports "unconfigured" (a
+    // 503) rather than the backend refusing to start, which is the
+    // difference between a diagnosable app and a dead one.
     ACCESS_PASSWORD: v.optional(v.string()),
 
     // Lets connections started from localhost use the Plaid Sandbox while the

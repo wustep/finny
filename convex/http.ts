@@ -51,7 +51,9 @@ http.route({
 });
 
 // Access-password redemption. Runs over HTTP (not the websocket) so the
-// caller's IP is visible for the 3-strikes ban.
+// caller's IP is visible for the 3-strikes ban. Signed-out callers get a
+// grant ticket in the JSON body; signed-in callers are unlocked on the
+// user row.
 const corsHeaders = (request: Request): Record<string, string> => {
   const origin = request.headers.get("Origin") ?? "";
   if (!allowedOrigins().includes(origin)) {
@@ -90,21 +92,19 @@ http.route({
     const ip =
       request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ??
       "unknown";
-    const result = await ctx.runMutation(internal.access.attemptRedeem, {
+    const outcome = await ctx.runMutation(internal.access.attemptRedeem, {
       ip,
       password: body.password,
     });
     const status =
-      result === "ok"
+      outcome.result === "ok"
         ? 200
-        : result === "banned"
+        : outcome.result === "banned"
           ? 403
-          : result === "unauthenticated"
-            ? 401
-            : result === "unconfigured"
-              ? 503
-              : 401;
-    return new Response(JSON.stringify({ result }), { status, headers });
+          : outcome.result === "unconfigured"
+            ? 503
+            : 401;
+    return new Response(JSON.stringify(outcome), { status, headers });
   }),
 });
 

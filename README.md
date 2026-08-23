@@ -130,15 +130,18 @@ or comes back. Without the capability the comment is skipped.
 
 ### 5. Access password
 
-Google sign-in is open, so a shared password gates every Plaid/Notion
-action. Three wrong guesses ban that IP for 24 hours (the `accessAttempts`
-row expires; delete it to unban sooner).
+The shared password is the first screen a visitor sees; Google sign-in
+comes after. Three wrong guesses ban that IP for 24 hours (the
+`accessAttempts` row expires; delete it to unban sooner). Plaid/Notion
+actions still check the user flag server-side.
 
 ```bash
 npx convex env set ACCESS_PASSWORD <password-you-share-with-users>
 ```
 
-Without it, sign-in works but redeeming returns "unconfigured" (503).
+Without it, the password screen is skipped and sign-in works, but
+redeeming returns "unconfigured" (503) and nothing in the app works
+except the local test user (pre-unlocked).
 
 ### 6. Local shortcuts (optional)
 
@@ -149,10 +152,11 @@ Without it, sign-in works but redeeming returns "unconfigured" (503).
 npx convex env set TEST_LOGIN_SECRET "$(openssl rand -hex 24)"
 ```
 
-`VITE_TEST_LOGIN_SECRET=…` in `.env.local`. A "Continue as tester" button
-logs you in as `test@wustep.me`, already past the access password.
-Deployed builds have no copy of the secret, so the button is absent and
-the backend rejects the provider.
+`VITE_TEST_LOGIN_SECRET=…` in `.env.local`. After the access password, a
+"Continue as tester" button logs you in as `test@wustep.me`. That user
+is pre-unlocked so Plaid/Notion work without redeeming again. Deployed
+builds have no copy of the secret, so the button is absent and the
+backend rejects the provider.
 
 **Sandbox from localhost while prod is production.** Add the Sandbox
 secret:
@@ -175,7 +179,7 @@ npm run dev
 login is interactive. Split them with `npm run convex:dev` and
 `npm run dev:app` if you want.
 
-Open http://localhost:3466 → Google → access password → **Add connection**
+Open http://localhost:3466 → access password → Google → **Add connection**
 (Sandbox: `user_good` / `pass_good`) → **Notion → Connect Notion** → pick
 a page, modules, and start date → **Create databases**. The first backfill
 starts on its own (default window: two years).

@@ -1,6 +1,6 @@
 import { Outlet, createRootRoute, useLocation } from "@tanstack/react-router";
 import { Authenticated, AuthLoading, Unauthenticated } from "convex/react";
-import { AccessGuard } from "@/components/access-gate";
+import { AccessGuard, InviteGuard } from "@/components/access-gate";
 import { AppShell, PublicShell } from "@/components/app-shell";
 import { SignIn } from "@/components/sign-in";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -33,7 +33,9 @@ function RootLayout() {
         </div>
       </AuthLoading>
       <Unauthenticated>
-        <SignIn />
+        <InviteGuard>
+          <SignIn />
+        </InviteGuard>
       </Unauthenticated>
       <Authenticated>
         <AccessGuard>

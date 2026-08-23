@@ -274,6 +274,17 @@ export default defineSchema({
     bannedAt: v.optional(v.number()),
   }).index("by_ip", ["ip"]),
 
+  // Ticket issued when the shared password is redeemed before sign-in.
+  // Claimed once (see access.claimGrant) onto the new user's accessGrantedAt;
+  // expired leftovers are dropped by the daily prune.
+  accessGrants: defineTable({
+    token: v.string(),
+    createdAt: v.number(),
+    expiresAt: v.number(),
+  })
+    .index("by_token", ["token"])
+    .index("by_expiresAt", ["expiresAt"]),
+
   // Short-lived CSRF states for the Notion OAuth flow. `origin` records
   // which app origin started the flow so the callback returns there.
   notionOauthStates: defineTable({
