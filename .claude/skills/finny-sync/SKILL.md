@@ -242,10 +242,14 @@ touched the Accounts database still knows it.
 `/plaid/webhook` acks 200 immediately and schedules
 `internal.plaid.handleWebhook`. That action reads `item_id` from the unverified
 body only to pick the Plaid environment (verification keys are per-env),
-verifies the `Plaid-Verification` JWT, and routes after that: ITEM webhooks
-set connection status/error code, TRANSACTIONS codes schedule
-`sync.runForConnection` with trigger `webhook`. Nothing acts on an
-unverified body.
+verifies the `Plaid-Verification` JWT (signature + body hash; a one-hour
+clock tolerance, because verification is scheduled rather than inline), and
+routes after that via `classifyPlaidWebhook`: ITEM status codes
+(`ERROR`, `USER_PERMISSION_REVOKED`, expiration/disconnect, `LOGIN_REPAIRED`)
+set connection status; everything that means new data — including
+`RECURRING_TRANSACTIONS_UPDATE`, `LIABILITIES: DEFAULT_UPDATE`, and
+`USER_ACCOUNT_REVOKED` — schedules `sync.runForConnection` with trigger
+`webhook`. Nothing acts on an unverified body.
 
 ## 6. Local dev
 
