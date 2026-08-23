@@ -20,7 +20,7 @@ sync engine. Notion property names live in
 | Accounts | ![Accounts — two sandbox Items with per-account sync toggles](docs/accounts.png) |
 | Destination | ![Notion destination — databases, modules](docs/notion.png) |
 | Notion home | ![Finny page with the eight databases](docs/notion-home.png) |
-| Transactions | ![Transactions — Plaid sandbox merchants](docs/notion-transactions.png) |
+| Holdings | ![Holdings — sandbox investment positions](docs/notion-holdings.png) |
 | Notion accounts | ![Accounts database — Tartan Bank and First Gingham](docs/notion-accounts.png) |
 
 ## How it works
