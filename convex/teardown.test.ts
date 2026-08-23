@@ -58,6 +58,16 @@ async function seed(
       status: "success",
       startedAt: Date.now(),
     });
+    await ctx.db.insert("abandonedPages", {
+      userId,
+      connectionId,
+      plaidItemId: `item-${email}`,
+      institutionName: "Some Bank",
+      nextCursor: `cursor-${email}`,
+      skipped: 2,
+      error: "Gave up on 2 transaction(s)",
+      abandonedAt: Date.now(),
+    });
     await ctx.db.insert("notionOauthStates", {
       userId,
       state: `state-${email}`,
@@ -111,6 +121,7 @@ async function countsFor(
       notionConnections: own(await ctx.db.query("notionConnections").collect()),
       notionPageMap: own(await ctx.db.query("notionPageMap").collect()),
       syncRuns: own(await ctx.db.query("syncRuns").collect()),
+      abandonedPages: own(await ctx.db.query("abandonedPages").collect()),
       notionOauthStates: own(
         await ctx.db.query("notionOauthStates").collect(),
       ),
@@ -133,6 +144,7 @@ const SEEDED = {
   notionConnections: 1,
   notionPageMap: 1,
   syncRuns: 1,
+  abandonedPages: 1,
   notionOauthStates: 1,
   authSessions: 1,
   authRefreshTokens: 1,

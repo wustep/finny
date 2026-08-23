@@ -41,14 +41,13 @@ test("account-level Item events schedule a sync rather than breaking the bank", 
   });
 });
 
-test("transaction, investment, liability, and recurring updates schedule a sync", () => {
+test("transaction, investment, and liability updates schedule a full sync", () => {
   for (const [type, code] of [
     ["TRANSACTIONS", "SYNC_UPDATES_AVAILABLE"],
     ["TRANSACTIONS", "INITIAL_UPDATE"],
     ["TRANSACTIONS", "HISTORICAL_UPDATE"],
     ["TRANSACTIONS", "DEFAULT_UPDATE"],
     ["TRANSACTIONS", "TRANSACTIONS_REMOVED"],
-    ["TRANSACTIONS", "RECURRING_TRANSACTIONS_UPDATE"],
     ["HOLDINGS", "DEFAULT_UPDATE"],
     ["INVESTMENTS_TRANSACTIONS", "DEFAULT_UPDATE"],
     ["LIABILITIES", "DEFAULT_UPDATE"],
@@ -57,6 +56,12 @@ test("transaction, investment, liability, and recurring updates schedule a sync"
       action: "sync",
     });
   }
+});
+
+test("RECURRING_TRANSACTIONS_UPDATE schedules a recurring-only sync", () => {
+  expect(
+    classifyPlaidWebhook("TRANSACTIONS", "RECURRING_TRANSACTIONS_UPDATE"),
+  ).toEqual({ action: "sync_recurring" });
 });
 
 test("unknown or acknowledgement webhooks are ignored", () => {

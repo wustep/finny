@@ -14,6 +14,10 @@ import {
 } from "lucide-react";
 import { useEffect, useState, type FormEvent } from "react";
 import { toast } from "@/lib/notify";
+import {
+  connectionAlert,
+  statusLabels,
+} from "@/lib/connection-status";
 import { formatDuration, triggerLabels } from "@/lib/sync-labels";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
@@ -50,47 +54,6 @@ import { Switch } from "@/components/ui/switch";
 export const Route = createFileRoute("/")({
   component: AccountsPage,
 });
-
-const statusLabels = {
-  active: "Active",
-  error: "Needs attention",
-  pending_expiration: "Expiring soon",
-} as const;
-
-// Plaid's error codes in the words of someone who just wants their bank to
-// work again. Anything not listed falls back to naming the code.
-const errorExplanations: Record<string, string> = {
-  ITEM_LOGIN_REQUIRED: "Your bank needs you to sign in again.",
-  INVALID_CREDENTIALS: "The sign-in details your bank has on file no longer work.",
-  INVALID_MFA: "The security code your bank asked for didn't go through.",
-  INVALID_UPDATED_USERNAME: "Your username at the bank changed.",
-  ITEM_LOCKED: "Your bank has locked the account. Sign in at your bank to unlock it, then reconnect here.",
-  USER_PERMISSION_REVOKED: "Access to this bank was revoked, so it stopped sharing data.",
-  ACCESS_NOT_GRANTED: "You didn't grant Finny access to this bank.",
-  USER_INPUT_TIMEOUT: "The last reconnect timed out before it finished.",
-  ITEM_NOT_SUPPORTED: "Your bank no longer supports this kind of connection.",
-  INSUFFICIENT_CREDENTIALS: "Your bank is asking for more than the saved credentials.",
-  INSTITUTION_DOWN: "Your bank is down. This usually clears on its own.",
-  INSTITUTION_NOT_RESPONDING: "Your bank isn't responding. This usually clears on its own.",
-  INSTITUTION_NO_LONGER_SUPPORTED: "This bank is no longer supported.",
-};
-
-function connectionAlert(connection: ConnectionData) {
-  if (connection.status === "pending_expiration") {
-    return {
-      title: "This connection expires soon",
-      detail:
-        "Your bank shares data for a fixed stretch and this one is nearly up.",
-    };
-  }
-  return {
-    title: "This connection stopped working",
-    detail: connection.errorCode
-      ? (errorExplanations[connection.errorCode] ??
-        `Your bank reported ${connection.errorCode}.`)
-      : "Your bank stopped sharing data with Finny.",
-  };
-}
 
 function AccountsPage() {
   const connections = useQuery(api.connections.list);
@@ -134,6 +97,13 @@ function AccountsPage() {
       </div>
 
       {loaded && hasBank && !hasDestination ? <NoDestinationBanner /> : null}
+      {loaded &&
+      hasDestination &&
+      notion &&
+      "tokenStatus" in notion &&
+      notion.tokenStatus === "unauthorized" ? (
+        <DeadDestinationBanner />
+      ) : null}
 
       {showChecklist ? (
         <GettingStarted
@@ -186,6 +156,32 @@ function AccountsPage() {
 // Banks but nowhere to put them is the one dead end the app can land in
 // without saying anything: syncs are scheduled, every one of them returns
 // early, and the Accounts page looks perfectly healthy.
+function DeadDestinationBanner() {
+  return (
+    <Card className="border-destructive">
+      <CardContent className="flex flex-wrap items-center gap-4 py-4">
+        <TriangleAlert className="size-5 shrink-0 text-destructive" />
+        <div className="min-w-64 flex-1">
+          <p className="text-sm font-medium">
+            Notion rejected the stored token
+          </p>
+          <p className="text-sm text-muted-foreground">
+            Reconnect the same workspace. Nothing can sync until then.
+          </p>
+        </div>
+        <Button asChild>
+          <Link
+            to="/notion"
+            search={{ connected: undefined, error: undefined }}
+          >
+            Reconnect Notion <ArrowRight />
+          </Link>
+        </Button>
+      </CardContent>
+    </Card>
+  );
+}
+
 function NoDestinationBanner() {
   return (
     <Card className="border-primary/40 bg-primary/5">
@@ -313,22 +309,63 @@ function GettingStarted({
 
 function SyncHistory() {
   const runs = useQuery(api.connections.recentRuns);
-  if (!runs || runs.length === 0) {
+  const abandoned = useQuery(api.connections.recentAbandonedPages);
+  if ((!runs || runs.length === 0) && (!abandoned || abandoned.length === 0)) {
     return null;
   }
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Recent syncs</CardTitle>
-      </CardHeader>
-      <CardContent>
-        <ul className="flex flex-col gap-2">
-          {runs.map((run) => (
-            <SyncRunRow key={run.id} run={run} />
-          ))}
-        </ul>
-      </CardContent>
-    </Card>
+    <>
+      {runs && runs.length > 0 ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>Recent syncs</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <ul className="flex flex-col gap-2">
+              {runs.map((run) => (
+                <SyncRunRow key={run.id} run={run} />
+              ))}
+            </ul>
+          </CardContent>
+        </Card>
+      ) : null}
+      {abandoned && abandoned.length > 0 ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>Permanently skipped pages</CardTitle>
+            <CardDescription>
+              Rows Notion refused often enough that the cursor moved on.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <ul className="flex flex-col gap-2">
+              {abandoned.map((page) => (
+                <li
+                  key={page.id}
+                  className="flex flex-col gap-1 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm"
+                >
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                    <Badge variant="destructive">Skipped</Badge>
+                    <span className="min-w-0 flex-1">
+                      {page.institutionName}
+                      <span className="tabular-nums text-muted-foreground">
+                        {" "}
+                        · {page.skipped}{" "}
+                        {page.skipped === 1 ? "row" : "rows"}
+                      </span>
+                    </span>
+                    <span className="text-xs tabular-nums text-muted-foreground">
+                      {new Date(page.abandonedAt).toLocaleString()}
+                    </span>
+                  </div>
+                  <p className="text-xs text-destructive">{page.error}</p>
+                </li>
+              ))}
+            </ul>
+          </CardContent>
+        </Card>
+      ) : null}
+    </>
   );
 }
 
@@ -537,7 +574,11 @@ function ConnectionCard({
           <div className="flex shrink-0 items-center gap-1">
             <Badge
               variant={
-                connection.status === "active" ? "secondary" : "destructive"
+                connection.status === "active"
+                  ? "secondary"
+                  : connection.status === "pending_expiration"
+                    ? "outline"
+                    : "destructive"
               }
             >
               {statusLabels[connection.status]}
@@ -572,8 +613,20 @@ function ConnectionCard({
       </CardHeader>
       <CardContent>
         {connection.status !== "active" ? (
-          <div className="mb-5 flex gap-3 rounded-lg border border-destructive/30 bg-destructive/5 p-4">
-            <TriangleAlert className="mt-0.5 size-4 shrink-0 text-destructive" />
+          <div
+            className={
+              connection.status === "pending_expiration"
+                ? "mb-5 flex gap-3 rounded-lg border bg-muted/40 p-4"
+                : "mb-5 flex gap-3 rounded-lg border border-destructive/30 bg-destructive/5 p-4"
+            }
+          >
+            <TriangleAlert
+              className={
+                connection.status === "pending_expiration"
+                  ? "mt-0.5 size-4 shrink-0 text-muted-foreground"
+                  : "mt-0.5 size-4 shrink-0 text-destructive"
+              }
+            />
             <div className="flex flex-1 flex-col items-start gap-3">
               <div className="flex flex-col gap-1">
                 <p className="text-sm font-medium">{problem.title}</p>
@@ -581,7 +634,7 @@ function ConnectionCard({
                   {problem.detail}
                 </p>
                 <p className="text-xs text-muted-foreground">
-                  Nothing reaches Notion until it's reconnected.
+                  {problem.nextStep}
                   {connection.errorCode ? (
                     <>
                       {" "}
@@ -591,7 +644,7 @@ function ConnectionCard({
                 </p>
               </div>
               <Button size="sm" disabled={reconnecting} onClick={onReconnect}>
-                <Wrench /> {reconnecting ? "Opening…" : "Reconnect"}
+                <Wrench /> {reconnecting ? "Opening…" : problem.button}
               </Button>
             </div>
           </div>
