@@ -780,11 +780,19 @@ function describe(state: DatabaseState): string | null {
         parts.push(`missing ${state.missingProperties.join(", ")}`);
       }
       for (const wrong of state.wrongTypeProperties) {
-        parts.push(`${wrong.name} is now a ${wrong.actual}`);
+        parts.push(
+          `In Notion, change ${wrong.name} from ${propertyTypeLabel(wrong.actual)} to ${propertyTypeLabel(wrong.expected)}`,
+        );
       }
       return parts.join(" · ");
     }
   }
+}
+
+function propertyTypeLabel(type: string): string {
+  return type.replaceAll("_", " ").replace(/\b\w/g, (letter) =>
+    letter.toUpperCase(),
+  );
 }
 
 // The databases, and whether they are still the ones Finny thinks they are.
